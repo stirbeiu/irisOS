@@ -1,6 +1,14 @@
 # CMake toolchain file for irisOS x86_64
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
+
+# Shared library creation rules for bare-metal ELF
+set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS "-shared")
+set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS "-shared")
+set(CMAKE_SHARED_LIBRARY_SONAME_C_FLAG "-Wl,-soname,")
+set(CMAKE_SHARED_LIBRARY_SONAME_CXX_FLAG "-Wl,-soname,")
 
 # Force Homebrew LLVM binaries (Apple Clang targets Mach-O only and lacks ld.lld)
 set(LLVM_PREFIX "/opt/homebrew/opt/llvm")

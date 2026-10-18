@@ -77,6 +77,28 @@ This document tracks progress, completed milestones, verification proofs, and im
   - `system/host/zbi/`: Source code for the host `zbi` image packaging utility.
 - **Repository Impact:** `kernel/zircon/*` ignored in `.gitignore` to prevent bloat in the main repository (~56 MB isolated locally).
 
+### Step 1.6: Host Tools Compilation (`zbi` & `abigen`)
+- **Status:** COMPLETED
+- **Binaries:**
+  - `out/host/zbi`: Native macOS Apple Silicon (`Mach-O 64-bit executable arm64`) tool for packing and inspecting ZBI images.
+  - `out/host/abigen`: Native syscall header and stub generator (`Mach-O 64-bit executable arm64`).
+- **Modernization Fixes:**
+  - Modernized `kernel/zircon/system/host/zbi/zbi.cpp` container types from deprecated `std::list<const iovec>` to `std::list<iovec>` for compatibility with modern C++17/20 in LLVM 23.
+  - Added `#include <cassert>` in `kernel/zircon/system/host/abigen/kernel_wrapper_generator.cpp`.
+
+### Step 1.7: Standalone CMake/Ninja Build Harness & vDSO
+- **Status:** COMPLETED
+- **Files Created:**
+  - [`build/CMakeLists.txt`](file:///Users/stefan/Dev/irisos/build/CMakeLists.txt): Master CMake build harness for `libzircon` (vDSO) and syscall generation.
+  - [`build/Makefile`](file:///Users/stefan/Dev/irisos/build/Makefile): Top-level orchestrator calling CMake, Ninja, and host tool builds.
+- **Artifacts Produced & Verified:**
+  - `x86_64`:
+    - `out/build-x86_64/lib/libzircon.a`: Static archive (93 KB) for freestanding `iris_init`
+    - `out/build-x86_64/lib/libzircon.so`: Dynamic shared object (71 KB ELF 64-bit LSB shared object)
+  - `aarch64`:
+    - `out/build-arm64/lib/libzircon.a`: Static archive (89 KB) for freestanding `iris_init`
+    - `out/build-arm64/lib/libzircon.so`: Dynamic shared object (70 KB ELF 64-bit LSB shared object)
+
 ---
 
 ## Verification & Testing Log
@@ -87,10 +109,15 @@ This document tracks progress, completed milestones, verification proofs, and im
 | 2026-10-18 | LLVM Toolchains | `clang --target=aarch64-unknown-elf -fuse-ld=/opt/homebrew/bin/ld.lld` | Successfully built & linked 64-bit ELF executable for ARM aarch64 |
 | 2026-10-18 | Host Utilities | `cmake`, `ninja`, `meson`, `qemu`, `xorriso`, `mtools` | All binaries installed and responding to `--version` |
 | 2026-10-18 | Zircon Fetch | `./scripts/fetch_zircon.sh` | Pinned commit `86b09d1` fetched; all 5 core directories verified |
+| 2026-10-19 | Host Tool (`zbi`) | `./out/host/zbi --help` | Successfully executes; prints usage and switches |
+| 2026-10-19 | Host Tool (`abigen`) | `./out/host/abigen ...` | Successfully parses `syscalls.abigen` and generates 11 output headers/stubs |
+| 2026-10-19 | Build Harness (x86_64) | `make -C build build-x86_64` | Configures and links `libzircon.a` and `libzircon.so` (ELF 64-bit x86-64) |
+| 2026-10-19 | Build Harness (arm64) | `make -C build build-arm64` | Configures and links `libzircon.a` and `libzircon.so` (ELF 64-bit ARM aarch64) |
 
 ---
 
 ## Immediate Next Steps
-1. Push initial commits and updated `.gitignore` + `scripts/fetch_zircon.sh` to remote.
-2. Build the host `zbi` packaging tool natively on macOS Apple Silicon.
-3. Construct the standalone CMake/Ninja build wrapper for the Zircon kernel and `libzircon.so` (vDSO).
+1. Commit build harness and documentation changes to Git.
+2. Compile Gigaboot UEFI bootloader (`BOOTX64.EFI` and `BOOTAA64.EFI`).
+3. Implement freestanding `iris_init` bootstrap binary linked against `libzircon.a`.
+4. Pack initial `iris_a.zbi` using `out/host/zbi` and boot in QEMU via Gigaboot.
