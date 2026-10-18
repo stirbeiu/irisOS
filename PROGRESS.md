@@ -64,6 +64,19 @@ This document tracks progress, completed milestones, verification proofs, and im
   - `xorriso`: 1.5.8.pl02
   - `mtools`: 4.0.49
 
+### Step 1.5: Pinned Standalone Zircon Fetch Script
+- **Status:** COMPLETED
+- **Script:** [`scripts/fetch_zircon.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_zircon.sh)
+- **Upstream:** `https://fuchsia.googlesource.com/zircon`
+- **Pinned Commit:** `86b09d1d34dbd44390cee58e95f795f89169ea79` (branch `milestone-1011`)
+- **Fetched Components in `kernel/zircon/`:**
+  - `kernel/`: Full 64-bit microkernel source (x86_64 and arm64).
+  - `bootloader/`: Gigaboot UEFI bootloader (`BOOTX64.EFI` / `BOOTAA64.EFI`).
+  - `system/ulib/zircon/`: `libzircon.so` (vDSO) sources and wrappers.
+  - `system/public/zircon/`: System calls (`syscalls.abigen`), types, headers (`processargs.h`).
+  - `system/host/zbi/`: Source code for the host `zbi` image packaging utility.
+- **Repository Impact:** `kernel/zircon/*` ignored in `.gitignore` to prevent bloat in the main repository (~56 MB isolated locally).
+
 ---
 
 ## Verification & Testing Log
@@ -73,10 +86,11 @@ This document tracks progress, completed milestones, verification proofs, and im
 | 2026-10-18 | LLVM Toolchains | `clang --target=x86_64-unknown-elf -fuse-ld=/opt/homebrew/bin/ld.lld` | Successfully built & linked 64-bit ELF executable for x86-64 |
 | 2026-10-18 | LLVM Toolchains | `clang --target=aarch64-unknown-elf -fuse-ld=/opt/homebrew/bin/ld.lld` | Successfully built & linked 64-bit ELF executable for ARM aarch64 |
 | 2026-10-18 | Host Utilities | `cmake`, `ninja`, `meson`, `qemu`, `xorriso`, `mtools` | All binaries installed and responding to `--version` |
+| 2026-10-18 | Zircon Fetch | `./scripts/fetch_zircon.sh` | Pinned commit `86b09d1` fetched; all 5 core directories verified |
 
 ---
 
 ## Immediate Next Steps
-1. Review and confirm repository setup with the user.
-2. Commit initial repository structure and toolchain configuration.
-3. Implement `scripts/fetch_zircon.sh` to fetch pinned standalone Zircon microkernel source and build the host `zbi` packaging tool.
+1. Push initial commits and updated `.gitignore` + `scripts/fetch_zircon.sh` to remote.
+2. Build the host `zbi` packaging tool natively on macOS Apple Silicon.
+3. Construct the standalone CMake/Ninja build wrapper for the Zircon kernel and `libzircon.so` (vDSO).

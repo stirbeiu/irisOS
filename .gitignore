@@ -2,6 +2,10 @@
 out/
 build/out/
 
+# Fetched kernel tree (managed via scripts/fetch_zircon.sh)
+kernel/zircon/*
+!kernel/zircon/.gitkeep
+
 # macOS system files
 .DS_Store
 ._*
