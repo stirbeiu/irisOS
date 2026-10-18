@@ -98,22 +98,58 @@ zbi: $(HOST_OUT)/zbi
 abigen: $(HOST_OUT)/abigen
 
 # ------------------------------------------------------------------------------
-# Target Architecture Builds (CMake + Ninja)
+# Target Architecture Builds (CMake + Ninja + Microkernel)
 # ------------------------------------------------------------------------------
-build-x86_64: tools
+kernel-x86_64: tools
+	@echo "==> Building Zircon microkernel (x86_64)..."
+	@$(MAKE) -C $(ZIRCON_DIR) \
+		build-x64-clang/zircon.elf \
+		build-x64-clang/kernel.zbi \
+		PROJECT=x64 \
+		USE_CLANG=true \
+		USE_LLD=true \
+		CLANG_TOOLCHAIN_PREFIX=$(LLVM_PREFIX)/bin/ \
+		ARCH_x86_64_TOOLCHAIN_INCLUDED=1 \
+		ENABLE_BUILD_SYSROOT=false
+	@mkdir -p $(OUT_DIR)/build-x86_64/kernel
+	@cp -f $(ZIRCON_DIR)/build-x64-clang/zircon.elf $(OUT_DIR)/build-x86_64/kernel/zircon.elf
+	@cp -f $(ZIRCON_DIR)/build-x64-clang/kernel.zbi $(OUT_DIR)/build-x86_64/kernel/kernel.zbi
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/kernel/zircon.elf"
+
+kernel-arm64: tools
+	@echo "==> Building Zircon microkernel (arm64)..."
+	@$(MAKE) -C $(ZIRCON_DIR) \
+		build-arm64-clang/zircon.elf \
+		build-arm64-clang/kernel.zbi \
+		PROJECT=arm64 \
+		USE_CLANG=true \
+		USE_LLD=true \
+		CLANG_TOOLCHAIN_PREFIX=$(LLVM_PREFIX)/bin/ \
+		ARCH_arm64_TOOLCHAIN_INCLUDED=1 \
+		ENABLE_BUILD_SYSROOT=false
+	@mkdir -p $(OUT_DIR)/build-arm64/kernel
+	@cp -f $(ZIRCON_DIR)/build-arm64-clang/zircon.elf $(OUT_DIR)/build-arm64/kernel/zircon.elf
+	@cp -f $(ZIRCON_DIR)/build-arm64-clang/kernel.zbi $(OUT_DIR)/build-arm64/kernel/kernel.zbi
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/kernel/zircon.elf"
+
+build-x86_64: tools kernel-x86_64
 	@mkdir -p $(OUT_DIR)/build-x86_64
 	@cmake -B $(OUT_DIR)/build-x86_64 -S $(BUILD_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/x86_64-iris.cmake \
 		-G Ninja
 	@ninja -C $(OUT_DIR)/build-x86_64
 
-build-arm64: tools
+build-arm64: tools kernel-arm64
 	@mkdir -p $(OUT_DIR)/build-arm64
 	@cmake -B $(OUT_DIR)/build-arm64 -S $(BUILD_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/arm64-iris.cmake \
 		-G Ninja
 	@ninja -C $(OUT_DIR)/build-arm64
 
-clean:
+clean-kernel:
+	@rm -rf $(ZIRCON_DIR)/build-x64-clang $(ZIRCON_DIR)/build-arm64-clang
+	@echo "==> Cleaned kernel build outputs."
+
+clean: clean-kernel
 	@rm -rf $(OUT_DIR)/build-x86_64 $(OUT_DIR)/build-arm64 $(HOST_OUT)
 	@echo "==> Cleaned build output."

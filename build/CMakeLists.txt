@@ -144,6 +144,48 @@ add_custom_command(
 add_custom_target(zircon_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libzircon.so")
 
 # ==============================================================================
+# Target: iris_init (Freestanding Bootstrap Server)
+# ==============================================================================
+set(IRIS_INIT_SRCS
+    "${IRIS_ROOT}/servers/iris_init/src/main.c"
+)
+
+add_executable(iris_init ${IRIS_INIT_SRCS})
+add_dependencies(iris_init zircon_syscall_headers)
+
+target_include_directories(iris_init PRIVATE
+    "${GEN_DIR}"
+    "${GEN_DIR}/zircon"
+    "${ZIRCON_ROOT}/system/public"
+)
+
+target_compile_options(iris_init PRIVATE
+    -ffreestanding
+    -fno-builtin
+    -fno-stack-protector
+    -fPIE
+    -O2
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+target_link_options(iris_init PRIVATE
+    -nostdlib
+    -fuse-ld=${CMAKE_LINKER}
+    -Wl,-pie
+    -Wl,-e,_start
+    -Wl,--gc-sections
+    -Wl,-z,nocopyreloc
+)
+
+target_link_libraries(iris_init PRIVATE zircon_static)
+
+set_target_properties(iris_init PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+# ==============================================================================
 # Target: Zircon Microkernel Core
 # ==============================================================================
 set(KERNEL_ROOT "${ZIRCON_ROOT}/kernel")

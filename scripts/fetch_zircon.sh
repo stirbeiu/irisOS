@@ -51,6 +51,13 @@ rm -rf "${TEMP_DIR}/zircon/.git"
 echo "==> Installing sources into ${TARGET_DIR}..."
 cp -R "${TEMP_DIR}/zircon/." "${TARGET_DIR}/"
 
+# Apply irisOS standalone LLVM compatibility patches if available
+PATCH_FILE="${SCRIPT_DIR}/patches/zircon-standalone-llvm.patch"
+if [[ -f "${PATCH_FILE}" ]]; then
+    echo "==> Applying irisOS standalone LLVM compatibility patches..."
+    patch -d "${TARGET_DIR}" -p1 < "${PATCH_FILE}"
+fi
+
 # Verify required components
 echo "==> Verifying fetched components..."
 REQUIRED_PATHS=(

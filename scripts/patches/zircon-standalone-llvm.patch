@@ -1,0 +1,352 @@
+Binary files /tmp/zircon_clean/.DS_Store and kernel/zircon/.DS_Store differ
+Binary files /tmp/zircon_clean/bootloader/.DS_Store and kernel/zircon/bootloader/.DS_Store differ
+Binary files /tmp/zircon_clean/bootloader/include/.DS_Store and kernel/zircon/bootloader/include/.DS_Store differ
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/kernel/arch/arm64/fpu.cpp kernel/zircon/kernel/arch/arm64/fpu.cpp
+--- /tmp/zircon_clean/kernel/arch/arm64/fpu.cpp	2026-10-19 00:53:31
++++ kernel/zircon/kernel/arch/arm64/fpu.cpp	2026-10-19 00:46:25
+@@ -30,7 +30,8 @@
+     LTRACEF("cpu %u, thread %s, load fpstate %p\n", arch_curr_cpu_num(), t->name, fpstate);
+ 
+     static_assert(sizeof(fpstate->regs) == 16 * 32, "");
+-    __asm__ volatile("ldp     q0, q1, [%0, #(0 * 32)]\n"
++    __asm__ volatile(".arch_extension fp\n"
++                     "ldp     q0, q1, [%0, #(0 * 32)]\n"
+                      "ldp     q2, q3, [%0, #(1 * 32)]\n"
+                      "ldp     q4, q5, [%0, #(2 * 32)]\n"
+                      "ldp     q6, q7, [%0, #(3 * 32)]\n"
+@@ -57,7 +58,8 @@
+ 
+     LTRACEF("cpu %u, thread %s, save fpstate %p\n", arch_curr_cpu_num(), t->name, fpstate);
+ 
+-    __asm__ volatile("stp     q0, q1, [%0, #(0 * 32)]\n"
++    __asm__ volatile(".arch_extension fp\n"
++                     "stp     q0, q1, [%0, #(0 * 32)]\n"
+                      "stp     q2, q3, [%0, #(1 * 32)]\n"
+                      "stp     q4, q5, [%0, #(2 * 32)]\n"
+                      "stp     q6, q7, [%0, #(3 * 32)]\n"
+@@ -77,9 +79,11 @@
+     // These are 32-bit values, but the msr instruction always uses a
+     // 64-bit destination register.
+     uint64_t fpcr, fpsr;
+-    __asm__("mrs %0, fpcr\n"
++    __asm__(".arch_extension fp\n"
++            "mrs %0, fpcr\n"
+             : "=r"(fpcr));
+-    __asm__("mrs %0, fpsr\n"
++    __asm__(".arch_extension fp\n"
++            "mrs %0, fpsr\n"
+             : "=r"(fpsr));
+     fpstate->fpcr = (uint32_t)fpcr;
+     fpstate->fpsr = (uint32_t)fpsr;
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/kernel/arch/arm64/hypervisor/el2.S kernel/zircon/kernel/arch/arm64/hypervisor/el2.S
+--- /tmp/zircon_clean/kernel/arch/arm64/hypervisor/el2.S	2026-10-19 00:53:31
++++ kernel/zircon/kernel/arch/arm64/hypervisor/el2.S	2026-10-19 00:47:36
+@@ -29,6 +29,8 @@
+ // NOTE(abdulla): This excludes the top bit, as it is too large for VTCR_EL2.PS.
+ #define ID_AA64MMFR0_EL1_PARANGE_MASK   0x07
+ 
++.arch_extension fp
++
+ .section .text.el2,"ax",@progbits
+ .align 12
+ 
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/kernel/arch/arm64/rules.mk kernel/zircon/kernel/arch/arm64/rules.mk
+--- /tmp/zircon_clean/kernel/arch/arm64/rules.mk	2026-10-19 00:53:31
++++ kernel/zircon/kernel/arch/arm64/rules.mk	2026-10-19 00:50:07
+@@ -81,6 +81,9 @@
+ 
+ # generate code for the fairly generic cortex-a53
+ ARCH_COMPILEFLAGS += -mcpu=cortex-a53
++ifeq ($(call TOBOOL,$(USE_CLANG)),true)
++ARCH_COMPILEFLAGS += -mno-outline-atomics
++endif
+ 
+ CLANG_ARCH := aarch64
+ ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+@@ -97,10 +100,9 @@
+ 
+ KERNEL_COMPILEFLAGS += -fPIE -include kernel/include/hidden.h
+ 
+-# Clang needs -mcmodel=kernel to tell it to use the right safe-stack ABI for
+-# the kernel.
++# Clang on AArch64 uses small code model by default; kernel model is x86-only in upstream LLVM
+ ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+-KERNEL_COMPILEFLAGS += -mcmodel=kernel
++KERNEL_COMPILEFLAGS += -mcmodel=small
+ endif
+ 
+ # x18 is reserved in the Fuchsia userland ABI so it can be used
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/kernel/project/virtual/user.mk kernel/zircon/kernel/project/virtual/user.mk
+--- /tmp/zircon_clean/kernel/project/virtual/user.mk	2026-10-19 00:53:31
++++ kernel/zircon/kernel/project/virtual/user.mk	2026-10-19 00:28:35
+@@ -16,7 +16,11 @@
+     kernel/lib/mtrace \
+     kernel/object \
+     kernel/syscalls \
++    system/core/userboot \
++    system/ulib/zircon \
+ 
++
++ifeq ($(ENABLE_USERSPACE_MODULES),true)
+ # include all core, dev, fidl, uapp, ulib and utest from system/...
+ MODULES += $(patsubst %/rules.mk,%,$(wildcard system/core/*/rules.mk))
+ MODULES += $(patsubst %/rules.mk,%,$(wildcard system/dev/*/*/rules.mk))
+@@ -33,4 +37,5 @@
+ MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/ulib/*/rules.mk))
+ ifeq ($(call TOBOOL,$(DISABLE_UTEST)),false)
+ MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/utest/*/rules.mk))
++endif
+ endif
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/kernel/target/pc/rules.mk kernel/zircon/kernel/target/pc/rules.mk
+--- /tmp/zircon_clean/kernel/target/pc/rules.mk	2026-10-19 00:53:31
++++ kernel/zircon/kernel/target/pc/rules.mk	2026-10-19 00:27:36
+@@ -18,4 +18,6 @@
+ 
+ include make/module.mk
+ 
++ifeq ($(ENABLE_MULTIBOOT),true)
+ include $(LOCAL_DIR)/multiboot/rules.mk
++endif
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/make/engine.mk kernel/zircon/make/engine.mk
+--- /tmp/zircon_clean/make/engine.mk	2026-10-19 00:53:31
++++ kernel/zircon/make/engine.mk	2026-10-19 00:45:20
+@@ -160,20 +160,37 @@
+ GLOBAL_COMPILEFLAGS += -no-canonical-prefixes
+ GLOBAL_COMPILEFLAGS += -Wno-address-of-packed-member
+ GLOBAL_COMPILEFLAGS += -Wthread-safety
+-GLOBAL_COMPILEFLAGS += -Wimplicit-fallthrough
++GLOBAL_COMPILEFLAGS += -Wno-implicit-fallthrough
++GLOBAL_COMPILEFLAGS += -Wno-deprecated-builtins
++GLOBAL_COMPILEFLAGS += -Wno-defaulted-function-deleted
++GLOBAL_COMPILEFLAGS += -Wno-c99-designator
++GLOBAL_COMPILEFLAGS += -Wno-gnu-designator
++GLOBAL_COMPILEFLAGS += -Wno-unused-but-set-variable
++GLOBAL_COMPILEFLAGS += -Wno-unused-but-set-global
++GLOBAL_COMPILEFLAGS += -Wno-strict-prototypes
++GLOBAL_COMPILEFLAGS += -Wno-nontrivial-memcall
++GLOBAL_COMPILEFLAGS += -Wno-thread-safety-reference-return
++GLOBAL_COMPILEFLAGS += -Wno-thread-safety-negative
++GLOBAL_COMPILEFLAGS += -Wno-null-pointer-subtraction
++GLOBAL_COMPILEFLAGS += -Wno-unterminated-string-initialization
++GLOBAL_COMPILEFLAGS += -Wno-format
++GLOBAL_COMPILEFLAGS += -Wno-error=format
++GLOBAL_COMPILEFLAGS += -Wno-implicit-int-conversion
++GLOBAL_COMPILEFLAGS += -Wno-conversion
++GLOBAL_COMPILEFLAGS += -Wno-unknown-warning-option
+ else
+ GLOBAL_COMPILEFLAGS += -Wno-nonnull-compare
+ # TODO(mcgrathr): New warning in GCC 7 biting a lot of code; figure it out.
+ GLOBAL_COMPILEFLAGS += -Wno-format-truncation
+ endif
+-GLOBAL_CFLAGS := -std=c11 -Werror-implicit-function-declaration -Wstrict-prototypes -Wwrite-strings
+-GLOBAL_CPPFLAGS := -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wconversion -Wno-sign-conversion
++GLOBAL_CFLAGS := -std=c11 -Werror-implicit-function-declaration -Wwrite-strings
++GLOBAL_CPPFLAGS := -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wno-conversion -Wno-implicit-int-conversion -Wno-sign-conversion
+ #GLOBAL_CPPFLAGS += -Weffc++
+ GLOBAL_ASMFLAGS :=
+ GLOBAL_LDFLAGS := -nostdlib --build-id -z noexecstack
+ ifeq ($(call TOBOOL,$(USE_LLD)),true)
+ GLOBAL_LDFLAGS += --pack-dyn-relocs=relr
+-GLOBAL_LDFLAGS += -color-diagnostics
++GLOBAL_LDFLAGS += --color-diagnostics
+ endif
+ # $(addprefix -L,$(LKINC)) XXX
+ GLOBAL_MODULE_LDFLAGS :=
+@@ -229,7 +246,10 @@
+ # Use linker garbage collection if enabled.
+ ifeq ($(call TOBOOL,$(KERNEL_USE_LINKER_GC)),true)
+ KERNEL_LDFLAGS += --gc-sections
++ifeq ($(call TOBOOL,$(USE_LLD)),true)
++KERNEL_LDFLAGS += -z nostart-stop-gc
+ endif
++endif
+ ifeq ($(call TOBOOL,$(USER_USE_LINKER_GC)),true)
+ USER_LDFLAGS += --gc-sections
+ endif
+@@ -735,7 +755,7 @@
+ endif
+ LD := $(TOOLCHAIN_PREFIX)ld
+ ifeq ($(call TOBOOL,$(USE_LLD)),true)
+-LD := $(CLANG_TOOLCHAIN_PREFIX)ld.lld
++LD := $(or $(wildcard $(CLANG_TOOLCHAIN_PREFIX)ld.lld),$(shell which ld.lld),ld.lld)
+ endif
+ ifeq ($(call TOBOOL,$(USE_GOLD)),true)
+ USER_LD := $(LD).gold
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/make/macros.mk kernel/zircon/make/macros.mk
+--- /tmp/zircon_clean/make/macros.mk	2026-10-19 00:53:31
++++ kernel/zircon/make/macros.mk	2026-10-19 00:45:08
+@@ -62,14 +62,23 @@
+ # inside a string.
+ define MAKECONFIGHEADER
+ 	$(MKDIR); \
+-	echo '#pragma once' > $1.tmp; \
++	tmp_file="$1.$$$$.tmp"; \
++	echo '#pragma once' > "$$tmp_file"; \
+ 	$(foreach var,$($(2)), \
+ 	  echo \#define \
+ 	  $(firstword $(subst =,$(SPACE),$(call MAKECVAR,$(call UC,$(var))))) \
+ 	  $(if $(findstring =,$(var)),$(subst $(firstword $(subst =,$(SPACE),$(var)))=,,$(var))) \
+-	  >> $1.tmp;) \
+-	echo $3 >> $1.tmp; \
+-	$(call TESTANDREPLACEFILE,$1.tmp,$1)
++	  >> "$$tmp_file";) \
++	echo $3 >> "$$tmp_file"; \
++	if [ -f "$1" ]; then \
++		if cmp "$$tmp_file" "$1" >/dev/null 2>&1; then \
++			rm -f "$$tmp_file"; \
++		else \
++			mv "$$tmp_file" "$1"; \
++		fi \
++	else \
++		mv "$$tmp_file" "$1"; \
++	fi
+ endef
+ 
+ # invoke a command $(1), using arguments $(2), putting those arguments
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/make/module-userapp.mk kernel/zircon/make/module-userapp.mk
+--- /tmp/zircon_clean/make/module-userapp.mk	2026-10-19 00:53:31
++++ kernel/zircon/make/module-userapp.mk	2026-10-19 00:36:56
+@@ -63,7 +63,7 @@
+ 	@$(MKDIR)
+ 	$(call BUILDECHO,linking userapp $@)
+ 	$(NOECHO)$(USER_LD) $(GLOBAL_LDFLAGS) $(ARCH_LDFLAGS) $(_LDFLAGS) \
+-		$(_OBJS) --start-group $(_LIBS) --end-group $(LIBGCC) -o $@
++		$(_OBJS) --start-group $(_LIBS) --end-group $(wildcard $(LIBGCC)) -o $@
+ 
+ EXTRA_IDFILES += $(MODULE_USERAPP_OBJECT).id
+ 
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/make/module-userlib.mk kernel/zircon/make/module-userlib.mk
+--- /tmp/zircon_clean/make/module-userlib.mk	2026-10-19 00:53:31
++++ kernel/zircon/make/module-userlib.mk	2026-10-19 00:36:46
+@@ -75,7 +75,7 @@
+ 	$(call BUILDECHO,linking userlib $@)
+ 	$(call BUILDCMD,$(USER_LD),$(_LDFLAGS) -shared $(_SONAME_FLAGS) $(_OBJS) \
+ 				   --start-group $(_LIBS) --end-group \
+-				   $(LIBGCC) -o $@)
++				   $(wildcard $(LIBGCC)) -o $@)
+ 
+ EXTRA_IDFILES += $(MODULE_LIBNAME).so.id
+ 
+Binary files /tmp/zircon_clean/system/.DS_Store and kernel/zircon/system/.DS_Store differ
+Binary files /tmp/zircon_clean/system/core/.DS_Store and kernel/zircon/system/core/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/.DS_Store and kernel/zircon/system/dev/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/audio/.DS_Store and kernel/zircon/system/dev/audio/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/audio/intel-hda/.DS_Store and kernel/zircon/system/dev/audio/intel-hda/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/block/.DS_Store and kernel/zircon/system/dev/block/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/bluetooth/.DS_Store and kernel/zircon/system/dev/bluetooth/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/board/.DS_Store and kernel/zircon/system/dev/board/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/bus/.DS_Store and kernel/zircon/system/dev/bus/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/clk/.DS_Store and kernel/zircon/system/dev/clk/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/codec/.DS_Store and kernel/zircon/system/dev/codec/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/display/.DS_Store and kernel/zircon/system/dev/display/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/ethernet/.DS_Store and kernel/zircon/system/dev/ethernet/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/gpio/.DS_Store and kernel/zircon/system/dev/gpio/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/i2c/.DS_Store and kernel/zircon/system/dev/i2c/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/input/.DS_Store and kernel/zircon/system/dev/input/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/lib/.DS_Store and kernel/zircon/system/dev/lib/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/misc/.DS_Store and kernel/zircon/system/dev/misc/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/nand/.DS_Store and kernel/zircon/system/dev/nand/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/pci/.DS_Store and kernel/zircon/system/dev/pci/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/rtc/.DS_Store and kernel/zircon/system/dev/rtc/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/serial/.DS_Store and kernel/zircon/system/dev/serial/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/serial/intel-serialio/.DS_Store and kernel/zircon/system/dev/serial/intel-serialio/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/thermal/.DS_Store and kernel/zircon/system/dev/thermal/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/usb/.DS_Store and kernel/zircon/system/dev/usb/.DS_Store differ
+Binary files /tmp/zircon_clean/system/dev/usb/usb-test/.DS_Store and kernel/zircon/system/dev/usb/usb-test/.DS_Store differ
+Binary files /tmp/zircon_clean/system/fidl/.DS_Store and kernel/zircon/system/fidl/.DS_Store differ
+Binary files /tmp/zircon_clean/system/host/.DS_Store and kernel/zircon/system/host/.DS_Store differ
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/system/host/abigen/kernel_wrapper_generator.cpp kernel/zircon/system/host/abigen/kernel_wrapper_generator.cpp
+--- /tmp/zircon_clean/system/host/abigen/kernel_wrapper_generator.cpp	2026-10-19 00:53:31
++++ kernel/zircon/system/host/abigen/kernel_wrapper_generator.cpp	2026-10-18 23:59:50
+@@ -5,6 +5,7 @@
+ #import "generator.h"
+ 
+ #import <algorithm>
++#import <cassert>
+ #import <iterator>
+ 
+ using std::ofstream;
+Binary files /tmp/zircon_clean/system/host/fidl/.DS_Store and kernel/zircon/system/host/fidl/.DS_Store differ
+Binary files /tmp/zircon_clean/system/host/fvm/.DS_Store and kernel/zircon/system/host/fvm/.DS_Store differ
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/system/host/rules.mk kernel/zircon/system/host/rules.mk
+--- /tmp/zircon_clean/system/host/rules.mk	2026-10-19 00:53:31
++++ kernel/zircon/system/host/rules.mk	2026-10-19 00:28:57
+@@ -6,21 +6,7 @@
+ 
+ HOSTAPPS := \
+     $(LOCAL_DIR)/abigen/rules.mk \
+-    $(LOCAL_DIR)/blobfs/rules.mk \
+-    $(LOCAL_DIR)/bootserver/rules.mk \
+-    $(LOCAL_DIR)/fidl/compiler/rules.mk \
+-    $(LOCAL_DIR)/fidl/formatter/rules.mk \
+-    $(LOCAL_DIR)/fvm/rules.mk \
+-    $(LOCAL_DIR)/h2md/rules.mk \
+-    $(LOCAL_DIR)/kernel-buildsig/rules.mk \
+-    $(LOCAL_DIR)/loglistener/rules.mk \
+-    $(LOCAL_DIR)/merkleroot/rules.mk \
+-    $(LOCAL_DIR)/minfs/rules.mk \
+-    $(LOCAL_DIR)/mkfs-msdosfs/rules.mk \
+-    $(LOCAL_DIR)/mkkdtb/rules.mk \
+-    $(LOCAL_DIR)/netprotocol/rules.mk \
+-    $(LOCAL_DIR)/runtests/rules.mk \
+-    $(LOCAL_DIR)/xdc-server/rules.mk \
+     $(LOCAL_DIR)/zbi/rules.mk \
++
+ 
+ include $(HOSTAPPS)
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/system/host/zbi/zbi.cpp kernel/zircon/system/host/zbi/zbi.cpp
+--- /tmp/zircon_clean/system/host/zbi/zbi.cpp	2026-10-19 00:53:31
++++ kernel/zircon/system/host/zbi/zbi.cpp	2026-10-18 23:57:42
+@@ -388,7 +388,7 @@
+                      buffer.iov_len);
+     }
+ 
+-    void Write(const std::list<const iovec>& list) {
++    void Write(const std::list<iovec>& list) {
+         for (const auto& buffer : list) {
+             Write(buffer);
+         }
+@@ -546,7 +546,7 @@
+ 
+ constexpr const LZ4F_decompressOptions_t kDecompressOpt{};
+ 
+-std::unique_ptr<std::byte[]> Decompress(const std::list<const iovec>& payload,
++std::unique_ptr<std::byte[]> Decompress(const std::list<iovec>& payload,
+                                         uint32_t decompressed_length) {
+     auto buffer = std::make_unique<std::byte[]>(decompressed_length);
+ 
+@@ -1387,7 +1387,7 @@
+ 
+ private:
+     zbi_header_t header_;
+-    std::list<const iovec> payload_;
++    std::list<iovec> payload_;
+     // The payload_ items might point into these buffers.  They're just
+     // stored here to own the buffers until the payload is exhausted.
+     std::forward_list<FileContents> files_;
+Binary files /tmp/zircon_clean/system/private/.DS_Store and kernel/zircon/system/private/.DS_Store differ
+Binary files /tmp/zircon_clean/system/private/efi/.DS_Store and kernel/zircon/system/private/efi/.DS_Store differ
+Binary files /tmp/zircon_clean/system/private/zircon/.DS_Store and kernel/zircon/system/private/zircon/.DS_Store differ
+Binary files /tmp/zircon_clean/system/public/.DS_Store and kernel/zircon/system/public/.DS_Store differ
+Binary files /tmp/zircon_clean/system/public/zircon/.DS_Store and kernel/zircon/system/public/zircon/.DS_Store differ
+Binary files /tmp/zircon_clean/system/uapp/.DS_Store and kernel/zircon/system/uapp/.DS_Store differ
+Binary files /tmp/zircon_clean/system/ulib/.DS_Store and kernel/zircon/system/ulib/.DS_Store differ
+Binary files /tmp/zircon_clean/system/ulib/ddk/.DS_Store and kernel/zircon/system/ulib/ddk/.DS_Store differ
+Binary files /tmp/zircon_clean/system/ulib/ddk/include/.DS_Store and kernel/zircon/system/ulib/ddk/include/.DS_Store differ
+Binary files /tmp/zircon_clean/system/ulib/ddktl/.DS_Store and kernel/zircon/system/ulib/ddktl/.DS_Store differ
+Binary files /tmp/zircon_clean/system/ulib/intel-hda/.DS_Store and kernel/zircon/system/ulib/intel-hda/.DS_Store differ
+diff -uNr --exclude=.git --exclude=build-* --exclude=gen /tmp/zircon_clean/system/ulib/runtime/rules.mk kernel/zircon/system/ulib/runtime/rules.mk
+--- /tmp/zircon_clean/system/ulib/runtime/rules.mk	2026-10-19 00:53:31
++++ kernel/zircon/system/ulib/runtime/rules.mk	2026-10-19 00:38:27
+@@ -19,9 +19,6 @@
+ MODULE_LIBS += \
+     system/ulib/zircon
+ 
+-# for stdint.h
+-MODULE_HEADER_DEPS += \
+-    system/ulib/c
+ 
+ # This code is used in early startup, where safe-stack setup is not ready yet.
+ MODULE_COMPILEFLAGS += $(NO_SAFESTACK) $(NO_SANITIZERS)
+Binary files /tmp/zircon_clean/system/utest/.DS_Store and kernel/zircon/system/utest/.DS_Store differ
+Binary files /tmp/zircon_clean/system/utest/core/.DS_Store and kernel/zircon/system/utest/core/.DS_Store differ
