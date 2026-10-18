@@ -1,0 +1,20 @@
+# Meson cross-compilation file for irisOS x86_64
+[binaries]
+c = '/opt/homebrew/opt/llvm/bin/clang'
+cpp = '/opt/homebrew/opt/llvm/bin/clang++'
+ar = '/opt/homebrew/opt/llvm/bin/llvm-ar'
+strip = '/opt/homebrew/opt/llvm/bin/llvm-strip'
+ld = '/opt/homebrew/bin/ld.lld'
+llvm-config = '/opt/homebrew/opt/llvm/bin/llvm-config'
+
+[built-in options]
+c_args = ['--target=x86_64-unknown-elf', '-ffreestanding']
+c_link_args = ['--target=x86_64-unknown-elf', '-fuse-ld=lld']
+cpp_args = ['--target=x86_64-unknown-elf', '-ffreestanding']
+cpp_link_args = ['--target=x86_64-unknown-elf', '-fuse-ld=lld']
+
+[host_machine]
+system = 'iris'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'

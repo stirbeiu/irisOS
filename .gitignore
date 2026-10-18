@@ -1,0 +1,15 @@
+# Build artifacts
+out/
+build/out/
+
+# macOS system files
+.DS_Store
+._*
+
+# Temporary editor / tooling files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+compile_commands.json
