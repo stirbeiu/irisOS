@@ -108,6 +108,20 @@ zx_handle_t iris_vmar_root_self(void);
  */
 zx_handle_t iris_job_default(void);
 
+/**
+ * @brief Store the Root Resource handle for the current driver/server process.
+ *
+ * @param rsrc Root Resource capability handle (`PA_RESOURCE`).
+ */
+void iris_set_root_resource(zx_handle_t rsrc);
+
+/**
+ * @brief Retrieve handle to the root resource if passed to the current process.
+ *
+ * @return Root Resource handle, or ZX_HANDLE_INVALID if not available.
+ */
+zx_handle_t iris_root_resource(void);
+
 #ifdef __cplusplus
 }
 #endif

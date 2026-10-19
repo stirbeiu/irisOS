@@ -30,6 +30,7 @@ extern "C" void iris_init_startup_handles(size_t nhandles, const zx_handle_t han
 extern "C" void iris_set_debuglog(zx_handle_t handle);
 extern "C" void iris_set_vdso_vmo(zx_handle_t handle);
 extern "C" void iris_set_bootfs_vmo(zx_handle_t handle);
+extern "C" void iris_set_root_resource(zx_handle_t handle);
 extern "C" void iris_set_process_handles(zx_handle_t proc, zx_handle_t thrd, zx_handle_t vmar, zx_handle_t job);
 
 extern "C" [[gnu::weak]] void __dlapi_enter(uintptr_t *);
@@ -172,6 +173,8 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         iris_set_vdso_vmo(h);
                     } else if (info == PA_HND(PA_VMO_BOOTFS, 0)) {
                         iris_set_bootfs_vmo(h);
+                    } else if (info == PA_HND(PA_RESOURCE, 0)) {
+                        iris_set_root_resource(h);
                     }
                 }
                 iris_set_process_handles(proc_self, thrd_self, vmar_root, job_def);

@@ -181,6 +181,35 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_PTY_OP_DRAIN        0x0044u /**< Flush and drain pending terminal buffers */
 #define IRIS_PTY_OP_SIGNAL       0x0045u /**< Send POSIX signal (SIGINT, SIGWINCH, etc.) */
 
+/**
+ * @brief Hardware Driver / Block Storage Protocol Opcodes (IRIS_PROTO_DRIVER)
+ */
+#define IRIS_BLK_OP_GET_INFO     0x0050u /**< Query block device capacity and sector geometry */
+#define IRIS_BLK_OP_READ         0x0051u /**< Read sector range from block device into memory */
+#define IRIS_BLK_OP_WRITE        0x0052u /**< Write sector range from memory to block device */
+#define IRIS_BLK_OP_FLUSH        0x0053u /**< Flush dirty cache buffers to non-volatile storage */
+
+#pragma pack(push, 4)
+/**
+ * @brief Block device geometry info returned by IRIS_BLK_OP_GET_INFO reply.
+ */
+typedef struct iris_blk_info {
+    uint64_t sector_count; /**< Total 512-byte sectors on disk */
+    uint32_t sector_size;  /**< Sector size in bytes (normally 512) */
+    uint32_t max_transfer; /**< Maximum transfer sectors per request */
+} iris_blk_info_t;
+
+/**
+ * @brief Block read/write request payload.
+ */
+typedef struct iris_blk_rw_req {
+    uint64_t start_sector; /**< Starting 512-byte sector number */
+    uint32_t num_sectors;  /**< Number of sectors to read or write */
+    uint32_t flags;        /**< Reserved or operation flags */
+    /* For WRITE: data bytes (num_sectors * sector_size) immediately follow this struct */
+} iris_blk_rw_req_t;
+#pragma pack(pop)
+
 /* ==============================================================================
  * Status Codes & Aliases (status)
  * ============================================================================== */

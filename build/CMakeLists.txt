@@ -148,12 +148,15 @@ add_custom_target(zircon_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libzircon.s
 # ==============================================================================
 set(IRIS_INIT_SRCS
     "${IRIS_ROOT}/servers/iris_init/src/main.c"
+    "${IRIS_ROOT}/servers/drivers/pci/pci.c"
 )
 
 add_executable(iris_init ${IRIS_INIT_SRCS})
 add_dependencies(iris_init zircon_syscall_headers)
 
 target_include_directories(iris_init PRIVATE
+    "${IRIS_ROOT}"
+    "${IRIS_ROOT}/sdk/libiris/include"
     "${GEN_DIR}"
     "${GEN_DIR}/zircon"
     "${ZIRCON_ROOT}/system/public"
@@ -195,6 +198,7 @@ set(LIBIRIS_SRCS
     "${IRIS_ROOT}/sdk/libiris/src/vmo.c"
     "${IRIS_ROOT}/sdk/libiris/src/spawn.c"
     "${IRIS_ROOT}/sdk/libiris/src/init.c"
+    "${IRIS_ROOT}/sdk/libiris/src/pci.c"
 )
 
 # 1. Static library (libiris.a)
@@ -203,6 +207,7 @@ add_dependencies(iris_static zircon_syscall_headers)
 
 target_include_directories(iris_static PUBLIC
     "${IRIS_ROOT}/sdk/libiris/include"
+    "${IRIS_ROOT}"
     "${GEN_DIR}"
     "${GEN_DIR}/zircon"
     "${ZIRCON_ROOT}/system/public"

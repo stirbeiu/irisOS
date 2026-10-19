@@ -17,11 +17,20 @@
 static zx_handle_t g_iris_proc_self = ZX_HANDLE_INVALID;
 static zx_handle_t g_iris_vmar_self = ZX_HANDLE_INVALID;
 static zx_handle_t g_iris_job_self  = ZX_HANDLE_INVALID;
+static zx_handle_t g_iris_root_resource = ZX_HANDLE_INVALID;
 
 void iris_init_runtime(zx_handle_t proc, zx_handle_t vmar, zx_handle_t job) {
     g_iris_proc_self = proc;
     g_iris_vmar_self = vmar;
     g_iris_job_self  = job;
+}
+
+void iris_set_root_resource(zx_handle_t rsrc) {
+    g_iris_root_resource = rsrc;
+}
+
+zx_handle_t iris_root_resource(void) {
+    return g_iris_root_resource;
 }
 
 zx_handle_t iris_process_self(void) {

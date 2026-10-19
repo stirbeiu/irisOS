@@ -413,6 +413,14 @@ static zx_time_t   (*pfn_zx_clock_get_monotonic)(void) = nullptr;
 static zx_status_t (*pfn_zx_futex_wait)(const zx_futex_t* value_ptr, int current_value, zx_time_t deadline) = nullptr;
 static zx_status_t (*pfn_zx_futex_wake)(const zx_futex_t* value_ptr, uint32_t count) = nullptr;
 
+static zx_status_t (*pfn_zx_vmo_create_physical)(zx_handle_t rsrc, zx_paddr_t paddr, size_t size, zx_handle_t* out) = nullptr;
+static zx_status_t (*pfn_zx_vmo_create_contiguous)(zx_handle_t bti, size_t size, uint32_t alignment_log2, zx_handle_t* out) = nullptr;
+static zx_status_t (*pfn_zx_iommu_create)(zx_handle_t rsrc, uint32_t type, const void* desc, size_t desc_len, zx_handle_t* out) = nullptr;
+static zx_status_t (*pfn_zx_bti_create)(zx_handle_t iommu, uint32_t options, uint64_t bti_id, zx_handle_t* out) = nullptr;
+static zx_status_t (*pfn_zx_bti_pin)(zx_handle_t bti, uint32_t options, zx_handle_t vmo, uint64_t offset, uint64_t size, zx_paddr_t* addrs, size_t addrs_count, zx_handle_t* pmt) = nullptr;
+static zx_status_t (*pfn_zx_pmt_unpin)(zx_handle_t pmt) = nullptr;
+static zx_status_t (*pfn_zx_object_wait_one)(zx_handle_t handle, zx_signals_t signals, zx_time_t deadline, zx_signals_t* observed) = nullptr;
+
 static void* vdso_find(uintptr_t base, const char* name, const char* name_with_underscore) {
     void* ptr = vdso_sym_lookup(base, name_with_underscore);
     if (!ptr) {
@@ -451,6 +459,13 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_clock_get_monotonic= (decltype(pfn_zx_clock_get_monotonic))vdso_find(base, "zx_clock_get_monotonic", "_zx_clock_get_monotonic");
     pfn_zx_futex_wait         = (decltype(pfn_zx_futex_wait))vdso_find(base, "zx_futex_wait", "_zx_futex_wait");
     pfn_zx_futex_wake         = (decltype(pfn_zx_futex_wake))vdso_find(base, "zx_futex_wake", "_zx_futex_wake");
+    pfn_zx_vmo_create_physical   = (decltype(pfn_zx_vmo_create_physical))vdso_find(base, "zx_vmo_create_physical", "_zx_vmo_create_physical");
+    pfn_zx_vmo_create_contiguous = (decltype(pfn_zx_vmo_create_contiguous))vdso_find(base, "zx_vmo_create_contiguous", "_zx_vmo_create_contiguous");
+    pfn_zx_iommu_create          = (decltype(pfn_zx_iommu_create))vdso_find(base, "zx_iommu_create", "_zx_iommu_create");
+    pfn_zx_bti_create            = (decltype(pfn_zx_bti_create))vdso_find(base, "zx_bti_create", "_zx_bti_create");
+    pfn_zx_bti_pin               = (decltype(pfn_zx_bti_pin))vdso_find(base, "zx_bti_pin", "_zx_bti_pin");
+    pfn_zx_pmt_unpin             = (decltype(pfn_zx_pmt_unpin))vdso_find(base, "zx_pmt_unpin", "_zx_pmt_unpin");
+    pfn_zx_object_wait_one       = (decltype(pfn_zx_object_wait_one))vdso_find(base, "zx_object_wait_one", "_zx_object_wait_one");
 }
 
 /* Exported ABI wrappers dispatching into kernel-registered vDSO */
@@ -667,6 +682,43 @@ extern "C" zx_status_t zx_futex_wake(const zx_futex_t* value_ptr, uint32_t count
     }
     return ZX_ERR_NOT_SUPPORTED;
 }
+
+extern "C" zx_status_t zx_vmo_create_physical(zx_handle_t rsrc, zx_paddr_t paddr, size_t size, zx_handle_t* out) {
+    if (pfn_zx_vmo_create_physical) return pfn_zx_vmo_create_physical(rsrc, paddr, size, out);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_vmo_create_contiguous(zx_handle_t bti, size_t size, uint32_t alignment_log2, zx_handle_t* out) {
+    if (pfn_zx_vmo_create_contiguous) return pfn_zx_vmo_create_contiguous(bti, size, alignment_log2, out);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_iommu_create(zx_handle_t rsrc, uint32_t type, const void* desc, size_t desc_len, zx_handle_t* out) {
+    if (pfn_zx_iommu_create) return pfn_zx_iommu_create(rsrc, type, desc, desc_len, out);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_bti_create(zx_handle_t iommu, uint32_t options, uint64_t bti_id, zx_handle_t* out) {
+    if (pfn_zx_bti_create) return pfn_zx_bti_create(iommu, options, bti_id, out);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_bti_pin(zx_handle_t bti, uint32_t options, zx_handle_t vmo, uint64_t offset, uint64_t size, zx_paddr_t* addrs, size_t addrs_count, zx_handle_t* pmt) {
+    if (pfn_zx_bti_pin) return pfn_zx_bti_pin(bti, options, vmo, offset, size, addrs, addrs_count, pmt);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_pmt_unpin(zx_handle_t pmt) {
+    if (pfn_zx_pmt_unpin) return pfn_zx_pmt_unpin(pmt);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_object_wait_one(zx_handle_t handle, zx_signals_t signals, zx_time_t deadline, zx_signals_t* observed) {
+    if (pfn_zx_object_wait_one) return pfn_zx_object_wait_one(handle, signals, deadline, observed);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+
 
 /* ==============================================================================
  * mlibc Sysdeps Implementation

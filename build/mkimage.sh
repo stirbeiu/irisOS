@@ -50,7 +50,7 @@ if [[ ! -x "${HOST_TOOLS}/zbi" ]]; then
     make -C "${ROOT_DIR}/build" zbi
 fi
 
-# 2. Ensure iris_init and hello_c binaries exist
+# 2. Ensure iris_init, hello_c, and virtio_blk binaries exist
 if [[ ! -f "${BUILD_DIR}/bin/iris_init" ]]; then
     echo "==> Building iris_init for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
@@ -58,6 +58,10 @@ fi
 if [[ ! -f "${BUILD_DIR}/bin/hello_c" ]]; then
     echo "==> Building hello_c for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "hello-c-${ARCH_NAME}"
+fi
+if [[ ! -f "${BUILD_DIR}/bin/virtio_blk" ]]; then
+    echo "==> Building virtio_blk for ${ARCH_NAME}..."
+    make -C "${ROOT_DIR}/build" "virtio-blk-${ARCH_NAME}"
 fi
 
 # 3. Ensure Zircon kernel ZBI exists
@@ -98,7 +102,8 @@ fi
     ${EXTRA_ZBI_INPUTS[@]+"${EXTRA_ZBI_INPUTS[@]}"} \
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
-            -e "bin/hello_c=${BUILD_DIR}/bin/hello_c"
+            -e "bin/hello_c=${BUILD_DIR}/bin/hello_c" \
+            -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk"
 
 # 6. Construct FAT32 UEFI ESP disk image
 IMAGES_DIR="${OUT_DIR}/images"
@@ -117,4 +122,11 @@ dd if=/dev/zero of="${ESP_IMG}" bs=1M count=64 status=none
 # Symlink esp.img to current architecture
 ln -sf "esp_${ARCH_NAME}.img" "${IMAGES_DIR}/esp.img"
 
-echo "==> [mkimage] Success! Created ${ESP_IMG}"
+# 7. Construct 64MB raw virtual disk image for virtio-blk-pci testing
+DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
+if [[ ! -f "${DISK_RAW}" ]]; then
+    echo "==> Creating 64MB raw virtual disk image (${DISK_RAW})..."
+    dd if=/dev/zero of="${DISK_RAW}" bs=1M count=64 status=none
+fi
+
+echo "==> [mkimage] Success! Created ${ESP_IMG} and ${DISK_RAW}"

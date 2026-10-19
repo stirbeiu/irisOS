@@ -65,6 +65,13 @@ if [[ ! -f "${ESP_IMAGE}" ]]; then
     "${ROOT_DIR}/build/mkimage.sh" "${ARCH_NAME}"
 fi
 
+# Ensure secondary virtual raw disk exists
+DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
+if [[ ! -f "${DISK_RAW}" ]]; then
+    echo "==> Virtual raw disk not found. Creating 64MB disk image (${DISK_RAW})..."
+    dd if=/dev/zero of="${DISK_RAW}" bs=1M count=64 status=none
+fi
+
 # Ensure UEFI firmware exists
 if [[ ! -f "${UEFI_CODE}" ]]; then
     echo "Error: UEFI firmware file not found at ${UEFI_CODE}."
@@ -84,6 +91,7 @@ echo "======================================================================"
 echo " Launching irisOS (${ARCH_NAME}) in QEMU with UEFI..."
 echo " Bootloader: Gigaboot (UEFI)"
 echo " Image:      ${ESP_IMAGE}"
+echo " Disk:       ${DISK_RAW}"
 echo " Firmware:   ${UEFI_CODE}"
 echo " Display:    ${DISPLAY_MODE}"
 echo " (Press Ctrl+A then X in terminal to terminate QEMU, or close the GUI window)"
@@ -96,6 +104,8 @@ if [[ "${ARCH_NAME}" == "x86_64" ]]; then
         -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive file="${ESP_IMAGE}",format=raw,if=virtio \
+        -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
+        -device virtio-blk-pci,drive=hd0 \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"
 else
@@ -116,6 +126,8 @@ else
         -drive if=pflash,format=raw,file="${UEFI_VARS_TMP}" \
         -device virtio-blk-pci,drive=bootdisk \
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
+        -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
+        -device virtio-blk-pci,drive=hd0 \
         ${ARM_EXTRA_ARGS[@]+"${ARM_EXTRA_ARGS[@]}"} \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"

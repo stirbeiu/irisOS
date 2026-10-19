@@ -13,7 +13,7 @@ HOST_CXX := $(LLVM_PREFIX)/bin/clang++
 
 ZIRCON_DIR := $(ROOT_DIR)/kernel/zircon
 
-.PHONY: all tools zbi abigen build-x86_64 build-arm64 clean fetch-compiler-rt fetch-mlibc builtins-x86_64 builtins-arm64 mlibc-x86_64 mlibc-arm64 mlibc
+.PHONY: all tools zbi abigen build-x86_64 build-arm64 clean fetch-compiler-rt fetch-mlibc builtins-x86_64 builtins-arm64 mlibc-x86_64 mlibc-arm64 mlibc virtio-blk virtio-blk-x86_64 virtio-blk-arm64
 
 all: tools
 
@@ -263,12 +263,79 @@ hello-c-arm64: mlibc-arm64
 hello-c: hello-c-x86_64 hello-c-arm64
 
 # ------------------------------------------------------------------------------
+# Ring 3 VirtIO Block Driver Daemon (bin/virtio_blk)
+# ------------------------------------------------------------------------------
+virtio-blk-x86_64: mlibc-x86_64
+	@echo "==> Compiling virtio_blk (x86_64)..."
+	@mkdir -p $(OUT_DIR)/build-x86_64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-x86_64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-x86_64/gen \
+		-isystem $(OUT_DIR)/build-x86_64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-c $(ROOT_DIR)/servers/drivers/virtio_blk/src/main.c -o $(OUT_DIR)/build-x86_64/virtio_blk.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-x86_64/virtio_blk.o \
+		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
+		$(OUT_DIR)/build-x86_64/lib/libiris.a \
+		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-x86_64/bin/virtio_blk
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/virtio_blk"
+
+virtio-blk-arm64: mlibc-arm64
+	@echo "==> Compiling virtio_blk (arm64)..."
+	@mkdir -p $(OUT_DIR)/build-arm64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-arm64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-arm64/gen \
+		-isystem $(OUT_DIR)/build-arm64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-c $(ROOT_DIR)/servers/drivers/virtio_blk/src/main.c -o $(OUT_DIR)/build-arm64/virtio_blk.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-arm64/virtio_blk.o \
+		$(OUT_DIR)/build-arm64/mlibc/libc.a \
+		$(OUT_DIR)/build-arm64/lib/libiris.a \
+		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-arm64/bin/virtio_blk
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/virtio_blk"
+
+virtio-blk: virtio-blk-x86_64 virtio-blk-arm64
+
+# ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64 hello-c-x86_64
+image-x86_64: build-x86_64 hello-c-x86_64 virtio-blk-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-arm64: build-arm64 hello-c-arm64
+image-arm64: build-arm64 hello-c-arm64 virtio-blk-arm64
 	@$(BUILD_DIR)/mkimage.sh arm64
 
 run-x86: image-x86_64

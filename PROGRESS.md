@@ -463,10 +463,131 @@ welcome to Zircon
 
 ---
 
-## Phase 3 Official Milestone Assessment
-**Phase 3 Milestone:** *"A standard C program using `#include <stdio.h>`, `malloc()`, and `printf()` compiles with Clang and runs on irisOS."*
-- **Status:** **100% COMPLETE & VERIFIED** on both `x86_64` and `aarch64`.
-- **Immediate Next Step:** Begin Phase 4: Step 4.1 — ECAM PCIe Bus Scanning & VirtIO Device Discovery.
+## Phase 4: Storage, Encryption & Filesystems (Active)
 
+### Step 4.1: Unified PCIe (ECAM) Discovery & Ring 3 VirtIO Block Driver (`virtio-blk-pci`)
+- **Status:** COMPLETED & VERIFIED (100% Dual-Architecture)
+- **PCIe (ECAM) Configuration Space Scanner (`sdk/libiris/include/iris/pci.h`, `servers/drivers/pci/pci.c`, `sdk/libiris/src/pci.c`):**
+  - Unified PCIe bus scanner compatible across `x86_64` (QEMU `-M q35`, physical ECAM at `0xE0000000ULL`) and `arm64` (QEMU `-M virt`, physical ECAM at `0x4010000000ULL`).
+  - Maps physical ECAM MMIO window into process address space using Root Resource capability via `zx_vmo_create_physical()` and `zx_vmar_map()`.
+  - Scans buses 0..15, detects devices, parses 32-bit and 64-bit BARs, and extracts VirtIO 1.0+ PCI vendor-specific capabilities:
+    - Common configuration (`VIRTIO_PCI_CAP_COMMON_CFG`, `virtio_pci_common_cfg_t`)
+    - Notification / Doorbell registers (`VIRTIO_PCI_CAP_NOTIFY_CFG`)
+    - ISR status registers (`VIRTIO_PCI_CAP_ISR_CFG`)
+    - Device-specific configuration (`VIRTIO_PCI_CAP_DEVICE_CFG`)
+  - Enables PCI memory space decoding and bus master DMA (`pci_enable_device()`).
+- **Standalone Ring 3 VirtIO Block Driver Daemon (`servers/drivers/virtio_blk/src/main.c` -> `bin/virtio_blk`):**
+  - Unprivileged user-space server running in Ring 3 (x86_64) / EL0 (arm64).
+  - Receives driver control channel and Root Resource handle via process startup arguments.
+  - Negotiates VirtIO 1.0 specification features (`VIRTIO_F_VERSION_1`).
+  - Safe user-space DMA buffer management via Zircon BTI:
+    - Creates dummy IOMMU via `zx_iommu_create(root_resource, ZX_IOMMU_TYPE_DUMMY, ...)`
+    - Creates BTI handle via `zx_bti_create(iommu, 0, 0, &bti)`
+    - Allocates physically contiguous VMOs via `zx_vmo_create_contiguous(bti, ...)`
+    - Pins DMA buffers and retrieves physical addresses via `zx_bti_pin(bti, ZX_BTI_PERM_READ | ZX_BTI_PERM_WRITE | ZX_BTI_CONTIGUOUS, ...)`
+  - Implements split Virtqueue 0 (descriptors, available ring, used ring) and synchronous submission with completion timeout polling.
+  - Implements the 24-byte `iris_msg_hdr_t` wire protocol (`IRIS_PROTO_DRIVER`):
+    - `IRIS_BLK_OP_GET_INFO` (`0x0050`): Returns total sector count (e.g. 131,072 sectors for 64 MB disk) and 512-byte sector size.
+    - `IRIS_BLK_OP_READ` (`0x0051`): Reads $N$ sectors into response message payload.
+    - `IRIS_BLK_OP_WRITE` (`0x0052`): Writes $N$ sectors to disk from request payload.
+    - `IRIS_BLK_OP_FLUSH` (`0x0053`): Flushes disk write cache.
+- **QEMU Storage Test Harness & End-to-End Verification (`iris_init`):**
+  - Updated `build/mkimage.sh` to generate 64 MB test drive (`out/images/disk_<arch>.raw`) and pack `bin/virtio_blk` into bootable ZBI.
+  - Updated `scripts/run_qemu.sh` to attach the virtual drive via `-drive file=out/images/disk_<arch>.raw,if=none,id=hd0,format=raw -device virtio-blk-pci,drive=hd0`.
+  - In `iris_init`: discovers VirtIO block controller, spawns `bin/virtio_blk`, issues `BLK_GET_INFO`, writes 512-byte verification pattern to Sector 100, reads it back over IPC, and verifies 512/512 bytes match.
+- **Documentation:**
+  - Authored [`docs/virtio_drivers.md`](file:///Users/stefan/Dev/irisos/docs/virtio_drivers.md) detailing unified PCIe ECAM architecture, VirtIO 1.0 compliance, BTI DMA lifecycle, and block IPC protocol.
+- **Dual-Architecture QEMU Verification Proofs:**
+  - **x86_64 QEMU Console Output (`make run-x86`):**
+    ```text
+    [00006.576] 01051.01054> [irisOS] Welcome to irisOS (x86_64) - iris_init bootstrap successful!
+    [00006.576] 01051.01054> [iris_init] Root Resource: OK
+    [00006.576] 01051.01054> [iris_init] BOOTFS VMO: OK
+    [00006.576] 01051.01054> [iris_init] Root Job: OK
+    [00006.633] 01051.01054> [iris_init] vDSO VMO: OK
+    [00006.633] 01051.01054> [iris_init] Root VMAR: OK
+    [00006.666] 01051.01054> [iris_init] Located bin/hello_c in BOOTFS! Spawning process...
+    [00006.720] 01051.01054> [iris_init] Starting child process: hello_c...
+    [00006.778] 01064.01066> [hello_c] Hello from standard C on irisOS! malloc/free/printf working.
+    [00006.795] 01064.01066> [hello_c] FD Table: direct write(1) to stdout successful.
+    [00006.816] 01064.01066> [hello_c] FD Table: isatty(1)=1 isatty(2)=1 (console tty verified).
+    [00006.832] 01064.01066> [hello_c] FD Table: open("/dev/console") allocated fd 3, write OK.
+    [00006.848] 01064.01066> [hello_c] FD Table: close(fd 3) successful.
+    [00006.864] 01064.01066> [hello_c] FD Table: invalid fd rejection (EBADF) verified.
+    [00006.881] 01064.01066> [hello_c] POSIX Spawn: file actions init/adddup2/destroy working.
+    [00006.881] 01064.01066> [hello_c] All Phase 3 C runtime, FD table, and spawn verifications PASSED!
+    [00006.911] 01051.01054> [iris_init] hello_c process execution finished.
+    [00006.925] 01051.01054> ========================================================
+    [00006.925] 01051.01054> [iris_init] Phase 4 Step 4.1: Unified PCIe Discovery & Block Driver
+    [00006.925] 01051.01054> ========================================================
+    [00006.985] 01051.01054> [iris_init] Mapping ECAM at phys 0x00000000e0000000...
+    [00007.045] 01051.01054> [iris_init] Discovered VirtIO Block Device at PCI 0x00:0x03 (Vendor: 0x1af4, Device: 0x1001)
+    [00007.099] 01051.01054> [iris_init] Spawning bin/virtio_blk driver daemon...
+    [00007.099] 01051.01054> [iris_init] Located bin/virtio_blk in BOOTFS! Spawning process...
+    [00007.243] 01051.01054> [iris_init] Starting child process: virtio_blk...
+    [00007.259] 01083.01085> [virtio_blk] irisOS VirtIO Block Driver Daemon starting...
+    [00007.259] 01083.01085> [virtio_blk] Mapping PCIe ECAM configuration space...
+    [00007.266] 01083.01085> [virtio_blk] Scanning PCIe buses for VirtIO block device...
+    [00007.268] 01083.01085> [virtio_blk] Discovered VirtIO Block device at PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001)
+    [00007.270] 01083.01085> [virtio_blk] Mapped BAR 4 (phys: 0xc000000000) to vaddr: 0x178a1539b000
+    [00007.271] 01083.01085> [virtio_blk] Configuring Virtqueue 0 (size: 256 descriptors)...
+    [00007.281] 01083.01085> [virtio_blk] VirtIO block device active! Capacity: 131072 sectors (64 MB)
+    [00007.281] 01083.01085> [virtio_blk] Entering IPC server loop on channel...
+    [00007.414] 01051.01054> [iris_init] Sending BLK_GET_INFO query over IPC channel...
+    [00007.429] 01051.01054> [iris_init] VirtIO Block query successful! Capacity: 0x0000000000020000 sectors, Sector Size: 0x0000000000000200 bytes
+    [00007.475] 01051.01054> [iris_init] Preparing 512-byte verification pattern for Sector 100...
+    [00007.517] 01051.01054> [iris_init] Writing Sector 100 via IPC request...
+    [00007.534] 01051.01054> [iris_init] Sector 100 write confirmed OK. Reading back over IPC...
+    [00007.551] 01051.01054> [iris_init] Sector 100 read/write data verification: MATCHED! (512/512 bytes OK)
+    [00007.551] 01051.01054> [iris_init] VirtIO Block read/write test on Sector 100: PASSED!
+    [00007.581] 01051.01054> [iris_init] Phase 4 Step 4.1 verification COMPLETE!
+    ```
+  - **arm64 QEMU Console Output (`make run-arm`):**
+    ```text
+    [00008.822] 01044.01047> [irisOS] Welcome to irisOS (arm64) - iris_init bootstrap successful!
+    [00008.822] 01044.01047> [iris_init] Root Resource: OK
+    [00008.822] 01044.01047> [iris_init] BOOTFS VMO: OK
+    [00008.822] 01044.01047> [iris_init] Root Job: OK
+    [00008.822] 01044.01047> [iris_init] vDSO VMO: OK
+    [00008.822] 01044.01047> [iris_init] Root VMAR: OK
+    [00008.823] 01044.01047> [iris_init] Located bin/hello_c in BOOTFS! Spawning process...
+    [00008.825] 01044.01047> [iris_init] Starting child process: hello_c...
+    [00008.837] 01057.01059> [hello_c] Hello from standard C on irisOS! malloc/free/printf working.
+    [00008.837] 01057.01059> [hello_c] FD Table: direct write(1) to stdout successful.
+    [00008.839] 01057.01059> [hello_c] FD Table: isatty(1)=1 isatty(2)=1 (console tty verified).
+    [00008.841] 01057.01059> [hello_c] FD Table: open("/dev/console") allocated fd 3, write OK.
+    [00008.841] 01057.01059> [hello_c] FD Table: close(fd 3) successful.
+    [00008.842] 01057.01059> [hello_c] FD Table: invalid fd rejection (EBADF) verified.
+    [00008.842] 01057.01059> [hello_c] POSIX Spawn: file actions init/adddup2/destroy working.
+    [00008.842] 01057.01059> [hello_c] All Phase 3 C runtime, FD table, and spawn verifications PASSED!
+    [00008.846] 01044.01047> [iris_init] hello_c process execution finished.
+    [00008.846] 01044.01047> ========================================================
+    [00008.846] 01044.01047> [iris_init] Phase 4 Step 4.1: Unified PCIe Discovery & Block Driver
+    [00008.846] 01044.01047> ========================================================
+    [00008.846] 01044.01047> [iris_init] Mapping ECAM at phys 0x0000004010000000...
+    [00008.848] 01044.01047> [iris_init] Discovered VirtIO Block Device at PCI 0x00:0x02 (Vendor: 0x1af4, Device: 0x1001)
+    [00008.849] 01044.01047> [iris_init] Spawning bin/virtio_blk driver daemon...
+    [00008.849] 01044.01047> [iris_init] Located bin/virtio_blk in BOOTFS! Spawning process...
+    [00008.862] 01044.01047> [iris_init] Starting child process: virtio_blk...
+    [00008.871] 01076.01078> [virtio_blk] irisOS VirtIO Block Driver Daemon starting...
+    [00008.871] 01076.01078> [virtio_blk] Mapping PCIe ECAM configuration space...
+    [00008.872] 01076.01078> [virtio_blk] Scanning PCIe buses for VirtIO block device...
+    [00008.875] 01076.01078> [virtio_blk] Discovered VirtIO Block device at PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001)
+    [00008.876] 01076.01078> [virtio_blk] Mapped BAR 4 (phys: 0x8000004000) to vaddr: 0x51eafeb4b000
+    [00008.877] 01076.01078> [virtio_blk] Configuring Virtqueue 0 (size: 256 descriptors)...
+    [00008.881] 01076.01078> [virtio_blk] VirtIO block device active! Capacity: 131072 sectors (64 MB)
+    [00008.881] 01076.01078> [virtio_blk] Entering IPC server loop on channel...
+    [00008.883] 01044.01047> [iris_init] Sending BLK_GET_INFO query over IPC channel...
+    [00008.884] 01044.01047> [iris_init] VirtIO Block query successful! Capacity: 0x0000000000020000 sectors, Sector Size: 0x0000000000000200 bytes
+    [00008.884] 01044.01047> [iris_init] Preparing 512-byte verification pattern for Sector 100...
+    [00008.884] 01044.01047> [iris_init] Writing Sector 100 via IPC request...
+    [00008.885] 01044.01047> [iris_init] Sector 100 write confirmed OK. Reading back over IPC...
+    [00008.886] 01044.01047> [iris_init] Sector 100 read/write data verification: MATCHED! (512/512 bytes OK)
+    [00008.886] 01044.01047> [iris_init] VirtIO Block read/write test on Sector 100: PASSED!
+    [00008.886] 01044.01047> [iris_init] Phase 4 Step 4.1 verification COMPLETE!
+    ```
 
+---
 
+## Phase 4 Active Next Step
+- **Immediate Next Step:** Phase 4, Step 4.2: Block-Level Encryption Proxy (`iris_crypt`) using `mbedtls` (AES-256-XTS + Argon2, 4 KB Sector 0 header, test key fallback).
