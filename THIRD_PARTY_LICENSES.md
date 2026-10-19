@@ -28,7 +28,7 @@ To strictly uphold irisOS's **Zone 1 Permissive Licensing Policy** and guarantee
 
 In accordance with Section 2 ("Redistribution") of the FreeType License, any redistribution of binary distributions or documentation includes the following required attribution:
 
-> "Portions of this software are copyright © 1996-2024 The FreeType Project (www.freetype.org). All rights reserved."
+> "Portions of this software are copyright © 1996-2026 The FreeType Project (https://freetype.org). All rights reserved."
 
 ---
 
