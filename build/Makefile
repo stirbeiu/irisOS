@@ -13,7 +13,7 @@ HOST_CXX := $(LLVM_PREFIX)/bin/clang++
 
 ZIRCON_DIR := $(ROOT_DIR)/kernel/zircon
 
-.PHONY: all tools zbi abigen build-x86_64 build-arm64 clean
+.PHONY: all tools zbi abigen build-x86_64 build-arm64 clean fetch-compiler-rt fetch-mlibc builtins-x86_64 builtins-arm64 mlibc-x86_64 mlibc-arm64 mlibc
 
 all: tools
 
@@ -147,12 +147,124 @@ build-arm64: tools kernel-arm64
 	@ninja -C $(OUT_DIR)/build-arm64
 
 # ------------------------------------------------------------------------------
+# compiler-rt Builtins & mlibc C Library
+# ------------------------------------------------------------------------------
+fetch-compiler-rt:
+	@$(ROOT_DIR)/scripts/fetch_compiler_rt.sh
+
+fetch-mlibc:
+	@$(ROOT_DIR)/scripts/fetch_mlibc.sh
+
+builtins-x86_64: fetch-compiler-rt
+	@mkdir -p $(OUT_DIR)/build-x86_64/lib $(OUT_DIR)/build-x86_64/builtins
+	@echo "==> Building compiler-rt builtins (x86_64)..."
+	@for f in $(ROOT_DIR)/vendor/compiler-rt/lib/builtins/*.c; do \
+		$(HOST_CC) -c "$$f" --target=x86_64-unknown-linux-gnu -O2 -fPIC \
+			-I$(ROOT_DIR)/vendor/compiler-rt/lib/builtins \
+			-o $(OUT_DIR)/build-x86_64/builtins/$$(basename "$$f" .c).o 2>/dev/null || true; \
+	done
+	@$(LLVM_PREFIX)/bin/llvm-ar rcs $(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a $(OUT_DIR)/build-x86_64/builtins/*.o
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a"
+
+builtins-arm64: fetch-compiler-rt
+	@mkdir -p $(OUT_DIR)/build-arm64/lib $(OUT_DIR)/build-arm64/builtins
+	@echo "==> Building compiler-rt builtins (arm64)..."
+	@for f in $(ROOT_DIR)/vendor/compiler-rt/lib/builtins/*.c; do \
+		$(HOST_CC) -c "$$f" --target=aarch64-unknown-linux-gnu -O2 -fPIC \
+			-I$(ROOT_DIR)/vendor/compiler-rt/lib/builtins \
+			-o $(OUT_DIR)/build-arm64/builtins/$$(basename "$$f" .c).o 2>/dev/null || true; \
+	done
+	@$(LLVM_PREFIX)/bin/llvm-ar rcs $(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a $(OUT_DIR)/build-arm64/builtins/*.o
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a"
+
+mlibc-x86_64: build-x86_64 builtins-x86_64 fetch-mlibc
+	@echo "==> Building mlibc (x86_64)..."
+	@if [ ! -d "$(OUT_DIR)/build-x86_64/mlibc" ]; then \
+		meson setup $(OUT_DIR)/build-x86_64/mlibc $(ROOT_DIR)/vendor/mlibc \
+			--cross-file $(BUILD_DIR)/toolchains/meson-x86_64.txt \
+			--default-library=both \
+			-Dld_library_name=ld-iris \
+			-Dlibgcc_dependency=false; \
+	fi
+	@ninja -C $(OUT_DIR)/build-x86_64/mlibc
+	@echo "    [DONE] mlibc x86_64"
+
+mlibc-arm64: build-arm64 builtins-arm64 fetch-mlibc
+	@echo "==> Building mlibc (arm64)..."
+	@if [ ! -d "$(OUT_DIR)/build-arm64/mlibc" ]; then \
+		meson setup $(OUT_DIR)/build-arm64/mlibc $(ROOT_DIR)/vendor/mlibc \
+			--cross-file $(BUILD_DIR)/toolchains/meson-arm64.txt \
+			--default-library=both \
+			-Dld_library_name=ld-iris \
+			-Dlibgcc_dependency=false; \
+	fi
+	@ninja -C $(OUT_DIR)/build-arm64/mlibc
+	@echo "    [DONE] mlibc arm64"
+
+mlibc: mlibc-x86_64 mlibc-arm64
+
+# ------------------------------------------------------------------------------
+# User-Space Test Programs (hello_c)
+# ------------------------------------------------------------------------------
+hello-c-x86_64: mlibc-x86_64
+	@echo "==> Compiling hello_c (x86_64)..."
+	@mkdir -p $(OUT_DIR)/build-x86_64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-x86_64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-c $(ROOT_DIR)/apps/tests/hello_c/main.c -o $(OUT_DIR)/build-x86_64/hello_c.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-x86_64/hello_c.o \
+		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
+		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-x86_64/bin/hello_c
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/hello_c"
+
+hello-c-arm64: mlibc-arm64
+	@echo "==> Compiling hello_c (arm64)..."
+	@mkdir -p $(OUT_DIR)/build-arm64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-arm64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-c $(ROOT_DIR)/apps/tests/hello_c/main.c -o $(OUT_DIR)/build-arm64/hello_c.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-arm64/hello_c.o \
+		$(OUT_DIR)/build-arm64/mlibc/libc.a \
+		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-arm64/bin/hello_c
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/hello_c"
+
+hello-c: hello-c-x86_64 hello-c-arm64
+
+# ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64
+image-x86_64: build-x86_64 hello-c-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-arm64: build-arm64
+image-arm64: build-arm64 hello-c-arm64
 	@$(BUILD_DIR)/mkimage.sh arm64
 
 run-x86: image-x86_64

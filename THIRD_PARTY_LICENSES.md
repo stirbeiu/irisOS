@@ -1,33 +1,35 @@
-# Third-Party Upstream Software & Licenses
+# Third-Party Open Source Licenses & Upstream Repository Pinning
 
-irisOS incorporates select, battle-tested open-source components in accordance with the **Two-Zone Licensing Policy** defined in [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md). 
-
-Under this policy, all shared libraries, SDK headers, drivers, and the microkernel are strictly permissive (MIT / BSD / ISC / Apache 2.0 / FTL), ensuring 100% proprietary and closed-source software can be compiled, linked, and distributed on irisOS without license viral contamination.
+irisOS is built on a strict **Two-Zone Licensing Architecture** to ensure that end-users and commercial developers can distribute 100% proprietary, closed-source applications and hardware drivers without legal contamination.
 
 ---
 
-## Zone 1: Microkernel, System Libraries & SDK (Permissive Only)
+## Zone 1: Permissive SDK, Kernel & Shared Libraries
+All code in `kernel/`, `sdk/`, and shared system libraries (`/System/Libraries`) must be licensed exclusively under permissive licenses (MIT, BSD, Apache 2.0, ISC, or FTL). **Strictly NO GPL or LGPL code is permitted in Zone 1.**
 
-| Component | Upstream Project | License | Purpose in irisOS |
-|---|---|---|---|
-| **Zircon Microkernel** | [Google Zircon](https://fuchsia.googlesource.com/zircon) | BSD-style | Standalone microkernel, vDSO (`libzircon.so`), and Gigaboot UEFI bootloader |
-| **mlibc** | [managarm/mlibc](https://github.com/managarm/mlibc) | MIT | C standard library and dynamic linker (`ld-iris.so`) |
-| **lwext4** | [gabrbed/lwext4](https://github.com/gabrbed/lwext4) | BSD-2-Clause | Lightweight Ext4 filesystem library for `System_A`/`B` and `Data` |
-| **FatFs** | [ChaN FatFs](http://elm-chan.org/fsw/ff/00index_e.html) | BSD-style / Permissive | FAT32 filesystem driver for the EFI System Partition (`ESP`) |
-| **mbedTLS** | [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) | Apache 2.0 | Cryptographic primitives (AES-256-XTS, Argon2) for disk encryption |
-| **Pixman** | [freedesktop/pixman](https://gitlab.freedesktop.org/pixman/pixman) | MIT | 2D pixel manipulation and SIMD compositing backend |
-| **FreeType** | [FreeType Project](https://freetype.org) | FTL / BSD-style | High-quality font rasterization and glyph rendering |
+| Submodule / Component | Upstream Canonical URL | irisOS Mirror / Fork | License | Role in irisOS |
+| :--- | :--- | :--- | :--- | :--- |
+| **Zircon Microkernel** | `https://fuchsia.googlesource.com/fuchsia/+/refs/heads/main/zircon/` | Pinned tree in `kernel/zircon` | MIT / BSD 3-Clause | 64-bit microkernel, vDSO (`libzircon.so`), and host `zbi` tool |
+| **mlibc** | `https://github.com/managarm/mlibc` | `https://github.com/stirbeiu/mlibc` | MIT | C Standard Library & dynamic linker (`libc.so`, `ld-iris.so`, `libc.a`) |
+| **lwext4** | `https://github.com/gkostka/lwext4` | `https://github.com/stirbeiu/lwext4` | BSD 2-Clause | Ext4 filesystem implementation for `/System` and decrypted `/Users` |
+| **FatFs** | `http://elm-chan.org/fsw/ff/00index_e.html` | `https://github.com/stirbeiu/fatfs` | BSD-like (FatFs license) | FAT32 filesystem implementation for the UEFI `ESP` partition |
+| **mbedtls** | `https://github.com/Mbed-TLS/mbedtls` | `https://github.com/stirbeiu/mbedtls` | Apache 2.0 | AES-256-XTS & Argon2 cryptographic engine for `iris_crypt` |
+| **pixman** | `https://gitlab.freedesktop.org/pixman/pixman` | `https://github.com/stirbeiu/pixman` | MIT | 2D pixel manipulation library for `iris_compositor` & `libiris_gui` |
+| **FreeType** | `https://gitlab.freedesktop.org/freetype/freetype` | `https://github.com/stirbeiu/freetype` | FreeType License (FTL) / BSD | TrueType font rendering engine for desktop GUI |
+| **LLVM / compiler-rt** | `https://github.com/llvm/llvm-project` | Homebrew LLVM / compiler-rt | Apache 2.0 with LLVM Exception | Low-level runtime builtins (`libclang_rt.builtins-*.a`) |
 
 ---
 
 ## Zone 2: Standalone User-Space Programs & Utilities
+Standalone executables that execute within their own isolated Ring 3 address spaces and interact exclusively over standard IPC channels or POSIX file descriptors may use permissive or copyleft licenses.
 
-| Component | Upstream Project | License | Purpose in irisOS |
-|---|---|---|---|
-| **Toybox** | [landley/toybox](https://github.com/landley/toybox) | 0BSD | Primary CLI command suite, POSIX utilities, and shell (`sh`) |
+| Package / Binary | Canonical Upstream | irisOS Mirror / Fork | License | Role in irisOS |
+| :--- | :--- | :--- | :--- | :--- |
+| **Toybox** | `https://github.com/landley/toybox` | `https://github.com/stirbeiu/toybox` | 0BSD | Primary command-line shell (`sh`) and 200+ core POSIX utilities |
 
 ---
 
-## Summary of Permissive Guarantees
-- **No GPL or LGPL in Zone 1:** No application running on irisOS is required to open-source its code merely by linking against irisOS SDKs, system libraries, or invoking system calls.
-- **Isolated Utilities in Zone 2:** Any future utilities licensed under copyleft licenses (e.g. GPL userland tools) run strictly in independent Ring 3 processes, communicating only via IPC channels or standard I/O pipes.
+## Upstream Pinning & Mirroring Policy
+1. **Canonical Upstream Tracking:** The canonical URLs above represent the official development sources for all third-party software integrated into irisOS.
+2. **Permanent Availability:** To prevent supply-chain breakage, deleted upstream repositories, or breaking API changes, all external dependencies are mirrored or forked under `https://github.com/stirbeiu/<repo>`.
+3. **Submodule Pinning:** Vendor dependencies are referenced via pinned Git commit SHAs rather than tracking floating branches (`main` or `master`).

@@ -50,10 +50,14 @@ if [[ ! -x "${HOST_TOOLS}/zbi" ]]; then
     make -C "${ROOT_DIR}/build" zbi
 fi
 
-# 2. Ensure iris_init binary exists
+# 2. Ensure iris_init and hello_c binaries exist
 if [[ ! -f "${BUILD_DIR}/bin/iris_init" ]]; then
     echo "==> Building iris_init for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
+fi
+if [[ ! -f "${BUILD_DIR}/bin/hello_c" ]]; then
+    echo "==> Building hello_c for ${ARCH_NAME}..."
+    make -C "${ROOT_DIR}/build" "hello-c-${ARCH_NAME}"
 fi
 
 # 3. Ensure Zircon kernel ZBI exists
@@ -93,7 +97,8 @@ fi
     "${ZIRCON_BUILD}/kernel.zbi" \
     ${EXTRA_ZBI_INPUTS[@]+"${EXTRA_ZBI_INPUTS[@]}"} \
     --type CMDLINE -e "${CMDLINE_ARGS}" \
-    --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init"
+    --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
+            -e "bin/hello_c=${BUILD_DIR}/bin/hello_c"
 
 # 6. Construct FAT32 UEFI ESP disk image
 IMAGES_DIR="${OUT_DIR}/images"

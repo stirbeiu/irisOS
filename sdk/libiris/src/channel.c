@@ -16,8 +16,17 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/**
+ * Stack buffer threshold for zero-allocation IPC marshalling.
+ * Messages with total wire size <= 8 KB are assembled directly on the stack.
+ * Messages exceeding 8 KB (up to the 64 KB channel maximum) utilize a temporary
+ * anonymous VMO mapping to avoid dynamic heap (malloc) dependencies in early boot.
+ */
 #define IRIS_STACK_MSG_LIMIT 8192u
 
+/**
+ * Freestanding memory copy implementation to eliminate external C runtime dependencies.
+ */
 static void* iris_memcpy(void* dest, const void* src, size_t n) {
     uint8_t* d = (uint8_t*)dest;
     const uint8_t* s = (const uint8_t*)src;
@@ -33,6 +42,10 @@ zx_status_t iris_channel_create(uint32_t flags,
     if (!out_ch0 || !out_ch1) {
         return ZX_ERR_INVALID_ARGS;
     }
+    /*
+     * Wraps zx_channel_create(). On success, two bidirectional channel endpoints
+     * are created with full default rights (TRANSFER, READ, WRITE, WAIT, etc.).
+     */
     return zx_channel_create(flags, out_ch0, out_ch1);
 }
 
@@ -41,6 +54,7 @@ zx_status_t iris_channel_send(zx_handle_t channel,
                               const void* payload,
                               const zx_handle_t* handles,
                               uint32_t num_handles) {
+    /* Validate capability handle and input header invariants */
     if (channel == ZX_HANDLE_INVALID || !hdr) {
         return ZX_ERR_INVALID_ARGS;
     }
@@ -57,7 +71,7 @@ zx_status_t iris_channel_send(zx_handle_t channel,
         return ZX_ERR_INVALID_ARGS;
     }
 
-    /* Fast path: Header-only message with zero payload */
+    /* Fast path: Header-only message with zero trailing payload */
     if (hdr->payload_len == 0) {
         return zx_channel_write(channel, 0, hdr, sizeof(iris_msg_hdr_t),
                                 handles, num_handles);
@@ -69,7 +83,11 @@ zx_status_t iris_channel_send(zx_handle_t channel,
 
     uint32_t total_size = (uint32_t)sizeof(iris_msg_hdr_t) + hdr->payload_len;
 
-    /* Stack optimization for messages up to 8 KB */
+    /*
+     * Optimized Path (<= 8 KB):
+     * Assemble header and payload contiguous on the thread stack.
+     * This avoids VMO allocation and TLB invalidation overhead for high-frequency RPCs.
+     */
     if (total_size <= IRIS_STACK_MSG_LIMIT) {
         uint8_t buf[IRIS_STACK_MSG_LIMIT];
         iris_memcpy(buf, hdr, sizeof(iris_msg_hdr_t));
@@ -77,7 +95,11 @@ zx_status_t iris_channel_send(zx_handle_t channel,
         return zx_channel_write(channel, 0, buf, total_size, handles, num_handles);
     }
 
-    /* Heap-free fallback for large messages (> 8 KB up to 64 KB): temporary VMO mapping */
+    /*
+     * Heap-Free Fallback for Large Messages (> 8 KB up to 64 KB):
+     * Allocate a temporary anonymous VMO, map into current address space,
+     * pack the buffer, issue zx_channel_write(), and tear down the mapping.
+     */
     zx_handle_t temp_vmo = ZX_HANDLE_INVALID;
     zx_status_t status = zx_vmo_create(total_size, 0, &temp_vmo);
     if (status != ZX_OK) {
@@ -124,7 +146,11 @@ zx_status_t iris_channel_recv(zx_handle_t channel,
     uint32_t act_bytes = 0;
     uint32_t act_handles = 0;
 
-    /* Stack optimization for message reception */
+    /*
+     * Stack Path (<= 8 KB):
+     * Read the message datagram into stack buffer, validate magic and lengths,
+     * and copy output payload back into caller's buffer.
+     */
     if (max_bytes <= IRIS_STACK_MSG_LIMIT) {
         uint8_t buf[IRIS_STACK_MSG_LIMIT];
         zx_status_t status = zx_channel_read(channel, 0, buf, out_handles,
@@ -166,7 +192,10 @@ zx_status_t iris_channel_recv(zx_handle_t channel,
         return ZX_OK;
     }
 
-    /* Large message reception via temporary mapped VMO */
+    /*
+     * Heap-Free Fallback for Large Messages (> 8 KB up to 64 KB):
+     * Temporary VMO mapping for datagram read.
+     */
     zx_handle_t temp_vmo = ZX_HANDLE_INVALID;
     zx_status_t status = zx_vmo_create(max_bytes, 0, &temp_vmo);
     if (status != ZX_OK) {
@@ -251,7 +280,7 @@ zx_status_t iris_channel_call(zx_handle_t channel,
     uint32_t wr_size = (uint32_t)sizeof(iris_msg_hdr_t) + req_hdr->payload_len;
     uint32_t rd_size = (uint32_t)sizeof(iris_msg_hdr_t) + max_resp_payload_len;
 
-    /* Assemble request in stack or temporary buffer */
+    /* Assemble request in stack or temporary VMO buffers */
     uint8_t wr_buf[IRIS_STACK_MSG_LIMIT];
     uint8_t rd_buf[IRIS_STACK_MSG_LIMIT];
     void* wr_ptr = wr_buf;
@@ -314,6 +343,7 @@ zx_status_t iris_channel_call(zx_handle_t channel,
     uint32_t act_bytes = 0;
     uint32_t act_handles = 0;
 
+    /* Issue synchronous channel call: atomically writes request and awaits reply */
     zx_status_t status = zx_channel_call(channel, 0, deadline, &call_args,
                                          &act_bytes, &act_handles);
 

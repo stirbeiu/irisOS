@@ -19,6 +19,10 @@ zx_status_t iris_vmo_create(size_t size,
     if (!out_vmo) {
         return ZX_ERR_INVALID_ARGS;
     }
+    /*
+     * Wraps zx_vmo_create(). The kernel automatically rounds up size
+     * to the system page boundary (4096 bytes on x86_64 / arm64).
+     */
     return zx_vmo_create((uint64_t)size, options, out_vmo);
 }
 
@@ -36,6 +40,7 @@ zx_status_t iris_vmo_map(zx_handle_t vmo,
         return status;
     }
 
+    /* Default to standard readable/writable mapping permissions if unspecified */
     if (options == 0) {
         options = ZX_VM_PERM_READ | ZX_VM_PERM_WRITE;
     }
@@ -63,6 +68,7 @@ zx_status_t iris_vmo_map_offset(zx_handle_t vmar,
         return ZX_ERR_INVALID_ARGS;
     }
 
+    /* Target caller's specified VMAR or fall back to the process root VMAR */
     zx_handle_t target_vmar = (vmar != ZX_HANDLE_INVALID) ? vmar : zx_vmar_root_self();
     zx_vaddr_t vaddr = 0;
     zx_status_t status = zx_vmar_map(target_vmar, options, 0, vmo, vmo_offset, (uint64_t)len, &vaddr);
@@ -94,6 +100,10 @@ zx_status_t iris_vmo_duplicate(zx_handle_t vmo,
     if (vmo == ZX_HANDLE_INVALID || !out_handle) {
         return ZX_ERR_INVALID_ARGS;
     }
+    /*
+     * Wraps zx_handle_duplicate(). The requested rights mask must be a subset
+     * of the source handle's rights; attempting to escalate rights returns ZX_ERR_ACCESS_DENIED.
+     */
     return zx_handle_duplicate(vmo, rights, out_handle);
 }
 

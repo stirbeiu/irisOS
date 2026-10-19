@@ -8,10 +8,10 @@ ld = '/opt/homebrew/bin/ld.lld'
 llvm-config = '/opt/homebrew/opt/llvm/bin/llvm-config'
 
 [built-in options]
-c_args = ['--target=aarch64-unknown-elf', '-ffreestanding']
-c_link_args = ['--target=aarch64-unknown-elf', '-fuse-ld=lld']
-cpp_args = ['--target=aarch64-unknown-elf', '-ffreestanding']
-cpp_link_args = ['--target=aarch64-unknown-elf', '-fuse-ld=lld']
+c_args = ['--target=aarch64-unknown-linux-gnu', '-ffreestanding', '-D_GNU_SOURCE', '-I/Users/stefan/Dev/irisos/kernel/zircon/system/public', '-I/Users/stefan/Dev/irisos/out/build-arm64/gen']
+c_link_args = ['--target=aarch64-unknown-linux-gnu', '-fuse-ld=lld', '-nostdlib', '-L/Users/stefan/Dev/irisos/out/build-arm64/lib']
+cpp_args = ['--target=aarch64-unknown-linux-gnu', '-ffreestanding', '-nostdinc++', '-D_GNU_SOURCE', '-I/Users/stefan/Dev/irisos/kernel/zircon/system/public', '-I/Users/stefan/Dev/irisos/out/build-arm64/gen']
+cpp_link_args = ['--target=aarch64-unknown-linux-gnu', '-fuse-ld=lld', '-nostdlib', '-L/Users/stefan/Dev/irisos/out/build-arm64/lib']
 
 [host_machine]
 system = 'iris'

@@ -6,6 +6,12 @@ build/out/
 kernel/zircon/*
 !kernel/zircon/.gitkeep
 
+# Fetched third-party submodules (managed via scripts/fetch_*.sh)
+vendor/mlibc/*
+!vendor/mlibc/.gitkeep
+vendor/compiler-rt/*
+!vendor/compiler-rt/.gitkeep
+
 # macOS system files
 .DS_Store
 ._*

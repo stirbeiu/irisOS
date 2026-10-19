@@ -10,6 +10,10 @@
 #include <iris/init.h>
 #include <zircon/process.h>
 
+/**
+ * Static storage for cached process capability handles.
+ * Initialized once during process startup via iris_init_runtime().
+ */
 static zx_handle_t g_iris_proc_self = ZX_HANDLE_INVALID;
 static zx_handle_t g_iris_vmar_self = ZX_HANDLE_INVALID;
 static zx_handle_t g_iris_job_self  = ZX_HANDLE_INVALID;
@@ -32,7 +36,11 @@ zx_handle_t iris_job_default(void) {
     return g_iris_job_self;
 }
 
-/* Weak fallbacks for standard Zircon process accessors if unprovided by libc */
+/*
+ * Weak symbol fallbacks for standard Zircon process accessors.
+ * If libc or a dynamic linker does not export zx_process_self(), zx_vmar_root_self(),
+ * or zx_job_default(), these aliases transparently route to libiris's cached handles.
+ */
 __attribute__((weak)) zx_handle_t _zx_process_self(void) {
     return g_iris_proc_self;
 }
