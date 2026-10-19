@@ -25,7 +25,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTX64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-x64-clang"
         BUILD_DIR="${OUT_DIR}/build-x86_64"
-        CMDLINE_ARGS="userboot=bin/iris_init kernel.serial=legacy"
+        CMDLINE_ARGS="userboot=bin/iris_init kernel.serial=legacy gfxconsole.early=true"
         ;;
     aarch64|arm64)
         ARCH_NAME="arm64"
@@ -34,7 +34,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTAA64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-arm64-clang"
         BUILD_DIR="${OUT_DIR}/build-arm64"
-        CMDLINE_ARGS="userboot=bin/iris_init kernel.serial=legacy"
+        CMDLINE_ARGS="userboot=bin/iris_init kernel.serial=legacy gfxconsole.early=true"
         ;;
     *)
         echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'arm64'."
