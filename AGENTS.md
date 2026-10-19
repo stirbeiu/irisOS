@@ -94,15 +94,15 @@ End-users and businesses must be able to develop and distribute **100% proprieta
 * **Unified PCIe Device Discovery:** Standardize on **PCIe (ECAM)** for VirtIO devices (`virtio-blk-pci`, `virtio-gpu-pci`, `virtio-input-pci`) on BOTH `x86_64` (QEMU `-M q35`) and `ARM64` (QEMU `-M virt`). This allows `iris_init` and Ring 3 drivers to share a single PCIe enumeration codebase.
 * **Block Driver:** User-space `virtio-blk-pci` using Zircon **BTI (`zx_bti_pin`)** for safe DMA and `zx_interrupt_wait()` for PCIe MSI/INTx interrupts.
 * **Block-Level Encryption (`iris_crypt`):**
-  * Sits as a block filter between `lwext4` and `virtio-blk-pci`: `[lwext4] <==> [iris_crypt] <==> [virtio-blk-pci]`.
+  * Sits as a block filter between `libufs` and `virtio-blk-pci`: `[libufs] <==> [iris_crypt] <==> [virtio-blk-pci]`.
   * Encrypts the `Data` partition with **AES-256-XTS** + **Argon2** using `mbedtls`.
   * **Metadata Header:** Sector 0 (first 4 KB) of the `Data` partition is reserved for the `iris_crypt` metadata header (Argon2 salt, cost parameters, and encrypted master key).
   * **Phase 4 Test Vector:** For automated testing prior to Phase 5's interactive passphrase prompt, `iris_crypt` supports a deterministic development test key fallback.
 * **Partition Table (GPT with 4 Partitions):**
   1. `ESP` (FAT32 via **FatFs** — Gigaboot, `iris_a.zbi`, `iris_b.zbi`).
-  2. `System_A` (Active immutable read-only **EROFS** or read-only **Ext4** via **lwext4**).
+  2. `System_A` (Active immutable read-only **UFS2** via **libufs**).
   3. `System_B` (Inactive slot for seamless A/B updates with rollback watchdog).
-  4. `Data` (Read-Write **Ext4** via **lwext4**, block-encrypted by `iris_crypt`).
+  4. `Data` (Read-Write **UFS2** via **libufs**, block-encrypted by `iris_crypt`).
 * **Developer Mode Override:** Optional writable RAM `OverlayFS` over `/System` when unlocked by the user.
 
 ### 4.8 Graphics & Windowing
@@ -113,7 +113,7 @@ End-users and businesses must be able to develop and distribute **100% proprieta
 
 ### 4.9 Multi-Build System Orchestrator (`build/`)
 * A master top-level `Makefile` and helper orchestrator scripts inside `build/` coordinate the heterogeneous build systems across submodules:
-  * CMake: `lwext4`, `mbedtls`, `kernel/zircon`
+  * CMake: `libufs`, `mbedtls`, `kernel/zircon`
   * Meson: `mlibc`, `pixman`, `freetype`
   * Makefile/kconfig: `toybox`
 * The orchestrator automatically propagates Homebrew LLVM paths, cross-compilation target triples (`--target=x86_64-unknown-elf`, `--target=aarch64-unknown-elf`), and sysroot header/library search paths to all subprojects.
@@ -142,7 +142,7 @@ irisOS/
 │   └── mlibc-sysdeps/        # irisOS sysdeps (sysdeps/iris/) injected into vendor/mlibc
 ├── servers/                  # [Server Zone - MIT / BSD] (Ring 3 User-Space Daemons)
 │   ├── iris_init/            # Bootstrap process: extracts userboot handles, scans PCIe, launches servers
-│   ├── iris_fshost/          # Monolithic VFS router, GPT parser, A/B slot selector, lwext4/EROFS server
+│   ├── iris_fshost/          # Monolithic VFS router, GPT parser, A/B slot selector, UFS2/libufs server
 │   ├── iris_crypt/           # Block-level AES-256-XTS encryption proxy for the Data partition
 │   ├── iris_compositor/      # Zero-copy VMO window server & input event router
 │   ├── iris_pty/             # Pseudo-terminal server for line buffering and signals (Ctrl+C)
@@ -153,7 +153,7 @@ irisOS/
 ├── vendor/                   # [Third-Party FOSS Submodules - Untouched Upstream]
 │   ├── mlibc/                # (MIT) Standard C library + dynamic linker [Meson]
 │   ├── toybox/               # (0BSD) Shell and 200+ CLI utilities [Makefile]
-│   ├── lwext4/               # (BSD) Ext4 filesystem library [CMake]
+│   ├── libufs/               # (BSD 2-Clause) FreeBSD UFS2/FFS filesystem library [CMake]
 │   ├── fatfs/                # (BSD) FAT32 library for ESP partition [CMake]
 │   ├── mbedtls/              # (Apache 2.0) AES-256-XTS & Argon2 crypto [CMake]
 │   ├── pixman/               # (MIT) 2D pixel manipulation library [Meson]
@@ -222,7 +222,7 @@ irisOS/
 * Build `iris_fshost` incorporating:
   * GPT partition parser reading slot attributes.
   * FatFs for reading/writing `ESP`.
-  * `lwext4` for mounting `System_A`/`System_B` and decrypted `Data`.
+  * `libufs` for mounting `System_A`/`System_B` and decrypted `Data`.
 * Connect `mlibc` file syscalls (`sys_open`, `sys_read`, `sys_write`) to `iris_fshost` over `iris_msg_hdr_t` channels.
 * **Milestone:** irisOS boots in QEMU, reads the GPT layout, mounts `/System` read-only from `System_A`, decrypts and mounts `/Users` read-write from `Data`, and reads/writes persistent files.
 

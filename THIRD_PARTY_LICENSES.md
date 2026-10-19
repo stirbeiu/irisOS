@@ -12,7 +12,7 @@ All code in `kernel/`, `sdk/`, and shared system libraries (`/System/Libraries`)
 | **Zircon Microkernel** | `https://fuchsia.googlesource.com/zircon` | `https://github.com/stirbeiu/zircon-standalone` | MIT / BSD 3-Clause | 64-bit microkernel, vDSO (`libzircon.so`), and host `zbi` tool |
 | **mlibc** | `https://github.com/managarm/mlibc` | `https://github.com/stirbeiu/mlibc` | MIT | C Standard Library & dynamic linker (`libc.so`, `ld-iris.so`, `libc.a`) |
 | **frigg** | `https://github.com/managarm/frigg` | `https://github.com/stirbeiu/frigg` | BSD 2-Clause | C++ utility & data structure library required by mlibc |
-| **lwext4** | `https://github.com/gkostka/lwext4` | `https://github.com/stirbeiu/lwext4` | BSD 2-Clause | Ext4 filesystem implementation for `/System` and decrypted `/Users` |
+| **UFS2 / FFS (libufs)** | `https://github.com/freebsd/freebsd-src` | `https://github.com/stirbeiu/libufs-standalone` | BSD 2-Clause | UFS2/FFS filesystem implementation for `/System` and decrypted `/Users` |
 | **FatFs** | `http://elm-chan.org/fsw/ff/00index_e.html` | `https://github.com/stirbeiu/fatfs` | BSD-like (FatFs license) | FAT32 filesystem implementation for the UEFI `ESP` partition |
 | **mbedtls** | `https://github.com/Mbed-TLS/mbedtls` | `https://github.com/stirbeiu/mbedtls` | Apache 2.0 | AES-256-XTS & Argon2 cryptographic engine for `iris_crypt` |
 | **pixman** | `https://gitlab.freedesktop.org/pixman/pixman` | `https://github.com/stirbeiu/pixman` | MIT | 2D pixel manipulation library for `iris_compositor` & `libiris_gui` |

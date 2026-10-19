@@ -11,8 +11,8 @@ vendor/mlibc/*
 !vendor/mlibc/.gitkeep
 vendor/compiler-rt/*
 !vendor/compiler-rt/.gitkeep
-vendor/lwext4/*
-!vendor/lwext4/.gitkeep
+vendor/libufs/*
+!vendor/libufs/.gitkeep
 vendor/fatfs/*
 !vendor/fatfs/.gitkeep
 vendor/mbedtls/*

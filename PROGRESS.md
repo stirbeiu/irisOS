@@ -378,14 +378,18 @@ welcome to Zircon
 
 ---
 
-### Step 3.4: Third-Party Dependency Hardening & GitHub Mirror Infrastructure
+### Step 3.4: 100% Permissive Policy Hardening: UFS2 Migration & GitHub Mirror Infrastructure
 - **Status:** COMPLETED
-- **Purpose:** Permanently protect irisOS against dependency rot, upstream branch deletion, or supply-chain outages.
+- **Permissive License Hardening (100% MIT/BSD):**
+  - Removed `lwext4` to eliminate GPL contamination risks in shared libraries and Ring 3 daemons.
+  - Migrated primary root and user filesystems to **FreeBSD UFS2 / FFS (`libufs`, BSD 2-Clause)**.
+  - Created standalone public repository [`stirbeiu/libufs-standalone`](https://github.com/stirbeiu/libufs-standalone) containing userland `libufs` and kernel UFS2/FFS structures extracted from FreeBSD 14.2 (`releng/14.2`).
+  - Implemented [`scripts/fetch_ufs.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_ufs.sh) featuring primary mirror fetching with automatic fallback to FreeBSD upstream and `--clean` support.
 - **Mirrors Created & Populated under `stirbeiu`:**
   - `stirbeiu/zircon-standalone`: Standalone Zircon microkernel mirror populated directly from verified `milestone-1011` tree with irisOS build patches.
+  - `stirbeiu/libufs-standalone`: Standalone BSD 2-Clause UFS2/FFS filesystem and `libufs` library mirror.
   - `stirbeiu/mlibc`: Fork of `managarm/mlibc` (pinned `v6.3.1`).
   - `stirbeiu/frigg`: Fork of `managarm/frigg` (pinned `98220ab`).
-  - `stirbeiu/lwext4`: Fork of `gkostka/lwext4` (pinned `v1.0.0`).
   - `stirbeiu/mbedtls`: Fork of `Mbed-TLS/mbedtls`.
   - `stirbeiu/toybox`: Fork of `landley/toybox`.
   - `stirbeiu/pixman`: Mirrored from `gitlab.freedesktop.org/pixman/pixman.git`.
@@ -393,10 +397,10 @@ welcome to Zircon
 - **Primary + Fallback Pattern across Fetch Scripts:**
   - [`scripts/fetch_zircon.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_zircon.sh): Primary `stirbeiu/zircon-standalone.git` -> Fallback `fuchsia.googlesource.com/zircon` with `--clean` and shallow clone.
   - [`scripts/fetch_mlibc.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_mlibc.sh): Primary `stirbeiu/mlibc.git` and `stirbeiu/frigg.git` -> Fallback `managarm/mlibc.git` and `managarm/frigg.git` with `--clean`.
-  - [`scripts/fetch_lwext4.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_lwext4.sh): Primary `stirbeiu/lwext4.git` -> Fallback `gkostka/lwext4.git` with `--clean`.
+  - [`scripts/fetch_ufs.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_ufs.sh): Primary `stirbeiu/libufs-standalone.git` -> Fallback `freebsd/freebsd-src.git` (`releng/14.2`) with `--clean`.
 - **Repository Isolation & Tracking:**
-  - Updated [`.gitignore`](file:///Users/stefan/Dev/irisos/.gitignore) to exclude all vendor trees (`vendor/mlibc/*`, `vendor/lwext4/*`, `vendor/fatfs/*`, `vendor/mbedtls/*`, `vendor/toybox/*`, `vendor/pixman/*`, `vendor/freetype/*`, `vendor/compiler-rt/*`) while preserving `.gitkeep` markers.
-  - Updated [`THIRD_PARTY_LICENSES.md`](file:///Users/stefan/Dev/irisos/THIRD_PARTY_LICENSES.md) with canonical upstream and mirror URLs.
+  - Updated [`.gitignore`](file:///Users/stefan/Dev/irisos/.gitignore) to exclude all vendor trees (`vendor/mlibc/*`, `vendor/libufs/*`, `vendor/fatfs/*`, `vendor/mbedtls/*`, `vendor/toybox/*`, `vendor/pixman/*`, `vendor/freetype/*`, `vendor/compiler-rt/*`) while preserving `.gitkeep` markers.
+  - Updated [`THIRD_PARTY_LICENSES.md`](file:///Users/stefan/Dev/irisos/THIRD_PARTY_LICENSES.md) and [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md) confirming 100% permissive licensing across the kernel, SDK, and Ring 3 servers.
 
 ---
 
