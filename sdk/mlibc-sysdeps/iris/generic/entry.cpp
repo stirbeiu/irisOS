@@ -23,9 +23,13 @@
 #define PA_FD 0x30u
 #endif
 
+#include <iris/fd_table.h>
+
 extern "C" void iris_vdso_init(uintptr_t base);
 extern "C" void iris_init_startup_handles(size_t nhandles, const zx_handle_t handles[], const uint32_t handle_info[]);
 extern "C" void iris_set_debuglog(zx_handle_t handle);
+extern "C" void iris_set_vdso_vmo(zx_handle_t handle);
+extern "C" void iris_set_bootfs_vmo(zx_handle_t handle);
 extern "C" void iris_set_process_handles(zx_handle_t proc, zx_handle_t thrd, zx_handle_t vmar, zx_handle_t job);
 
 extern "C" [[gnu::weak]] void __dlapi_enter(uintptr_t *);
@@ -143,10 +147,18 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                 zx_handle_t vmar_root = ZX_HANDLE_INVALID;
                 zx_handle_t job_def   = ZX_HANDLE_INVALID;
 
+                iris_fd_table_init();
+
                 for (uint32_t i = 0; i < act_handles; i++) {
                     uint32_t info = info_table[i];
                     zx_handle_t h = handles[i];
-                    if (info == PA_HND(PA_FDIO_LOGGER, 0) || info == PA_HND(PA_FD, 1)) {
+                    uint32_t htype = PA_HND_TYPE(info);
+
+                    if (htype == PA_FD) {
+                        int target_fd = static_cast<int>(PA_HND_ARG(info));
+                        iris_fd_type_t ftype = (target_fd <= 2) ? IRIS_FD_DEBUGLOG : IRIS_FD_CHANNEL;
+                        iris_fd_bind(target_fd, h, ftype, (target_fd == 0) ? O_RDONLY : O_WRONLY);
+                    } else if (info == PA_HND(PA_FDIO_LOGGER, 0)) {
                         iris_set_debuglog(h);
                     } else if (info == PA_HND(PA_PROC_SELF, 0)) {
                         proc_self = h;
@@ -156,6 +168,10 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         vmar_root = h;
                     } else if (info == PA_HND(PA_JOB_DEFAULT, 0)) {
                         job_def = h;
+                    } else if (info == PA_HND(PA_VMO_VDSO, 0)) {
+                        iris_set_vdso_vmo(h);
+                    } else if (info == PA_HND(PA_VMO_BOOTFS, 0)) {
+                        iris_set_bootfs_vmo(h);
                     }
                 }
                 iris_set_process_handles(proc_self, thrd_self, vmar_root, job_def);

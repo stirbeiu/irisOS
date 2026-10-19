@@ -5,9 +5,9 @@ This document tracks progress, completed milestones, verification proofs, and im
 ---
 
 ## Current Status Overview
-- **Active Phase:** Phase 3 (The Safe SDK & mlibc Integration)
-- **Current Milestone:** Phase 3 Step 3.2 COMPLETED (`mlibc` Vendor Integration, irisOS Sysdeps, Compiler Builtins, and Dual-Arch `libc.a`/`libc.so`/`ld-iris.so`)
-- **Overall Status:** Phase 1 & 2 Complete (100%). Phase 3 in progress (Steps 3.1 & 3.2 Complete).
+- **Active Phase:** Phase 3 Complete (100%) -> Transitioning to Phase 4 (PCIe Drivers, Storage Encryption & Filesystems)
+- **Current Milestone:** Phase 3 Steps 3.1–3.5 100% COMPLETED & VERIFIED (Safe SDK `libiris`, mlibc Integration, Sysdeps Layer, Client-Side FD Table, `posix_spawn`, FD Inheritance, and Dual-Arch Verification)
+- **Overall Status:** Phase 1, 2, and 3 Complete (100%). Ready for Phase 4.
 
 ---
 
@@ -401,6 +401,65 @@ welcome to Zircon
 - **Repository Isolation & Tracking:**
   - Updated [`.gitignore`](file:///Users/stefan/Dev/irisos/.gitignore) to exclude all vendor trees (`vendor/mlibc/*`, `vendor/libufs/*`, `vendor/fatfs/*`, `vendor/mbedtls/*`, `vendor/toybox/*`, `vendor/pixman/*`, `vendor/freetype/*`, `vendor/compiler-rt/*`) while preserving `.gitkeep` markers.
   - Updated [`THIRD_PARTY_LICENSES.md`](file:///Users/stefan/Dev/irisos/THIRD_PARTY_LICENSES.md) and [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md) confirming 100% permissive licensing across the kernel, SDK, and Ring 3 servers.
+
+---
+
+### Step 3.5: Client-Side File Descriptor Table, `posix_spawn` & FD Inheritance (100% VERIFIED)
+- **Status:** COMPLETED & VERIFIED
+- **Client-Side File Descriptor Table (`sdk/mlibc-sysdeps/iris/`):**
+  - Implemented per-process file descriptor table in [`include/iris/fd_table.h`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/include/iris/fd_table.h) and [`generic/generic.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/generic.cpp) supporting up to 256 file descriptors (`IRIS_MAX_FD`).
+  - Pre-allocated stdio descriptors (FDs 0, 1, 2) routed to the debuglog handle until explicit channels are bound.
+  - Implemented `sys_open`, `sys_read`, `sys_write`, `sys_close`, `sys_seek`, `sys_isatty`, and `sys_fstat` using the FD table.
+  - Added support for `/dev/console`, `/dev/debuglog`, `/dev/null`, and `/dev/zero` virtual character devices.
+- **Process Spawning Primitives & FD Inheritance (`sys_spawn`):**
+  - Implemented `mlibc::sys_spawn` in `generic.cpp` (wrapped with `#if !MLIBC_BUILDING_RTLD` to keep `ld-iris.so` freestanding).
+  - Iterates over active descriptors in `g_fd_table` and constructs `iris_spawn_action_t` arrays with `IRIS_SPAWN_ACTION_ADD_FD` / `PA_HND(PA_FD, fd)`.
+  - Injected `mlibc::sys_spawn` declaration and hook into `vendor/mlibc` via [`scripts/fetch_mlibc.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_mlibc.sh).
+  - Enhanced child process startup in [`entry.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/entry.cpp) to extract all `PA_HND(PA_FD, fd)` descriptors into the child's table upon launch.
+- **vDSO Dynamic System Call Dispatch (Zero Direct `syscall`s):**
+  - Exported complete C wrappers for all Zircon system calls (`zx_channel_*`, `zx_process_*`, `zx_thread_*`, `zx_vmo_*`, `zx_vmar_*`, `zx_clock_*`) dynamically dispatched through `libzircon.so` vDSO symbol lookup.
+  - Removed static `libzircon.a` from user application linking to eliminate illegal direct `syscall` instructions outside vDSO.
+- **Documentation:**
+  - Authored [`docs/build_system.md`](file:///Users/stefan/Dev/irisos/docs/build_system.md) documenting the multi-toolchain orchestrator, Homebrew LLVM setup, target triples, and dynamic linker architecture (`ld-iris.so` + `libc.so`).
+- **Dual-Architecture QEMU Verification Proofs:**
+  - x86_64 QEMU output:
+    ```text
+    [00005.815] 01051.01054> [irisOS] Welcome to irisOS (x86_64) - iris_init bootstrap successful!
+    [00005.815] 01051.01054> [iris_init] Root Resource: OK
+    [00005.840] 01051.01054> [iris_init] BOOTFS VMO: OK
+    [00005.840] 01051.01054> [iris_init] Root Job: OK
+    [00005.872] 01051.01054> [iris_init] vDSO VMO: OK
+    [00005.885] 01051.01054> [iris_init] Root VMAR: OK
+    [00005.899] 01051.01054> [iris_init] Located bin/hello_c in BOOTFS! Spawning process...
+    [00005.923] 01051.01054> [iris_init] Starting child process bin/hello_c...
+    [00005.935] 01064.01066> [hello_c] Hello from standard C on irisOS! malloc/free/printf working.
+    [00005.935] 01064.01066> [hello_c] FD Table: direct write(1) to stdout successful.
+    [00005.936] 01064.01066> [hello_c] FD Table: isatty(1)=1 isatty(2)=1 (console tty verified).
+    [00005.938] 01064.01066> [hello_c] FD Table: open("/dev/console") allocated fd 3, write OK.
+    [00005.938] 01064.01066> [hello_c] FD Table: close(fd 3) successful.
+    [00005.938] 01064.01066> [hello_c] FD Table: invalid fd rejection (EBADF) verified.
+    [00005.938] 01064.01066> [hello_c] POSIX Spawn: file actions init/adddup2/destroy working.
+    [00005.938] 01064.01066> [hello_c] All Phase 3 C runtime, FD table, and spawn verifications PASSED!
+    ```
+  - arm64 QEMU output:
+    ```text
+    [00008.847] 01044.01047> [irisOS] Welcome to irisOS (arm64) - iris_init bootstrap successful!
+    [00008.847] 01044.01047> [iris_init] Root Resource: OK
+    [00008.847] 01044.01047> [iris_init] BOOTFS VMO: OK
+    [00008.847] 01044.01047> [iris_init] Root Job: OK
+    [00008.847] 01044.01047> [iris_init] vDSO VMO: OK
+    [00008.847] 01044.01047> [iris_init] Root VMAR: OK
+    [00008.848] 01044.01047> [iris_init] Located bin/hello_c in BOOTFS! Spawning process...
+    [00008.850] 01044.01047> [iris_init] Starting child process bin/hello_c...
+    [00008.863] 01057.01059> [hello_c] Hello from standard C on irisOS! malloc/free/printf working.
+    [00008.866] 01057.01059> [hello_c] FD Table: direct write(1) to stdout successful.
+    [00008.867] 01057.01059> [hello_c] FD Table: isatty(1)=1 isatty(2)=1 (console tty verified).
+    [00008.869] 01057.01059> [hello_c] FD Table: open("/dev/console") allocated fd 3, write OK.
+    [00008.869] 01057.01059> [hello_c] FD Table: close(fd 3) successful.
+    [00008.869] 01057.01059> [hello_c] FD Table: invalid fd rejection (EBADF) verified.
+    [00008.870] 01057.01059> [hello_c] POSIX Spawn: file actions init/adddup2/destroy working.
+    [00008.870] 01057.01059> [hello_c] All Phase 3 C runtime, FD table, and spawn verifications PASSED!
+    ```
 
 ---
 

@@ -64,6 +64,10 @@
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/log.h>
 
+#ifndef PA_FD
+#define PA_FD 0x30u
+#endif
+
 #define IRIS_BOOTSTRAP_MAX_HANDLES 64
 #define IRIS_BOOTSTRAP_MSG_BYTES   4096
 
@@ -582,6 +586,20 @@ static void spawn_hello_c(void) {
     /* Transfer debuglog handle as PA_FDIO_LOGGER so printf output routes directly to UART console */
     g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
     info_array[num_h++] = PA_HND(PA_FDIO_LOGGER, 0);
+
+    /* Transfer standard inherited file descriptors 0 (stdin), 1 (stdout), 2 (stderr) */
+    g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
+    info_array[num_h++] = PA_HND(PA_FD, 0);
+
+    g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
+    info_array[num_h++] = PA_HND(PA_FD, 1);
+
+    g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
+    info_array[num_h++] = PA_HND(PA_FD, 2);
+
+    /* Transfer BOOTFS VMO handle for child process asset/executable access */
+    g_zx_handle_duplicate(g_bootfs_vmo, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
+    info_array[num_h++] = PA_HND(PA_VMO_BOOTFS, 0);
 
     uint8_t msg_buf[1024];
     iris_memset(msg_buf, 0, sizeof(msg_buf));

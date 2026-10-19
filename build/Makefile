@@ -214,6 +214,7 @@ hello-c-x86_64: mlibc-x86_64
 		-isystem "$$CLANG_RES" \
 		-isystem $(OUT_DIR)/build-x86_64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
@@ -226,6 +227,7 @@ hello-c-x86_64: mlibc-x86_64
 		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
 		$(OUT_DIR)/build-x86_64/hello_c.o \
 		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
+		$(OUT_DIR)/build-x86_64/lib/libiris.a \
 		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
 		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
 		-o $(OUT_DIR)/build-x86_64/bin/hello_c
@@ -239,6 +241,7 @@ hello-c-arm64: mlibc-arm64
 		-isystem "$$CLANG_RES" \
 		-isystem $(OUT_DIR)/build-arm64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
@@ -251,6 +254,7 @@ hello-c-arm64: mlibc-arm64
 		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
 		$(OUT_DIR)/build-arm64/hello_c.o \
 		$(OUT_DIR)/build-arm64/mlibc/libc.a \
+		$(OUT_DIR)/build-arm64/lib/libiris.a \
 		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
 		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
 		-o $(OUT_DIR)/build-arm64/bin/hello_c

@@ -14,6 +14,9 @@ builtins_dep = declare_dependency(link_args: ['-l:' + builtins_name])
 libc_deps += [builtins_dep]
 rtld_deps += [builtins_dep]
 
+iris_dep = declare_dependency(link_args: ['-l:libiris.a'])
+libc_deps += [iris_dep]
+
 rtld_sources += files(
 	'generic/generic.cpp',
 )

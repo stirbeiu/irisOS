@@ -102,6 +102,8 @@ target = "if host_machine.system() == '\''linux'\''"
 replacement = """if host_machine.system() == '\''iris'\''
 	rtld_include_dirs += include_directories('\''sysdeps/iris/include'\'')
 	libc_include_dirs += include_directories('\''sysdeps/iris/include'\'')
+	rtld_include_dirs += include_directories('\''../../sdk/libiris/include'\'')
+	libc_include_dirs += include_directories('\''../../sdk/libiris/include'\'')
 	internal_conf.set10('\''MLIBC_MAP_DSO_SEGMENTS'\'', true)
 	internal_conf.set10('\''MLIBC_MMAP_ALLOCATE_DSO'\'', true)
 	subdir('\''sysdeps/iris'\'')
@@ -114,6 +116,63 @@ if target in content:
     print("    [DONE] Successfully injected irisOS dispatch hook.")
 else:
     print("    [WARNING] Could not locate insertion point in meson.build.")
+'
+fi
+
+# Inject sys_spawn hook into vendor/mlibc/options/posix/generic/spawn.cpp
+if ! grep -q "mlibc::sys_spawn" "${TARGET_DIR}/options/posix/generic/spawn.cpp"; then
+    echo "==> Patching vendor/mlibc/options/posix/generic/spawn.cpp with sys_spawn hook..."
+    python3 -c '
+with open("'${TARGET_DIR}'/options/posix/generic/spawn.cpp", "r") as f:
+    content = f.read()
+
+if "#include <mlibc/posix-sysdeps.hpp>" not in content:
+    content = content.replace("#include <mlibc/debug.hpp>", "#include <mlibc/debug.hpp>\n#include <mlibc/posix-sysdeps.hpp>", 1)
+
+target = """int posix_spawn(pid_t *__restrict res, const char *__restrict path,
+		const posix_spawn_file_actions_t *file_actions,
+		const posix_spawnattr_t *__restrict attrs,
+		char *const argv[], char *const envp[]) {
+	pid_t pid;"""
+
+replacement = """int posix_spawn(pid_t *__restrict res, const char *__restrict path,
+		const posix_spawn_file_actions_t *file_actions,
+		const posix_spawnattr_t *__restrict attrs,
+		char *const argv[], char *const envp[]) {
+	if (mlibc::sys_spawn) {
+		return mlibc::sys_spawn(res, path, file_actions, attrs, argv, envp);
+	}
+	pid_t pid;"""
+
+if target in content:
+    content = content.replace(target, replacement, 1)
+    with open("'${TARGET_DIR}'/options/posix/generic/spawn.cpp", "w") as f:
+        f.write(content)
+    print("    [DONE] Injected sys_spawn hook into spawn.cpp")
+'
+fi
+
+# Inject sys_spawn declaration into vendor/mlibc/options/posix/include/mlibc/posix-sysdeps.hpp
+if ! grep -q "sys_spawn" "${TARGET_DIR}/options/posix/include/mlibc/posix-sysdeps.hpp"; then
+    echo "==> Patching posix-sysdeps.hpp with sys_spawn declaration..."
+    python3 -c '
+with open("'${TARGET_DIR}'/options/posix/include/mlibc/posix-sysdeps.hpp", "r") as f:
+    content = f.read()
+
+if "#include <spawn.h>" not in content:
+    content = content.replace("#include <sched.h>", "#include <sched.h>\n#include <spawn.h>", 1)
+
+target = "[[gnu::weak]] int sys_execve(const char *path, char *const argv[], char *const envp[]);"
+replacement = target + """\n[[gnu::weak]] int sys_spawn(pid_t *__restrict res, const char *__restrict path,
+                            const posix_spawn_file_actions_t *file_actions,
+                            const posix_spawnattr_t *__restrict attrs,
+                            char *const argv[], char *const envp[]);"""
+
+if target in content:
+    content = content.replace(target, replacement, 1)
+    with open("'${TARGET_DIR}'/options/posix/include/mlibc/posix-sysdeps.hpp", "w") as f:
+        f.write(content)
+    print("    [DONE] Injected sys_spawn into posix-sysdeps.hpp")
 '
 fi
 
