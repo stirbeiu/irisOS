@@ -9,14 +9,15 @@ All code in `kernel/`, `sdk/`, and shared system libraries (`/System/Libraries`)
 
 | Submodule / Component | Upstream Canonical URL | irisOS Mirror / Fork | License | Role in irisOS |
 | :--- | :--- | :--- | :--- | :--- |
-| **Zircon Microkernel** | `https://fuchsia.googlesource.com/fuchsia/+/refs/heads/main/zircon/` | Pinned tree in `kernel/zircon` | MIT / BSD 3-Clause | 64-bit microkernel, vDSO (`libzircon.so`), and host `zbi` tool |
+| **Zircon Microkernel** | `https://fuchsia.googlesource.com/zircon` | `https://github.com/stirbeiu/zircon-standalone` | MIT / BSD 3-Clause | 64-bit microkernel, vDSO (`libzircon.so`), and host `zbi` tool |
 | **mlibc** | `https://github.com/managarm/mlibc` | `https://github.com/stirbeiu/mlibc` | MIT | C Standard Library & dynamic linker (`libc.so`, `ld-iris.so`, `libc.a`) |
+| **frigg** | `https://github.com/managarm/frigg` | `https://github.com/stirbeiu/frigg` | BSD 2-Clause | C++ utility & data structure library required by mlibc |
 | **lwext4** | `https://github.com/gkostka/lwext4` | `https://github.com/stirbeiu/lwext4` | BSD 2-Clause | Ext4 filesystem implementation for `/System` and decrypted `/Users` |
 | **FatFs** | `http://elm-chan.org/fsw/ff/00index_e.html` | `https://github.com/stirbeiu/fatfs` | BSD-like (FatFs license) | FAT32 filesystem implementation for the UEFI `ESP` partition |
 | **mbedtls** | `https://github.com/Mbed-TLS/mbedtls` | `https://github.com/stirbeiu/mbedtls` | Apache 2.0 | AES-256-XTS & Argon2 cryptographic engine for `iris_crypt` |
 | **pixman** | `https://gitlab.freedesktop.org/pixman/pixman` | `https://github.com/stirbeiu/pixman` | MIT | 2D pixel manipulation library for `iris_compositor` & `libiris_gui` |
 | **FreeType** | `https://gitlab.freedesktop.org/freetype/freetype` | `https://github.com/stirbeiu/freetype` | FreeType License (FTL) / BSD | TrueType font rendering engine for desktop GUI |
-| **LLVM / compiler-rt** | `https://github.com/llvm/llvm-project` | Homebrew LLVM / compiler-rt | Apache 2.0 with LLVM Exception | Low-level runtime builtins (`libclang_rt.builtins-*.a`) |
+| **LLVM / compiler-rt** | `https://github.com/llvm/llvm-project` | `https://github.com/llvm/llvm-project` (Homebrew LLVM) | Apache 2.0 with LLVM Exception | Low-level runtime builtins (`libclang_rt.builtins-*.a`) |
 
 ---
 
@@ -30,6 +31,10 @@ Standalone executables that execute within their own isolated Ring 3 address spa
 ---
 
 ## Upstream Pinning & Mirroring Policy
-1. **Canonical Upstream Tracking:** The canonical URLs above represent the official development sources for all third-party software integrated into irisOS.
-2. **Permanent Availability:** To prevent supply-chain breakage, deleted upstream repositories, or breaking API changes, all external dependencies are mirrored or forked under `https://github.com/stirbeiu/<repo>`.
-3. **Submodule Pinning:** Vendor dependencies are referenced via pinned Git commit SHAs rather than tracking floating branches (`main` or `master`).
+1. **Canonical Upstream Tracking:** The canonical URLs above represent the official upstream development sources for all third-party software integrated into irisOS.
+2. **Permanent Availability & Supply-Chain Hardening:** To prevent dependency rot, supply-chain breakage, deleted upstream repositories, or unexpected upstream API changes, all external dependencies are mirrored or forked under `https://github.com/stirbeiu/<repo>`.
+3. **Primary / Fallback Fetch Architecture:** All fetch scripts in `scripts/fetch_*.sh` implement an automated failover strategy:
+   - Primary: GitHub mirror under `stirbeiu/`
+   - Fallback: Canonical upstream repository
+   - Feature `--clean` flags and shallow (`--depth 1`) clones to keep the host repository lightweight and reproducible.
+4. **Submodule Pinning:** Vendor dependencies are referenced via pinned Git commit SHAs and release tags rather than tracking floating branches (`main` or `master`).

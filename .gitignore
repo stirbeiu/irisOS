@@ -11,6 +11,18 @@ vendor/mlibc/*
 !vendor/mlibc/.gitkeep
 vendor/compiler-rt/*
 !vendor/compiler-rt/.gitkeep
+vendor/lwext4/*
+!vendor/lwext4/.gitkeep
+vendor/fatfs/*
+!vendor/fatfs/.gitkeep
+vendor/mbedtls/*
+!vendor/mbedtls/.gitkeep
+vendor/toybox/*
+!vendor/toybox/.gitkeep
+vendor/pixman/*
+!vendor/pixman/.gitkeep
+vendor/freetype/*
+!vendor/freetype/.gitkeep
 
 # macOS system files
 .DS_Store

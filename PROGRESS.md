@@ -378,9 +378,32 @@ welcome to Zircon
 
 ---
 
+### Step 3.4: Third-Party Dependency Hardening & GitHub Mirror Infrastructure
+- **Status:** COMPLETED
+- **Purpose:** Permanently protect irisOS against dependency rot, upstream branch deletion, or supply-chain outages.
+- **Mirrors Created & Populated under `stirbeiu`:**
+  - `stirbeiu/zircon-standalone`: Standalone Zircon microkernel mirror populated directly from verified `milestone-1011` tree with irisOS build patches.
+  - `stirbeiu/mlibc`: Fork of `managarm/mlibc` (pinned `v6.3.1`).
+  - `stirbeiu/frigg`: Fork of `managarm/frigg` (pinned `98220ab`).
+  - `stirbeiu/lwext4`: Fork of `gkostka/lwext4` (pinned `v1.0.0`).
+  - `stirbeiu/mbedtls`: Fork of `Mbed-TLS/mbedtls`.
+  - `stirbeiu/toybox`: Fork of `landley/toybox`.
+  - `stirbeiu/pixman`: Mirrored from `gitlab.freedesktop.org/pixman/pixman.git`.
+  - `stirbeiu/freetype`: Fork of `freetype/freetype`.
+- **Primary + Fallback Pattern across Fetch Scripts:**
+  - [`scripts/fetch_zircon.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_zircon.sh): Primary `stirbeiu/zircon-standalone.git` -> Fallback `fuchsia.googlesource.com/zircon` with `--clean` and shallow clone.
+  - [`scripts/fetch_mlibc.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_mlibc.sh): Primary `stirbeiu/mlibc.git` and `stirbeiu/frigg.git` -> Fallback `managarm/mlibc.git` and `managarm/frigg.git` with `--clean`.
+  - [`scripts/fetch_lwext4.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_lwext4.sh): Primary `stirbeiu/lwext4.git` -> Fallback `gkostka/lwext4.git` with `--clean`.
+- **Repository Isolation & Tracking:**
+  - Updated [`.gitignore`](file:///Users/stefan/Dev/irisos/.gitignore) to exclude all vendor trees (`vendor/mlibc/*`, `vendor/lwext4/*`, `vendor/fatfs/*`, `vendor/mbedtls/*`, `vendor/toybox/*`, `vendor/pixman/*`, `vendor/freetype/*`, `vendor/compiler-rt/*`) while preserving `.gitkeep` markers.
+  - Updated [`THIRD_PARTY_LICENSES.md`](file:///Users/stefan/Dev/irisos/THIRD_PARTY_LICENSES.md) with canonical upstream and mirror URLs.
+
+---
+
 ## Phase 3 Official Milestone Assessment
 **Phase 3 Milestone:** *"A standard C program using `#include <stdio.h>`, `malloc()`, and `printf()` compiles with Clang and runs on irisOS."*
 - **Status:** **100% COMPLETE & VERIFIED** on both `x86_64` and `aarch64`.
 - **Immediate Next Step:** Begin Phase 4: Step 4.1 — ECAM PCIe Bus Scanning & VirtIO Device Discovery.
+
 
 
