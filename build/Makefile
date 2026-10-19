@@ -146,10 +146,25 @@ build-arm64: tools kernel-arm64
 		-G Ninja
 	@ninja -C $(OUT_DIR)/build-arm64
 
+# ------------------------------------------------------------------------------
+# Image Creation & QEMU Execution
+# ------------------------------------------------------------------------------
+image-x86_64: build-x86_64
+	@$(BUILD_DIR)/mkimage.sh x86_64
+
+image-arm64: build-arm64
+	@$(BUILD_DIR)/mkimage.sh arm64
+
+run-x86: image-x86_64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64
+
+run-arm: image-arm64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64
+
 clean-kernel:
 	@rm -rf $(ZIRCON_DIR)/build-x64-clang $(ZIRCON_DIR)/build-arm64-clang
 	@echo "==> Cleaned kernel build outputs."
 
 clean: clean-kernel
-	@rm -rf $(OUT_DIR)/build-x86_64 $(OUT_DIR)/build-arm64 $(HOST_OUT)
+	@rm -rf $(OUT_DIR)/build-x86_64 $(OUT_DIR)/build-arm64 $(HOST_OUT) $(OUT_DIR)/images
 	@echo "==> Cleaned build output."

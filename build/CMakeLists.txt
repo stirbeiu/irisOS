@@ -179,7 +179,9 @@ target_link_options(iris_init PRIVATE
     -Wl,-z,nocopyreloc
 )
 
-target_link_libraries(iris_init PRIVATE zircon_static)
+# Note: iris_init does not link zircon_static because Zircon microkernel
+# requires all syscall instructions to execute from within the mapped vDSO.
+# iris_init resolves its syscall entry points dynamically from vdso_base.
 
 set_target_properties(iris_init PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
