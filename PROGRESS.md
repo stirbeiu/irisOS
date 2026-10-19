@@ -6,8 +6,8 @@ This document tracks progress, completed milestones, verification proofs, and im
 
 ## Current Status Overview
 - **Active Phase:** Phase 3 (The Safe SDK & mlibc Integration)
-- **Current Milestone:** Phase 1 & 2 Milestone COMPLETED (UEFI Gigaboot, vDSO Dynamic Resolver, Bootable Dual-ZBI, and Live QEMU Boot Verified)
-- **Overall Status:** Phase 1 & 2 Complete (100%). Proceeding to Phase 3.
+- **Current Milestone:** Phase 3 Step 3.1 COMPLETED (Safe SDK `libiris`, 24-byte IPC Wire Protocol, Channel/VMO/Spawn Primitives, and Dual-Arch Test Suite)
+- **Overall Status:** Phase 1 & 2 Complete (100%). Phase 3 in progress (Step 3.1 Complete).
 
 ---
 
@@ -171,6 +171,10 @@ This document tracks progress, completed milestones, verification proofs, and im
 | 2026-10-19 | **UEFI Full Boot (x86_64)** | `scripts/run_qemu.sh -a x86_64` | **BOOT SUCCESSFUL**: Gigaboot loaded `iris_a.zbi`, launched `userboot`, executed `bin/iris_init`, and printed full banner + capability verification |
 | 2026-10-19 | **UEFI Full Boot (arm64)** | `scripts/run_qemu.sh -a arm64` | **BOOT SUCCESSFUL**: Gigaboot loaded `iris_a.zbi`, booted kernel at EL1, initialized GICv2, PL011, timers, executed `bin/iris_init`, and printed full banner + capability verification |
 | 2026-10-19 | **Dual Output GUI & Serial** | `scripts/run_qemu.sh -a [arch] --gui` | **VERIFIED**: Cocoa GUI window displays graphical framebuffer console with mirrored serial output streamed simultaneously to terminal `stdio` for both x86_64 and arm64 |
+| 2026-10-19 | `libiris.a` & `libiris.so` (x86_64) | `ninja -C out/build-x86_64 iris_static iris_shared` | Verified static archive (54 KB) and ELF dynamic shared object (48 KB) with `SONAME [libiris.so]` and `DT_NEEDED [libzircon.so]` |
+| 2026-10-19 | `libiris.a` & `libiris.so` (arm64) | `ninja -C out/build-arm64 iris_static iris_shared` | Verified static archive (55 KB) and ELF dynamic shared object (50 KB) with `SONAME [libiris.so]` and `DT_NEEDED [libzircon.so]` |
+| 2026-10-19 | `test_libiris` (x86_64) | `ninja -C out/build-x86_64 test_libiris` | **VERIFIED**: Static-PIE ELF64 executable passes static assertions (24-byte header ABI, field offsets), IPC packing, spawn args, and symbol linkage |
+| 2026-10-19 | `test_libiris` (arm64) | `ninja -C out/build-arm64 test_libiris` | **VERIFIED**: Static-PIE ELF64 executable passes static assertions (24-byte header ABI, field offsets), IPC packing, spawn args, and symbol linkage |
 
 ### Live Boot Verification Output (arm64 QEMU + UEFI):
 ```text
@@ -250,17 +254,52 @@ welcome to Zircon
 
 ---
 
-## Phase 3: The Safe SDK (`libiris`) & `mlibc` Integration (NEXT MILESTONE)
-1. **SDK Zone (`sdk/libiris` - STRICTLY MIT):**
-   - Provide clean, type-safe C wrappers for Zircon handles, channels, VMOs, and ports.
-   - Implement the 24-byte `iris_msg_hdr_t` IPC wire protocol (`<iris/ipc.h>`).
-   - Implement process spawning primitives (`posix_spawn` over `zx_process_create`, `zx_process_start`, transferring `PA_HND(PA_FD, fd)`).
-2. **`mlibc` Sysdeps (`sdk/mlibc-sysdeps/iris/`):**
-   - Implement core irisOS sysdeps (`sys_anon_allocate`, `sys_vm_map`, `sys_write`, `sys_exit`, `sys_futex`, `sys_open`, `sys_read`).
-   - Implement client-side FD table mapping file descriptors to Zircon channels.
-3. **Cross-Compile `vendor/mlibc`:**
-   - Fetch pinned `vendor/mlibc` submodule.
-   - Cross-compile with Meson and Homebrew LLVM producing `libc.so` and `ld-iris.so`.
-4. **Milestone Verification:**
-   - A standard C program using `#include <stdio.h>`, `malloc()`, and `printf()` compiles with Clang and runs on irisOS.
+## Phase 3: The Safe SDK (`libiris`) & `mlibc` Integration (IN PROGRESS)
+
+### Step 3.1: Safe SDK (`sdk/libiris`) & IPC Wire Protocol
+- **Status:** COMPLETED
+- **Licensing:** STRICTLY MIT (Zone 1 SDK).
+- **Components Implemented:**
+  1. **IPC Wire Protocol ([`sdk/libiris/include/iris/ipc.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/ipc.h)):**
+     - Defined standard 24-byte packed C-ABI header `iris_msg_hdr_t` (`IRIS_IPC_MAGIC = 0x49524953`).
+     - Enforced 24-byte layout via compile-time `_Static_assert`.
+     - Standard protocol spaces: `IRIS_PROTO_SYSTEM` (`0x0001`), `IRIS_PROTO_FS` (`0x0002`), `IRIS_PROTO_CRYPT` (`0x0003`), `IRIS_PROTO_COMPOSITOR` (`0x0004`), `IRIS_PROTO_PTY` (`0x0005`), `IRIS_PROTO_DRIVER` (`0x0006`).
+     - Standard opcodes and status mappings matching Zircon status codes.
+     - Inline helpers: `iris_msg_hdr_init()`, `iris_msg_hdr_init_reply()`, `iris_msg_hdr_is_valid()`, `iris_msg_hdr_is_reply()`.
+  2. **Channel Primitives ([`sdk/libiris/include/iris/channel.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/channel.h) & [`src/channel.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/channel.c)):**
+     - `iris_channel_create()`: Bidirectional channel endpoint creation.
+     - `iris_channel_send()` & `iris_channel_recv()`: Ergonomic message transmission with capability handle transfer. Features an 8 KB stack optimization with heap-free temporary VMO mapping fallback for messages up to 64 KB.
+     - `iris_channel_call()`: Synchronous request/response transaction wrapping `zx_channel_call()`.
+     - `iris_channel_reply()` & `iris_channel_send_simple()`: Reply helpers.
+  3. **Virtual Memory Objects ([`sdk/libiris/include/iris/vmo.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/vmo.h) & [`src/vmo.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/vmo.c)):**
+     - `iris_vmo_create()`: Anonymous VMO allocation.
+     - `iris_vmo_map()` & `iris_vmo_map_offset()`: Mapping into root process VMAR or target VMAR.
+     - `iris_vmo_unmap()` & `iris_vmo_unmap_from()`: Virtual memory release.
+     - `iris_vmo_duplicate()`: Handle duplication with restricted rights (e.g. read-only permissions for window sharing).
+     - `iris_vmo_get_size()`, `iris_vmo_set_size()`, `iris_vmo_read()`, `iris_vmo_write()`.
+  4. **Process Spawning Primitives ([`sdk/libiris/include/iris/spawn.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/spawn.h) & [`src/spawn.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/spawn.c)):**
+     - Full `posix_spawn()` foundation over `zx_process_create()`, `zx_thread_create()`, and `zx_process_start()`.
+     - Serializes `zx_proc_args_t` bootstrap channel message with `argv`, `envp`, core capabilities (`PA_PROC_SELF`, `PA_THREAD_SELF`, `PA_VMAR_ROOT`, `PA_VMO_STACK`, `PA_VMO_VDSO`, `PA_JOB_DEFAULT`), and file descriptor inheritance via `PA_HND(PA_FD, target_fd)`.
+  5. **Runtime Capabilities ([`sdk/libiris/include/iris/init.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/init.h) & [`src/init.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/init.c)):**
+     - `iris_init_runtime()` and weak fallback symbol definitions for `zx_process_self()`, `zx_vmar_root_self()`, `zx_job_default()`.
+  6. **Master Umbrella Header ([`sdk/libiris/include/iris/iris.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/iris.h)) & Subsystem Documentation ([`docs/ipc_protocol.md`](file:///Users/stefan/Dev/irisos/docs/ipc_protocol.md)).**
+  7. **Standalone Test Suite ([`sdk/libiris/tests/test_libiris.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/tests/test_libiris.c)):**
+     - Standalone Static-PIE ELF64 executable validating header field offsets, packing logic, spawn arg structures, and clean linkage.
+- **Build Targets Produced & Verified:**
+  - `x86_64`:
+    - `out/build-x86_64/lib/libiris.a`: Static library archive (54 KB)
+    - `out/build-x86_64/lib/libiris.so`: Dynamic shared library (48 KB ELF 64-bit LSB shared object)
+    - `out/build-x86_64/bin/test_libiris`: Static-PIE ELF64 verification binary (48 KB)
+  - `aarch64`:
+    - `out/build-arm64/lib/libiris.a`: Static library archive (55 KB)
+    - `out/build-arm64/lib/libiris.so`: Dynamic shared library (50 KB ELF 64-bit LSB shared object)
+    - `out/build-arm64/bin/test_libiris`: Static-PIE ELF64 verification binary (50 KB)
+
+### Step 3.2: `mlibc` Sysdeps & Client-Side File Descriptor Table (IMMEDIATE NEXT STEP)
+- Implement `sdk/mlibc-sysdeps/iris/`:
+  - Client-side FD table mapping `int fd -> zx_handle_t channel`.
+  - Core POSIX sysdeps: `sys_anon_allocate`, `sys_anon_free`, `sys_vm_map`, `sys_vm_unmap`, `sys_write`, `sys_read`, `sys_open`, `sys_close`, `sys_seek`, `sys_exit`, `sys_futex`.
+- Fetch `vendor/mlibc` submodule.
+- Cross-compile with Meson and Homebrew LLVM producing `libc.so` and `ld-iris.so`.
+
 

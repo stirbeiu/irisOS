@@ -188,6 +188,111 @@ set_target_properties(iris_init PROPERTIES
 )
 
 # ==============================================================================
+# Target: libiris (irisOS Safe SDK - Zone 1 Permissive MIT)
+# ==============================================================================
+set(LIBIRIS_SRCS
+    "${IRIS_ROOT}/sdk/libiris/src/channel.c"
+    "${IRIS_ROOT}/sdk/libiris/src/vmo.c"
+    "${IRIS_ROOT}/sdk/libiris/src/spawn.c"
+    "${IRIS_ROOT}/sdk/libiris/src/init.c"
+)
+
+# 1. Static library (libiris.a)
+add_library(iris_static STATIC ${LIBIRIS_SRCS})
+add_dependencies(iris_static zircon_syscall_headers)
+
+target_include_directories(iris_static PUBLIC
+    "${IRIS_ROOT}/sdk/libiris/include"
+    "${GEN_DIR}"
+    "${GEN_DIR}/zircon"
+    "${ZIRCON_ROOT}/system/public"
+)
+
+target_compile_options(iris_static PRIVATE
+    -ffreestanding
+    -fPIC
+    -O2
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+set_target_properties(iris_static PROPERTIES
+    OUTPUT_NAME "iris"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
+
+# 2. Dynamic shared library (libiris.so)
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/lib/libiris.so"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/lib"
+    COMMAND "${CMAKE_C_COMPILER}"
+        "--target=${CMAKE_C_COMPILER_TARGET}"
+        "-Wl,-shared"
+        "-nostdlib"
+        "-fuse-ld=${CMAKE_LINKER}"
+        "-Wl,-soname,libiris.so"
+        "-Wl,--allow-shlib-undefined"
+        $<TARGET_OBJECTS:iris_static>
+        "-L${CMAKE_BINARY_DIR}/lib"
+        "-Wl,-Bdynamic"
+        "-lzircon"
+        "-o" "${CMAKE_BINARY_DIR}/lib/libiris.so"
+    DEPENDS iris_static zircon_shared
+    COMMENT "Linking dynamic shared library (libiris.so)"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+
+add_custom_target(iris_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libiris.so")
+
+# ==============================================================================
+# Target: test_libiris (Standalone Sanity / Verification Test)
+# ==============================================================================
+set(TEST_LIBIRIS_SRCS
+    "${IRIS_ROOT}/sdk/libiris/tests/test_libiris.c"
+)
+
+add_executable(test_libiris ${TEST_LIBIRIS_SRCS})
+add_dependencies(test_libiris zircon_syscall_headers iris_static zircon_static)
+
+target_include_directories(test_libiris PRIVATE
+    "${IRIS_ROOT}/sdk/libiris/include"
+    "${GEN_DIR}"
+    "${GEN_DIR}/zircon"
+    "${ZIRCON_ROOT}/system/public"
+)
+
+target_compile_options(test_libiris PRIVATE
+    -ffreestanding
+    -fno-builtin
+    -fno-stack-protector
+    -fPIE
+    -O2
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+target_link_libraries(test_libiris PRIVATE
+    iris_static
+    zircon_static
+)
+
+target_link_options(test_libiris PRIVATE
+    -nostdlib
+    -fuse-ld=${CMAKE_LINKER}
+    -Wl,-pie
+    -Wl,-e,_start
+    -Wl,--gc-sections
+    -Wl,-z,nocopyreloc
+)
+
+set_target_properties(test_libiris PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+# ==============================================================================
 # Target: Zircon Microkernel Core
 # ==============================================================================
 set(KERNEL_ROOT "${ZIRCON_ROOT}/kernel")
