@@ -108,15 +108,15 @@ else
     fi
 
     exec "${QEMU_BIN}" \
-        -M virt \
-        -cpu cortex-a57 \
+        -M virt,gic-version=2 \
+        -cpu cortex-a53 \
         -m 512M \
         -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive if=pflash,format=raw,file="${UEFI_VARS_TMP}" \
         -device virtio-blk-pci,drive=bootdisk \
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
-        "${ARM_EXTRA_ARGS[@]}" \
+        ${ARM_EXTRA_ARGS[@]+"${ARM_EXTRA_ARGS[@]}"} \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"
 fi

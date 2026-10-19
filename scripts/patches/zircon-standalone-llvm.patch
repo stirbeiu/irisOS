@@ -1,6 +1,6 @@
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/bootloader/build.mk kernel/zircon/bootloader/build.mk
---- a/bootloader/build.mk	2026-10-19 09:24:14
-+++ b/bootloader/build.mk	2026-10-19 08:46:19
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/bootloader/build.mk kernel/zircon/bootloader/build.mk
+--- /tmp/zircon_upstream.LflszF/zircon/bootloader/build.mk	2026-10-19 11:19:56
++++ kernel/zircon/bootloader/build.mk	2026-10-19 08:46:19
 @@ -102,11 +102,8 @@
  gigaboot: $(EFI_BOOTLOADER)
  
@@ -13,9 +13,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  endif
  
  -include $(EFI_DEPS)
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/bootloader/src/osboot.c kernel/zircon/bootloader/src/osboot.c
---- a/bootloader/src/osboot.c	2026-10-19 09:24:14
-+++ b/bootloader/src/osboot.c	2026-10-19 09:10:17
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/bootloader/src/osboot.c kernel/zircon/bootloader/src/osboot.c
+--- /tmp/zircon_upstream.LflszF/zircon/bootloader/src/osboot.c	2026-10-19 11:19:56
++++ kernel/zircon/bootloader/src/osboot.c	2026-10-19 09:57:40
 @@ -384,18 +384,27 @@
      //
      // Previously we requested 32MB but that caused issues. When the kernel
@@ -37,8 +37,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
          printf("boot: cannot obtain memory for kernel @ %p\n", (void*) kernel_zone_base);
          kernel_zone_size = 0;
      }
+-    printf("KALLOC DONE\n");
 +#endif
-     printf("KALLOC DONE\n");
++    printf("KALLOC DONE: kernel_zone_base @ 0x%llx\n", (unsigned long long)kernel_zone_base);
  
 -    // Default boot defaults to network
 -    const char* defboot = cmdline_get("bootloader.default", "network");
@@ -86,9 +87,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
              ktype = IMAGE_INVALID;
              ksz = 0;
              kernel = NULL;
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/bootloader/src/zircon.c kernel/zircon/bootloader/src/zircon.c
---- a/bootloader/src/zircon.c	2026-10-19 09:24:14
-+++ b/bootloader/src/zircon.c	2026-10-19 09:10:31
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/bootloader/src/zircon.c kernel/zircon/bootloader/src/zircon.c
+--- /tmp/zircon_upstream.LflszF/zircon/bootloader/src/zircon.c	2026-10-19 11:19:56
++++ kernel/zircon/bootloader/src/zircon.c	2026-10-19 09:10:31
 @@ -47,6 +47,11 @@
          "jmp *%[entry] \n" ::[entry] "a"(entry),
          [bootdata] "S"(bootdata),
@@ -144,9 +145,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  
  fail:
      return -1;
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/kernel/arch/arm64/fpu.cpp kernel/zircon/kernel/arch/arm64/fpu.cpp
---- a/kernel/arch/arm64/fpu.cpp	2026-10-19 09:24:14
-+++ b/kernel/arch/arm64/fpu.cpp	2026-10-19 00:46:25
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/fpu.cpp kernel/zircon/kernel/arch/arm64/fpu.cpp
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/fpu.cpp	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/fpu.cpp	2026-10-19 00:46:25
 @@ -30,7 +30,8 @@
      LTRACEF("cpu %u, thread %s, load fpstate %p\n", arch_curr_cpu_num(), t->name, fpstate);
  
@@ -181,9 +182,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
              : "=r"(fpsr));
      fpstate->fpcr = (uint32_t)fpcr;
      fpstate->fpsr = (uint32_t)fpsr;
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/kernel/arch/arm64/hypervisor/el2.S kernel/zircon/kernel/arch/arm64/hypervisor/el2.S
---- a/kernel/arch/arm64/hypervisor/el2.S	2026-10-19 09:24:14
-+++ b/kernel/arch/arm64/hypervisor/el2.S	2026-10-19 00:47:36
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/hypervisor/el2.S kernel/zircon/kernel/arch/arm64/hypervisor/el2.S
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/hypervisor/el2.S	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/hypervisor/el2.S	2026-10-19 00:47:36
 @@ -29,6 +29,8 @@
  // NOTE(abdulla): This excludes the top bit, as it is too large for VTCR_EL2.PS.
  #define ID_AA64MMFR0_EL1_PARANGE_MASK   0x07
@@ -193,9 +194,41 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  .section .text.el2,"ax",@progbits
  .align 12
  
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/kernel/arch/arm64/rules.mk kernel/zircon/kernel/arch/arm64/rules.mk
---- a/kernel/arch/arm64/rules.mk	2026-10-19 09:24:14
-+++ b/kernel/arch/arm64/rules.mk	2026-10-19 00:50:07
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/include/arch/arm64/mmu.h kernel/zircon/kernel/arch/arm64/include/arch/arm64/mmu.h
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/include/arch/arm64/mmu.h	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/include/arch/arm64/mmu.h	2026-10-19 10:36:56
+@@ -34,7 +34,7 @@
+ #endif
+ 
+ #ifndef MMU_IDENT_SIZE_SHIFT
+-#define MMU_IDENT_SIZE_SHIFT 42 /* Max size supported by block mappings */
++#define MMU_IDENT_SIZE_SHIFT 39 /* Max size supported by 1GB block mappings (4KB page size) */
+ #endif
+ 
+ // See ARM DDI 0487B.b, Table D4-25 for the maximum IPA range that can be used.
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/include/arch/current_thread.h kernel/zircon/kernel/arch/arm64/include/arch/current_thread.h
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/include/arch/current_thread.h	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/include/arch/current_thread.h	2026-10-19 11:12:35
+@@ -10,16 +10,7 @@
+ 
+ /* use the cpu local thread context pointer to store current_thread */
+ static inline struct thread* get_current_thread(void) {
+-#ifdef __clang__
+-    // Clang with --target=aarch64-fuchsia -mcmodel=kernel reads
+-    // TPIDR_EL1 for __builtin_thread_pointer (instead of the usual
+-    // TPIDR_EL0 for user mode).  Using the intrinsic instead of asm
+-    // lets the compiler understand what it's doing a little better,
+-    // which conceivably could let it optimize better.
+-    char* tp = (char*)__builtin_thread_pointer();
+-#else
+     char* tp = (char*)ARM64_READ_SYSREG(tpidr_el1);
+-#endif
+     tp -= offsetof(struct thread, arch.thread_pointer_location);
+     return (struct thread*)tp;
+ }
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/rules.mk kernel/zircon/kernel/arch/arm64/rules.mk
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/rules.mk	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/rules.mk	2026-10-19 11:12:46
 @@ -81,6 +81,9 @@
  
  # generate code for the fairly generic cortex-a53
@@ -206,7 +239,7 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  
  CLANG_ARCH := aarch64
  ifeq ($(call TOBOOL,$(USE_CLANG)),true)
-@@ -97,10 +100,9 @@
+@@ -97,15 +100,14 @@
  
  KERNEL_COMPILEFLAGS += -fPIE -include kernel/include/hidden.h
  
@@ -219,9 +252,137 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  endif
  
  # x18 is reserved in the Fuchsia userland ABI so it can be used
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/kernel/project/virtual/user.mk kernel/zircon/kernel/project/virtual/user.mk
---- a/kernel/project/virtual/user.mk	2026-10-19 09:24:14
-+++ b/kernel/project/virtual/user.mk	2026-10-19 08:45:17
+ # for things like -fsanitize=shadow-call-stack.  In the kernel,
+ # it's reserved so we can use it to point at the per-CPU structure.
+-ARCH_COMPILEFLAGS += -ffixed-x18
++ARCH_COMPILEFLAGS += -ffixed-x18 -fno-sanitize=shadow-call-stack -fno-stack-protector
+ 
+ include make/module.mk
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/start.S kernel/zircon/kernel/arch/arm64/start.S
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/start.S	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/start.S	2026-10-19 11:13:17
+@@ -36,7 +36,12 @@
+ // ignore it if this code were in .text.boot, so don't put it there).
+ .text
+ FUNCTION(_start)
+-    /* Save the Boot info for the primary CPU only */
++    /* Disable MMU if UEFI firmware left it enabled */
++    mrs     x9, sctlr_el1
++    mov     x10, #(1 << 0)
++    bic     x9, x9, x10
++    msr     sctlr_el1, x9
++    isb
+     mrs     cpuid, mpidr_el1
+     ubfx    cpuid, cpuid, #0, #15 /* mask Aff0 and Aff1 fields */
+     cbnz    cpuid, .Lno_save_bootinfo
+@@ -237,6 +242,7 @@
+     // path, which (unlike on x86, e.g.) is enough to get annoying.
+     adr_global tmp, boot_cpu_fake_thread_pointer_location
+     msr     tpidr_el1, tmp
++    msr     tpidr_el0, tmp
+ 
+     // set the per cpu pointer for cpu 0
+     adr_global x18, arm64_percpu_array
+@@ -256,6 +262,7 @@
+     cbz     x0, .Lunsupported_cpu_trap
+     mov     sp, x0
+     msr     tpidr_el1, x1
++    msr     tpidr_el0, x1
+ 
+     bl      arm64_secondary_entry
+ 
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/thread.cpp kernel/zircon/kernel/arch/arm64/thread.cpp
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/arch/arm64/thread.cpp	2026-10-19 11:19:56
++++ kernel/zircon/kernel/arch/arm64/thread.cpp	2026-10-19 11:10:22
+@@ -53,9 +53,11 @@
+ 
+     struct context_switch_frame* frame = (struct context_switch_frame*)(stack_top);
+     frame--;
++    memset(frame, 0, sizeof(*frame));
+ 
+     // fill in the entry point
+     frame->lr = entry_point;
++    frame->tpidr_el0 = (uint64_t)&t->arch.thread_pointer_location;
+ 
+     // This is really a global (boot-time) constant value.
+     // But it's stored in each thread struct to satisfy the
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/platform/generic-arm/platform.cpp kernel/zircon/kernel/platform/generic-arm/platform.cpp
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/platform/generic-arm/platform.cpp	2026-10-19 11:19:56
++++ kernel/zircon/kernel/platform/generic-arm/platform.cpp	2026-10-19 11:19:00
+@@ -41,10 +41,12 @@
+ #include <arch/arm64/periphmap.h>
+ #include <arch/mp.h>
+ 
++#include <vm/bootalloc.h>
+ #include <vm/bootreserve.h>
+ #include <vm/vm_aspace.h>
+ 
+ #include <lib/console.h>
++#include <lib/gfxconsole.h>
+ #include <lib/memory_limit.h>
+ #include <lib/debuglog.h>
+ #if WITH_PANIC_BACKTRACE
+@@ -82,6 +84,9 @@
+     /* .size */ 0, // filled in by zbi
+ };
+ 
++static struct display_info bootloader_display;
++static bool have_display = false;
++
+ // boot items to save for mexec
+ // TODO(voydanoff): more generic way of doing this that can be shared with PC platform
+ static uint8_t mexec_zbi[4096];
+@@ -277,7 +282,20 @@
+         save_mexec_zbi(item);
+         break;
+     }
++    case ZBI_TYPE_FRAMEBUFFER: {
++        if (item->length >= sizeof(zbi_swfb_t)) {
++            zbi_swfb_t* fb = reinterpret_cast<zbi_swfb_t*>(payload);
++            bootloader_display.format = fb->format;
++            bootloader_display.width = fb->width;
++            bootloader_display.height = fb->height;
++            bootloader_display.stride = fb->stride;
++            bootloader_display.flags = DISPLAY_FLAG_HW_FRAMEBUFFER;
++            bootloader_display.framebuffer = paddr_to_physmap(fb->base);
++            have_display = true;
++        }
++        break;
+     }
++    }
+ 
+     return ZBI_RESULT_OK;
+ }
+@@ -336,6 +354,13 @@
+ 
+     // Serial port should be active now
+ 
++    // Bind early graphical console if framebuffer was provided and requested
++    if (have_display && cmdline_get_bool("gfxconsole.early", false)) {
++        void* bits = boot_alloc_mem(8192 + bootloader_display.height * bootloader_display.stride * 4);
++        bits = (void*)((((uintptr_t)bits) + 4095) & (~4095));
++        gfxconsole_bind_display(&bootloader_display, bits);
++    }
++
+     // Read cmdline after processing zbi, which may contain cmdline data.
+     halt_on_panic = cmdline_get_bool("kernel.halt-on-panic", false);
+ 
+@@ -436,8 +461,11 @@
+     return 0;
+ }
+ 
+-/* no built in framebuffer */
++/* framebuffer info from bootloader */
+ zx_status_t display_get_info(struct display_info* info) {
++    if (have_display) {
++        return gfxconsole_display_get_info(info);
++    }
+     return ZX_ERR_NOT_FOUND;
+ }
+ 
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/project/virtual/user.mk kernel/zircon/kernel/project/virtual/user.mk
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/project/virtual/user.mk	2026-10-19 11:19:56
++++ kernel/zircon/kernel/project/virtual/user.mk	2026-10-19 08:45:17
 @@ -16,7 +16,12 @@
      kernel/lib/mtrace \
      kernel/object \
@@ -241,9 +402,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/utest/*/rules.mk))
 +endif
  endif
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/kernel/target/pc/rules.mk kernel/zircon/kernel/target/pc/rules.mk
---- a/kernel/target/pc/rules.mk	2026-10-19 09:24:14
-+++ b/kernel/target/pc/rules.mk	2026-10-19 00:27:36
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/kernel/target/pc/rules.mk kernel/zircon/kernel/target/pc/rules.mk
+--- /tmp/zircon_upstream.LflszF/zircon/kernel/target/pc/rules.mk	2026-10-19 11:19:56
++++ kernel/zircon/kernel/target/pc/rules.mk	2026-10-19 00:27:36
 @@ -18,4 +18,6 @@
  
  include make/module.mk
@@ -251,9 +412,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
 +ifeq ($(ENABLE_MULTIBOOT),true)
  include $(LOCAL_DIR)/multiboot/rules.mk
 +endif
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/make/engine.mk kernel/zircon/make/engine.mk
---- a/make/engine.mk	2026-10-19 09:24:14
-+++ b/make/engine.mk	2026-10-19 09:14:05
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/make/engine.mk kernel/zircon/make/engine.mk
+--- /tmp/zircon_upstream.LflszF/zircon/make/engine.mk	2026-10-19 11:19:56
++++ kernel/zircon/make/engine.mk	2026-10-19 09:14:05
 @@ -160,20 +160,37 @@
  GLOBAL_COMPILEFLAGS += -no-canonical-prefixes
  GLOBAL_COMPILEFLAGS += -Wno-address-of-packed-member
@@ -345,9 +506,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  endif
  
  
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/make/macros.mk kernel/zircon/make/macros.mk
---- a/make/macros.mk	2026-10-19 09:24:14
-+++ b/make/macros.mk	2026-10-19 00:45:08
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/make/macros.mk kernel/zircon/make/macros.mk
+--- /tmp/zircon_upstream.LflszF/zircon/make/macros.mk	2026-10-19 11:19:56
++++ kernel/zircon/make/macros.mk	2026-10-19 00:45:08
 @@ -62,14 +62,23 @@
  # inside a string.
  define MAKECONFIGHEADER
@@ -376,9 +537,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  endef
  
  # invoke a command $(1), using arguments $(2), putting those arguments
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/make/module-userapp.mk kernel/zircon/make/module-userapp.mk
---- a/make/module-userapp.mk	2026-10-19 09:24:14
-+++ b/make/module-userapp.mk	2026-10-19 00:36:56
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/make/module-userapp.mk kernel/zircon/make/module-userapp.mk
+--- /tmp/zircon_upstream.LflszF/zircon/make/module-userapp.mk	2026-10-19 11:19:56
++++ kernel/zircon/make/module-userapp.mk	2026-10-19 00:36:56
 @@ -63,7 +63,7 @@
  	@$(MKDIR)
  	$(call BUILDECHO,linking userapp $@)
@@ -388,9 +549,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  
  EXTRA_IDFILES += $(MODULE_USERAPP_OBJECT).id
  
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/make/module-userlib.mk kernel/zircon/make/module-userlib.mk
---- a/make/module-userlib.mk	2026-10-19 09:24:14
-+++ b/make/module-userlib.mk	2026-10-19 00:36:46
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/make/module-userlib.mk kernel/zircon/make/module-userlib.mk
+--- /tmp/zircon_upstream.LflszF/zircon/make/module-userlib.mk	2026-10-19 11:19:56
++++ kernel/zircon/make/module-userlib.mk	2026-10-19 00:36:46
 @@ -75,7 +75,7 @@
  	$(call BUILDECHO,linking userlib $@)
  	$(call BUILDCMD,$(USER_LD),$(_LDFLAGS) -shared $(_SONAME_FLAGS) $(_OBJS) \
@@ -400,9 +561,29 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  
  EXTRA_IDFILES += $(MODULE_LIBNAME).so.id
  
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/scripts/rodso.ld kernel/zircon/scripts/rodso.ld
---- a/scripts/rodso.ld	2026-10-19 09:24:14
-+++ b/scripts/rodso.ld	2026-10-19 08:54:43
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/scripts/gen-kaslr-fixups.sh kernel/zircon/scripts/gen-kaslr-fixups.sh
+--- /tmp/zircon_upstream.LflszF/zircon/scripts/gen-kaslr-fixups.sh	2026-10-19 11:19:56
++++ kernel/zircon/scripts/gen-kaslr-fixups.sh	2026-10-19 10:52:24
+@@ -95,6 +95,7 @@
+ $3 == "R_AARCH64_PREL32" || $3 == "R_AARCH64_PREL64" || \
+ $3 == "R_AARCH64_CALL26" || $3 == "R_AARCH64_JUMP26" || \
+ $3 == "R_AARCH64_CONDBR19" || $3 == "R_AARCH64_TSTBR14" || \
++$3 == "R_AARCH64_PLT32" || \
+ $3 ~ /^R_AARCH64_ADR_/ || $3 ~ /^R_AARCH64_.*ABS_L/ {
+     # PC-relative relocs need no fixup.
+     next
+@@ -113,7 +114,7 @@
+     r_offset = hex2num(raw_offset);
+     type = $3;
+     if (!(type in fixup_types)) {
+-        bad = "reloc type " + type
++        bad = "reloc type " type
+     } else if (secname == ".text.bootstrap16") {
+         # This section is a special case with some movabs instructions
+         # that can be fixed up safely but their immediates are not aligned.
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/scripts/rodso.ld kernel/zircon/scripts/rodso.ld
+--- /tmp/zircon_upstream.LflszF/zircon/scripts/rodso.ld	2026-10-19 11:19:56
++++ kernel/zircon/scripts/rodso.ld	2026-10-19 08:54:43
 @@ -88,12 +88,16 @@
      .plt : { *(.plt*) }
  
@@ -423,9 +604,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
             "rodso code must avoid dynamic relocations!")
  
      /*
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/system/host/abigen/kernel_wrapper_generator.cpp kernel/zircon/system/host/abigen/kernel_wrapper_generator.cpp
---- a/system/host/abigen/kernel_wrapper_generator.cpp	2026-10-19 09:24:14
-+++ b/system/host/abigen/kernel_wrapper_generator.cpp	2026-10-18 23:59:50
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/system/host/abigen/kernel_wrapper_generator.cpp kernel/zircon/system/host/abigen/kernel_wrapper_generator.cpp
+--- /tmp/zircon_upstream.LflszF/zircon/system/host/abigen/kernel_wrapper_generator.cpp	2026-10-19 11:19:56
++++ kernel/zircon/system/host/abigen/kernel_wrapper_generator.cpp	2026-10-18 23:59:50
 @@ -5,6 +5,7 @@
  #import "generator.h"
  
@@ -434,9 +615,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  #import <iterator>
  
  using std::ofstream;
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/system/host/rules.mk kernel/zircon/system/host/rules.mk
---- a/system/host/rules.mk	2026-10-19 09:24:14
-+++ b/system/host/rules.mk	2026-10-19 00:28:57
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/system/host/rules.mk kernel/zircon/system/host/rules.mk
+--- /tmp/zircon_upstream.LflszF/zircon/system/host/rules.mk	2026-10-19 11:19:56
++++ kernel/zircon/system/host/rules.mk	2026-10-19 00:28:57
 @@ -6,21 +6,7 @@
  
  HOSTAPPS := \
@@ -460,9 +641,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
 +
  
  include $(HOSTAPPS)
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/system/host/zbi/zbi.cpp kernel/zircon/system/host/zbi/zbi.cpp
---- a/system/host/zbi/zbi.cpp	2026-10-19 09:24:14
-+++ b/system/host/zbi/zbi.cpp	2026-10-18 23:57:42
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/system/host/zbi/zbi.cpp kernel/zircon/system/host/zbi/zbi.cpp
+--- /tmp/zircon_upstream.LflszF/zircon/system/host/zbi/zbi.cpp	2026-10-19 11:19:56
++++ kernel/zircon/system/host/zbi/zbi.cpp	2026-10-18 23:57:42
 @@ -388,7 +388,7 @@
                       buffer.iov_len);
      }
@@ -490,9 +671,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
      // The payload_ items might point into these buffers.  They're just
      // stored here to own the buffers until the payload is exhausted.
      std::forward_list<FileContents> files_;
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/system/ulib/runtime/rules.mk kernel/zircon/system/ulib/runtime/rules.mk
---- a/system/ulib/runtime/rules.mk	2026-10-19 09:24:14
-+++ b/system/ulib/runtime/rules.mk	2026-10-19 00:38:27
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/system/ulib/runtime/rules.mk kernel/zircon/system/ulib/runtime/rules.mk
+--- /tmp/zircon_upstream.LflszF/zircon/system/ulib/runtime/rules.mk	2026-10-19 11:19:56
++++ kernel/zircon/system/ulib/runtime/rules.mk	2026-10-19 00:38:27
 @@ -19,9 +19,6 @@
  MODULE_LIBS += \
      system/ulib/zircon
@@ -503,9 +684,9 @@ diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tm
  
  # This code is used in early startup, where safe-stack setup is not ready yet.
  MODULE_COMPILEFLAGS += $(NO_SAFESTACK) $(NO_SANITIZERS)
-diff -uNr --exclude=.git --exclude=build-* --exclude=gen --exclude=.DS_Store /tmp/zircon_upstream/system/ulib/tftp/rules.mk kernel/zircon/system/ulib/tftp/rules.mk
---- a/system/ulib/tftp/rules.mk	2026-10-19 09:24:14
-+++ b/system/ulib/tftp/rules.mk	2026-10-19 08:45:07
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/system/ulib/tftp/rules.mk kernel/zircon/system/ulib/tftp/rules.mk
+--- /tmp/zircon_upstream.LflszF/zircon/system/ulib/tftp/rules.mk	2026-10-19 11:19:56
++++ kernel/zircon/system/ulib/tftp/rules.mk	2026-10-19 08:45:07
 @@ -6,6 +6,7 @@
  
  MODULE := $(LOCAL_DIR)

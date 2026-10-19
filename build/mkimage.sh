@@ -80,9 +80,18 @@ fi
 mkdir -p "${BUILD_DIR}"
 IRIS_ZBI="${BUILD_DIR}/iris_a.zbi"
 echo "==> Creating bootable ZBI: ${IRIS_ZBI}"
+
+EXTRA_ZBI_INPUTS=()
+if [[ "${ARCH_NAME}" == "arm64" ]]; then
+    QEMU_BOARD_ZBI="${BUILD_DIR}/qemu_board.zbi"
+    python3 "${ROOT_DIR}/scripts/gen_qemu_arm64_zbi.py" "${QEMU_BOARD_ZBI}"
+    EXTRA_ZBI_INPUTS+=("${QEMU_BOARD_ZBI}")
+fi
+
 "${HOST_TOOLS}/zbi" -o "${IRIS_ZBI}" \
     --complete="${ZBI_ARCH}" \
     "${ZIRCON_BUILD}/kernel.zbi" \
+    ${EXTRA_ZBI_INPUTS[@]+"${EXTRA_ZBI_INPUTS[@]}"} \
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init"
 

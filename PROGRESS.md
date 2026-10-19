@@ -169,6 +169,53 @@ This document tracks progress, completed milestones, verification proofs, and im
 | 2026-10-19 | Disk Packaging | `./build/mkimage.sh x86_64` | Created `iris_a.zbi` (1.3 MB) and FAT32 UEFI `esp_x86_64.img` (64 MB) |
 | 2026-10-19 | Disk Packaging | `./build/mkimage.sh arm64` | Created `iris_a.zbi` (1.2 MB) and FAT32 UEFI `esp_arm64.img` (64 MB) |
 | 2026-10-19 | **UEFI Full Boot (x86_64)** | `scripts/run_qemu.sh -a x86_64` | **BOOT SUCCESSFUL**: Gigaboot loaded `iris_a.zbi`, launched `userboot`, executed `bin/iris_init`, and printed full banner + capability verification |
+| 2026-10-19 | **UEFI Full Boot (arm64)** | `scripts/run_qemu.sh -a arm64` | **BOOT SUCCESSFUL**: Gigaboot loaded `iris_a.zbi`, booted kernel at EL1, initialized GICv2, PL011, timers, executed `bin/iris_init`, and printed full banner + capability verification |
+| 2026-10-19 | **Dual Output GUI & Serial** | `scripts/run_qemu.sh -a [arch] --gui` | **VERIFIED**: Cocoa GUI window displays graphical framebuffer console with mirrored serial output streamed simultaneously to terminal `stdio` for both x86_64 and arm64 |
+
+### Live Boot Verification Output (arm64 QEMU + UEFI):
+```text
+======================================================================
+ Launching irisOS (arm64) in QEMU with UEFI...
+ Bootloader: Gigaboot (UEFI)
+ Image:      /Users/stefan/Dev/irisos/out/images/esp_arm64.img
+ Firmware:   /opt/homebrew/share/qemu/edk2-aarch64-code.fd
+ Display:    Headless Serial Console Only (-display none)
+ (Press Ctrl+A then X in terminal to terminate QEMU, or close the GUI window)
+======================================================================
+BdsDxe: loading Boot0001 "UEFI Non-Block Boot Device" from PciRoot(0x0)/Pci(0x2,0x0)
+BdsDxe: starting Boot0001 "UEFI Non-Block Boot Device" from PciRoot(0x0)/Pci(0x2,0x0)
+KALLOC DONE: kernel_zone_base @ 0x5bf48000
+boot image is a kernel+ramdisk combo image
+ramdisk @ 0x5be29000
+[00000.000] 00000.00000> PMM: boot reserve add [0x5bf48000, 0x5c0b1fff]
+[00000.000] 00000.00000> mem_arena.base 0x40000000 size 0x20000000
+[00000.000] 00000.00000> detected GICv2
+[00000.000] 00000.00000> GICv2m 0: base spi 80 count 64
+[00000.000] 00000.00000> arm generic timer freq 62500000 Hz
+[00008.560] 00000.00000> reserving ramdisk phys range [0x5be21000, 0x5be29fff]
+[00008.597] 00000.00000> welcome to Zircon
+[00008.597] 00000.00000> KASLR: .text section at 0xffffffff10000000
+[00008.611] 00000.00000> initializing heap
+[00008.612] 00000.00000> initializing vm
+[00008.615] 00000.00000> initializing kernel
+[00008.615] 00000.00000> initializing mp
+[00008.615] 00000.00000> initializing timers
+[00008.617] 00000.00000> creating bootstrap completion thread
+[00008.632] 00000.00000> top of bootstrap2()
+[00008.640] 00000.00000> UART: started IRQ driven TX
+[00008.640] 00000.00000> GICv2 MSI init
+[00008.668] 00000.00000> userboot: ramdisk          0x9000 @ 0xffff00005be21000
+[00008.696] 01030.01037> userboot: searching bootfs for 'bin/iris_init'
+[00008.698] 01030.01037> userboot: userboot: loaded bin/iris_init at 0xaf66c6d24000, entry point 0xaf66c6d344f4
+[00008.698] 01030.01037> userboot: userboot: loaded vDSO at 0x9f9fdf09c000, entry point 0x0
+[00008.703] 01044.01047> [irisOS] Welcome to irisOS (arm64) - iris_init bootstrap successful!
+[00008.703] 01044.01047> [iris_init] Root Resource: OK
+[00008.703] 01044.01047> [iris_init] BOOTFS VMO: OK
+[00008.703] 01044.01047> [iris_init] Root Job: OK
+[00008.703] 01044.01047> [iris_init] vDSO VMO: OK
+[00008.705] 01030.01037> userboot: process bin/iris_init started.
+[00008.705] 01030.01037> userboot: finished!
+```
 
 ### Live Boot Verification Output (x86_64 QEMU + UEFI):
 ```text
