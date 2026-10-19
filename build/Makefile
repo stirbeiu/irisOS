@@ -156,10 +156,16 @@ image-arm64: build-arm64
 	@$(BUILD_DIR)/mkimage.sh arm64
 
 run-x86: image-x86_64
-	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 $(if $(filter 1,$(GUI)),--gui,)
 
 run-arm: image-arm64
-	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 $(if $(filter 1,$(GUI)),--gui,)
+
+run-x86-gui: image-x86_64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 --gui
+
+run-arm-gui: image-arm64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 --gui
 
 clean-kernel:
 	@rm -rf $(ZIRCON_DIR)/build-x64-clang $(ZIRCON_DIR)/build-arm64-clang

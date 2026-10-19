@@ -14,6 +14,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGES_DIR="${ROOT_DIR}/out/images"
 
 ARCH="x86_64"
+GUI="${GUI:-0}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -21,13 +22,17 @@ while [[ $# -gt 0 ]]; do
             ARCH="$2"
             shift 2
             ;;
+        -g|--gui)
+            GUI=1
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [-a x86_64|arm64]"
+            echo "Usage: $0 [-a x86_64|arm64] [-g|--gui]"
             exit 0
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [-a x86_64|arm64]"
+            echo "Usage: $0 [-a x86_64|arm64] [-g|--gui]"
             exit 1
             ;;
     esac
@@ -67,12 +72,21 @@ if [[ ! -f "${UEFI_CODE}" ]]; then
     exit 1
 fi
 
+if [[ "${GUI}" == "1" ]]; then
+    DISPLAY_MODE="Cocoa GUI Window (-display cocoa)"
+    DISPLAY_ARGS=("-display" "cocoa")
+else
+    DISPLAY_MODE="Headless Serial Console Only (-display none)"
+    DISPLAY_ARGS=("-display" "none")
+fi
+
 echo "======================================================================"
 echo " Launching irisOS (${ARCH_NAME}) in QEMU with UEFI..."
 echo " Bootloader: Gigaboot (UEFI)"
 echo " Image:      ${ESP_IMAGE}"
 echo " Firmware:   ${UEFI_CODE}"
-echo " (Press Ctrl+A then X to terminate QEMU)"
+echo " Display:    ${DISPLAY_MODE}"
+echo " (Press Ctrl+A then X in terminal to terminate QEMU, or close the GUI window)"
 echo "======================================================================"
 
 if [[ "${ARCH_NAME}" == "x86_64" ]]; then
@@ -83,10 +97,15 @@ if [[ "${ARCH_NAME}" == "x86_64" ]]; then
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive file="${ESP_IMAGE}",format=raw,if=virtio \
         -serial stdio \
-        -display none
+        "${DISPLAY_ARGS[@]}"
 else
     # Prepare writable vars for arm64 UEFI
     cp -f "${UEFI_VARS_SRC}" "${UEFI_VARS_TMP}"
+
+    ARM_EXTRA_ARGS=()
+    if [[ "${GUI}" == "1" ]]; then
+        ARM_EXTRA_ARGS+=("-device" "ramfb")
+    fi
 
     exec "${QEMU_BIN}" \
         -M virt \
@@ -97,6 +116,7 @@ else
         -drive if=pflash,format=raw,file="${UEFI_VARS_TMP}" \
         -device virtio-blk-pci,drive=bootdisk \
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
+        "${ARM_EXTRA_ARGS[@]}" \
         -serial stdio \
-        -display none
+        "${DISPLAY_ARGS[@]}"
 fi
