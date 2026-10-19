@@ -10,7 +10,7 @@ Higher-layer Google Fuchsia frameworks—including FIDL, Scenic, Dart, Flutter, 
 ## 2. Wire Format Specification
 
 ### 2.1 Binary Layout (`iris_msg_hdr_t`)
-The header is declared in [`sdk/libiris/include/iris/ipc.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/ipc.h) and packed with `#pragma pack(push, 4)`. Compile-time static assertions (`_Static_assert(sizeof(iris_msg_hdr_t) == 24)`) enforce its exact size across both `x86_64` and `aarch64`.
+The header is declared in [`sdk/libiris/include/iris/ipc.h`](../sdk/libiris/include/iris/ipc.h) and packed with `#pragma pack(push, 4)`. Compile-time static assertions (`_Static_assert(sizeof(iris_msg_hdr_t) == 24)`) enforce its exact size across both `x86_64` and `aarch64`.
 
 ```text
  0                   1                   2                   3
@@ -128,23 +128,23 @@ When `iris_spawn()` executes, it writes these tags into the bootstrap message, e
 
 ## 5. Safe SDK (`libiris`) API Reference
 
-The C API is exposed via [`sdk/libiris/include/iris/iris.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/iris.h):
+The C API is exposed via [`sdk/libiris/include/iris/iris.h`](../sdk/libiris/include/iris/iris.h):
 
-### 5.1 Channel Primitives ([`channel.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/channel.h))
+### 5.1 Channel Primitives ([`channel.h`](../sdk/libiris/include/iris/channel.h))
 * `iris_channel_create(uint32_t flags, zx_handle_t* out_ch0, zx_handle_t* out_ch1)`: Creates a bidirectional channel pair.
 * `iris_channel_send(zx_handle_t channel, const iris_msg_hdr_t* hdr, const void* payload, const zx_handle_t* handles, uint32_t num_handles)`: Sends an IPC message and optional handles. Uses an internal 8 KB stack buffer for speed, falling back to temporary VMO mapping for payloads up to 64 KB without requiring a libc heap.
 * `iris_channel_recv(zx_handle_t channel, iris_msg_hdr_t* out_hdr, void* out_payload, uint32_t max_payload_len, uint32_t* actual_payload_len, zx_handle_t* out_handles, uint32_t max_handles, uint32_t* actual_handles)`: Reads a message, validates `IRIS_IPC_MAGIC`, unpacks payload, and acquires handles.
 * `iris_channel_call(zx_handle_t channel, const iris_msg_hdr_t* req_hdr, ...)`: Performs a synchronous request/response transaction using `zx_channel_call()`.
 * `iris_channel_reply(...)`: Helper to build and transmit a matching response with identical `txid`.
 
-### 5.2 Virtual Memory Objects ([`vmo.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/vmo.h))
+### 5.2 Virtual Memory Objects ([`vmo.h`](../sdk/libiris/include/iris/vmo.h))
 * `iris_vmo_create(size_t size, uint32_t options, zx_handle_t* out_vmo)`: Allocates an anonymous VMO.
 * `iris_vmo_map(zx_handle_t vmo, zx_vm_option_t options, uintptr_t* out_addr, size_t* out_mapped_size)`: Maps the entire VMO into current process root VMAR.
 * `iris_vmo_map_offset(...)`: Maps a sub-range into an explicit VMAR.
 * `iris_vmo_unmap(uintptr_t addr, size_t size)`: Unmaps virtual memory.
 * `iris_vmo_duplicate(zx_handle_t vmo, zx_rights_t rights, zx_handle_t* out_handle)`: Duplicates a VMO handle with specific rights (e.g. read-only permissions for window sharing).
 
-### 5.3 Process Spawning ([`spawn.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/spawn.h))
+### 5.3 Process Spawning ([`spawn.h`](../sdk/libiris/include/iris/spawn.h))
 * `iris_spawn(const iris_spawn_args_t* args, zx_handle_t* out_process, zx_handle_t* out_thread)`:
   * Creates process and initial thread via `zx_process_create()` and `zx_thread_create()`.
   * Maps initial stack VMO and vDSO.
@@ -152,14 +152,14 @@ The C API is exposed via [`sdk/libiris/include/iris/iris.h`](file:///Users/stefa
   * Writes to bootstrap channel and launches execution via `zx_process_start()`.
 * `iris_spawn_simple(...)`: Convenience wrapper for minimal process creation.
 
-### 5.4 Runtime Capability Accessors ([`init.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/init.h))
+### 5.4 Runtime Capability Accessors ([`init.h`](../sdk/libiris/include/iris/init.h))
 * `iris_init_runtime(zx_handle_t proc, zx_handle_t vmar, zx_handle_t job)`: Sets process-wide capability handles.
 * `iris_process_self()`, `iris_vmar_root_self()`, `iris_job_default()`: Accessors with weak fallback symbols resolving `zx_process_self()`, `zx_vmar_root_self()`, and `zx_job_default()`.
 
 ---
 
 ## 6. Verification & Test Suite
-The standalone verification binary [`sdk/libiris/tests/test_libiris.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/tests/test_libiris.c) validates:
+The standalone verification binary [`sdk/libiris/tests/test_libiris.c`](../sdk/libiris/tests/test_libiris.c) validates:
 1. Static field offsets and 24-byte alignment guarantees.
 2. `iris_msg_hdr_init()` and `iris_msg_hdr_init_reply()` request/reply pairing.
 3. `iris_msg_hdr_is_valid()` protocol filtering and bounds checks.

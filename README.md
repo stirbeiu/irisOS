@@ -42,9 +42,9 @@ Cross-compilation is configured via `/opt/homebrew/opt/llvm` binaries in `build/
 
 ## Documentation & Roadmap
 
-- See [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md) for full architectural specifications, licensing boundaries, and the 6-phase roadmap.
-- See [`PROGRESS.md`](file:///Users/stefan/Dev/irisos/PROGRESS.md) for live step-by-step progress and verification logs.
-- See [`THIRD_PARTY_LICENSES.md`](file:///Users/stefan/Dev/irisos/THIRD_PARTY_LICENSES.md) for licensing details of upstream third-party dependencies.
+- See [`AGENTS.md`](AGENTS.md) for full architectural specifications, licensing boundaries, and the 6-phase roadmap.
+- See [`PROGRESS.md`](PROGRESS.md) for live step-by-step progress and verification logs.
+- See [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for licensing details of upstream third-party dependencies.
 
 ## Maintainers & Contributors
 
@@ -53,4 +53,4 @@ Cross-compilation is configured via `/opt/homebrew/opt/llvm` binaries in `build/
 
 ## License
 
-irisOS source code is licensed under the [MIT License](file:///Users/stefan/Dev/irisos/LICENSE). All third-party upstream components adhere to the Two-Zone Licensing Policy defined in [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md).
+irisOS source code is licensed under the [MIT License](LICENSE). All third-party upstream components adhere to the Two-Zone Licensing Policy defined in [`AGENTS.md`](AGENTS.md).

@@ -16,7 +16,7 @@ This document tracks progress, completed milestones, verification proofs, and im
 ### Step 1.1: Architectural Lock-In & Specification Hardening
 - **Status:** COMPLETED
 - **Details:**
-  - Updated [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md) with 9 locked-in architectural specifications:
+  - Updated [`AGENTS.md`](AGENTS.md) with 9 locked-in architectural specifications:
     1. Host Environment (macOS Apple Silicon with Homebrew LLVM).
     2. Pinned Zircon source tree build with standalone CMake/Ninja wrapper (no `jiri` or Fuchsia `GN`).
     3. `userboot` to `iris_init` bootstrap channel ABI using `<zircon/processargs.h>`.
@@ -40,11 +40,11 @@ This document tracks progress, completed milestones, verification proofs, and im
 - **Status:** COMPLETED
 - **Details:**
   - Created CMake cross-compilation files pointing to Homebrew LLVM binaries:
-    - [`build/toolchains/x86_64-iris.cmake`](file:///Users/stefan/Dev/irisos/build/toolchains/x86_64-iris.cmake) (`x86_64-unknown-elf`, `-fuse-ld=lld`)
-    - [`build/toolchains/arm64-iris.cmake`](file:///Users/stefan/Dev/irisos/build/toolchains/arm64-iris.cmake) (`aarch64-unknown-elf`, `-fuse-ld=lld`)
+    - [`build/toolchains/x86_64-iris.cmake`](build/toolchains/x86_64-iris.cmake) (`x86_64-unknown-elf`, `-fuse-ld=lld`)
+    - [`build/toolchains/arm64-iris.cmake`](build/toolchains/arm64-iris.cmake) (`aarch64-unknown-elf`, `-fuse-ld=lld`)
   - Created Meson cross-compilation files for `mlibc`, `pixman`, and `freetype`:
-    - [`build/toolchains/meson-x86_64.txt`](file:///Users/stefan/Dev/irisos/build/toolchains/meson-x86_64.txt)
-    - [`build/toolchains/meson-arm64.txt`](file:///Users/stefan/Dev/irisos/build/toolchains/meson-arm64.txt)
+    - [`build/toolchains/meson-x86_64.txt`](build/toolchains/meson-x86_64.txt)
+    - [`build/toolchains/meson-arm64.txt`](build/toolchains/meson-arm64.txt)
 
 ### Step 1.4: Host Development Dependencies
 - **Status:** COMPLETED
@@ -66,7 +66,7 @@ This document tracks progress, completed milestones, verification proofs, and im
 
 ### Step 1.5: Pinned Standalone Zircon Fetch Script
 - **Status:** COMPLETED
-- **Script:** [`scripts/fetch_zircon.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_zircon.sh)
+- **Script:** [`scripts/fetch_zircon.sh`](scripts/fetch_zircon.sh)
 - **Upstream:** `https://fuchsia.googlesource.com/zircon`
 - **Pinned Commit:** `86b09d1d34dbd44390cee58e95f795f89169ea79` (branch `milestone-1011`)
 - **Fetched Components in `kernel/zircon/`:**
@@ -89,8 +89,8 @@ This document tracks progress, completed milestones, verification proofs, and im
 ### Step 1.7: Standalone CMake/Ninja Build Harness & vDSO
 - **Status:** COMPLETED
 - **Files Created:**
-  - [`build/CMakeLists.txt`](file:///Users/stefan/Dev/irisos/build/CMakeLists.txt): Master CMake build harness for `libzircon` (vDSO) and syscall generation.
-  - [`build/Makefile`](file:///Users/stefan/Dev/irisos/build/Makefile): Top-level orchestrator calling CMake, Ninja, and host tool builds.
+  - [`build/CMakeLists.txt`](build/CMakeLists.txt): Master CMake build harness for `libzircon` (vDSO) and syscall generation.
+  - [`build/Makefile`](build/Makefile): Top-level orchestrator calling CMake, Ninja, and host tool builds.
 - **Artifacts Produced & Verified:**
   - `x86_64`:
     - `out/build-x86_64/lib/libzircon.a`: Static archive (93 KB)
@@ -101,7 +101,7 @@ This document tracks progress, completed milestones, verification proofs, and im
 
 ### Step 1.8: Freestanding `iris_init` Bootstrap & Dynamic vDSO Resolver
 - **Status:** COMPLETED
-- **Source File:** [`servers/iris_init/src/main.c`](file:///Users/stefan/Dev/irisos/servers/iris_init/src/main.c)
+- **Source File:** [`servers/iris_init/src/main.c`](servers/iris_init/src/main.c)
 - **Features Implemented:**
   - Freestanding C entry point `_start(void* start_arg, void* vdso_base)` conforming to Section 4.4 of AGENTS.md (no standard `int main` runtime).
   - Built-in ELF64 dynamic symbol resolver that parses the mapped vDSO's `PT_DYNAMIC`, `DT_SYMTAB`, and `DT_STRTAB` directly from `vdso_base`. This strictly complies with Zircon microkernel policy requiring all `syscall` instructions to execute from within the mapped vDSO code pages (`valid_pc(pc - vdso_code_address)`), completely eliminating `ZX_EXCP_POLICY_ERROR` faults.
@@ -122,7 +122,7 @@ This document tracks progress, completed milestones, verification proofs, and im
 - **Kernel Targets:**
   - `x86_64`: `out/build-x86_64/kernel/zircon.elf` (14 MB) & `out/build-x86_64/kernel/kernel.zbi` (1.3 MB)
   - `arm64`: `out/build-arm64/kernel/zircon.elf` (12 MB) & `out/build-arm64/kernel/kernel.zbi` (1.1 MB)
-- **Orchestration:** Integrated `kernel-x86_64` and `kernel-arm64` targets into [`build/Makefile`](file:///Users/stefan/Dev/irisos/build/Makefile).
+- **Orchestration:** Integrated `kernel-x86_64` and `kernel-arm64` targets into [`build/Makefile`](build/Makefile).
 
 ### Step 1.10: UEFI Bootloader (Gigaboot) & ARM64 UEFI Support
 - **Status:** COMPLETED
@@ -137,15 +137,15 @@ This document tracks progress, completed milestones, verification proofs, and im
 
 ### Step 1.11: Dual-ZBI Packaging & FAT32 ESP Disk Creation
 - **Status:** COMPLETED
-- **Packaging Script:** [`build/mkimage.sh`](file:///Users/stefan/Dev/irisos/build/mkimage.sh)
+- **Packaging Script:** [`build/mkimage.sh`](build/mkimage.sh)
 - **Features:**
   - Uses native host `out/host/zbi` tool to combine `kernel.zbi`, commandline arguments (`userboot=bin/iris_init kernel.serial=legacy`), and `bin/iris_init` into a bootable `iris_a.zbi` image.
   - Generates a 64 MB FAT32 UEFI ESP disk image (`esp_x86_64.img` / `esp_arm64.img`) formatted with `mformat`, populated with `/EFI/BOOT/BOOTX64.EFI` (or `BOOTAA64.EFI`) and `/EFI/BOOT/iris_a.zbi`.
 
 ### Step 1.12: QEMU UEFI Virtual Machine Launcher
 - **Status:** COMPLETED
-- **Launcher Script:** [`scripts/run_qemu.sh`](file:///Users/stefan/Dev/irisos/scripts/run_qemu.sh)
-- **Makefile Integration:** `make run-x86` and `make run-arm` in [`build/Makefile`](file:///Users/stefan/Dev/irisos/build/Makefile).
+- **Launcher Script:** [`scripts/run_qemu.sh`](scripts/run_qemu.sh)
+- **Makefile Integration:** `make run-x86` and `make run-arm` in [`build/Makefile`](build/Makefile).
 - **Execution:** Boots QEMU with EDK2 OVMF/AAVMF UEFI firmware, VirtIO storage, and stdio serial console redirection.
 
 ---
@@ -181,7 +181,7 @@ This document tracks progress, completed milestones, verification proofs, and im
 ======================================================================
  Launching irisOS (arm64) in QEMU with UEFI...
  Bootloader: Gigaboot (UEFI)
- Image:      /Users/stefan/Dev/irisos/out/images/esp_arm64.img
+ Image:      out/images/esp_arm64.img
  Firmware:   /opt/homebrew/share/qemu/edk2-aarch64-code.fd
  Display:    Headless Serial Console Only (-display none)
  (Press Ctrl+A then X in terminal to terminate QEMU, or close the GUI window)
@@ -226,7 +226,7 @@ ramdisk @ 0x5be29000
 ======================================================================
  Launching irisOS (x86_64) in QEMU with UEFI...
  Bootloader: Gigaboot (UEFI)
- Image:      /Users/stefan/Dev/irisos/out/images/esp_x86_64.img
+ Image:      out/images/esp_x86_64.img
  Firmware:   /opt/homebrew/share/qemu/edk2-x86_64-code.fd
  (Press Ctrl+A then X to terminate QEMU)
 ======================================================================
@@ -260,30 +260,30 @@ welcome to Zircon
 - **Status:** COMPLETED
 - **Licensing:** STRICTLY MIT (Zone 1 SDK).
 - **Components Implemented:**
-  1. **IPC Wire Protocol ([`sdk/libiris/include/iris/ipc.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/ipc.h)):**
+  1. **IPC Wire Protocol ([`sdk/libiris/include/iris/ipc.h`](sdk/libiris/include/iris/ipc.h)):**
      - Defined standard 24-byte packed C-ABI header `iris_msg_hdr_t` (`IRIS_IPC_MAGIC = 0x49524953`).
      - Enforced 24-byte layout via compile-time `_Static_assert`.
      - Standard protocol spaces: `IRIS_PROTO_SYSTEM` (`0x0001`), `IRIS_PROTO_FS` (`0x0002`), `IRIS_PROTO_CRYPT` (`0x0003`), `IRIS_PROTO_COMPOSITOR` (`0x0004`), `IRIS_PROTO_PTY` (`0x0005`), `IRIS_PROTO_DRIVER` (`0x0006`).
      - Standard opcodes and status mappings matching Zircon status codes.
      - Inline helpers: `iris_msg_hdr_init()`, `iris_msg_hdr_init_reply()`, `iris_msg_hdr_is_valid()`, `iris_msg_hdr_is_reply()`.
-  2. **Channel Primitives ([`sdk/libiris/include/iris/channel.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/channel.h) & [`src/channel.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/channel.c)):**
+  2. **Channel Primitives ([`sdk/libiris/include/iris/channel.h`](sdk/libiris/include/iris/channel.h) & [`src/channel.c`](sdk/libiris/src/channel.c)):**
      - `iris_channel_create()`: Bidirectional channel endpoint creation.
      - `iris_channel_send()` & `iris_channel_recv()`: Ergonomic message transmission with capability handle transfer. Features an 8 KB stack optimization with heap-free temporary VMO mapping fallback for messages up to 64 KB.
      - `iris_channel_call()`: Synchronous request/response transaction wrapping `zx_channel_call()`.
      - `iris_channel_reply()` & `iris_channel_send_simple()`: Reply helpers.
-  3. **Virtual Memory Objects ([`sdk/libiris/include/iris/vmo.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/vmo.h) & [`src/vmo.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/vmo.c)):**
+  3. **Virtual Memory Objects ([`sdk/libiris/include/iris/vmo.h`](sdk/libiris/include/iris/vmo.h) & [`src/vmo.c`](sdk/libiris/src/vmo.c)):**
      - `iris_vmo_create()`: Anonymous VMO allocation.
      - `iris_vmo_map()` & `iris_vmo_map_offset()`: Mapping into root process VMAR or target VMAR.
      - `iris_vmo_unmap()` & `iris_vmo_unmap_from()`: Virtual memory release.
      - `iris_vmo_duplicate()`: Handle duplication with restricted rights (e.g. read-only permissions for window sharing).
      - `iris_vmo_get_size()`, `iris_vmo_set_size()`, `iris_vmo_read()`, `iris_vmo_write()`.
-  4. **Process Spawning Primitives ([`sdk/libiris/include/iris/spawn.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/spawn.h) & [`src/spawn.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/spawn.c)):**
+  4. **Process Spawning Primitives ([`sdk/libiris/include/iris/spawn.h`](sdk/libiris/include/iris/spawn.h) & [`src/spawn.c`](sdk/libiris/src/spawn.c)):**
      - Full `posix_spawn()` foundation over `zx_process_create()`, `zx_thread_create()`, and `zx_process_start()`.
      - Serializes `zx_proc_args_t` bootstrap channel message with `argv`, `envp`, core capabilities (`PA_PROC_SELF`, `PA_THREAD_SELF`, `PA_VMAR_ROOT`, `PA_VMO_STACK`, `PA_VMO_VDSO`, `PA_JOB_DEFAULT`), and file descriptor inheritance via `PA_HND(PA_FD, target_fd)`.
-  5. **Runtime Capabilities ([`sdk/libiris/include/iris/init.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/init.h) & [`src/init.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/init.c)):**
+  5. **Runtime Capabilities ([`sdk/libiris/include/iris/init.h`](sdk/libiris/include/iris/init.h) & [`src/init.c`](sdk/libiris/src/init.c)):**
      - `iris_init_runtime()` and weak fallback symbol definitions for `zx_process_self()`, `zx_vmar_root_self()`, `zx_job_default()`.
-  6. **Master Umbrella Header ([`sdk/libiris/include/iris/iris.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/iris.h)) & Subsystem Documentation ([`docs/ipc_protocol.md`](file:///Users/stefan/Dev/irisos/docs/ipc_protocol.md)).**
-  7. **Standalone Test Suite ([`sdk/libiris/tests/test_libiris.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/tests/test_libiris.c)):**
+  6. **Master Umbrella Header ([`sdk/libiris/include/iris/iris.h`](sdk/libiris/include/iris/iris.h)) & Subsystem Documentation ([`docs/ipc_protocol.md`](docs/ipc_protocol.md)).**
+  7. **Standalone Test Suite ([`sdk/libiris/tests/test_libiris.c`](sdk/libiris/tests/test_libiris.c)):**
      - Standalone Static-PIE ELF64 executable validating header field offsets, packing logic, spawn arg structures, and clean linkage.
 - **Build Targets Produced & Verified:**
   - `x86_64`:
@@ -300,10 +300,10 @@ welcome to Zircon
 - **Licensing:** STRICTLY MIT (Permissive Zone 1 System Libraries).
 - **Components Implemented:**
   1. **Vendor Tree Isolation & Fetch Scripts:**
-     - [`scripts/fetch_mlibc.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_mlibc.sh): Fetches pinned `mlibc` tag `v6.3.1` (`2444b0997c91c327b9989f25e4b8bd2c053d3194`) and pre-clones dependency `frigg` at pinned commit `98220ab8f3ac6b1f146c360598a334f7f1fc06e1`. Injects irisOS dispatch into `vendor/mlibc/meson.build` and symlinks `vendor/mlibc/sysdeps/iris -> sdk/mlibc-sysdeps/iris`.
-     - [`scripts/fetch_compiler_rt.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_compiler_rt.sh): Sparse-checkouts LLVM `compiler-rt/lib/builtins` (pinned tag `llvmorg-21.1.0`) into `vendor/compiler-rt/lib/builtins/` to provide soft-float quadruple precision (128-bit `long double` for ARM64) and complex arithmetic.
-     - [`.gitignore`](file:///Users/stefan/Dev/irisos/.gitignore): Excludes `vendor/mlibc/*` and `vendor/compiler-rt/*` to keep the main Git repository lightweight while preserving `.gitkeep`.
-  2. **irisOS Sysdeps Layer ([`sdk/mlibc-sysdeps/iris/`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/)):**
+     - [`scripts/fetch_mlibc.sh`](scripts/fetch_mlibc.sh): Fetches pinned `mlibc` tag `v6.3.1` (`2444b0997c91c327b9989f25e4b8bd2c053d3194`) and pre-clones dependency `frigg` at pinned commit `98220ab8f3ac6b1f146c360598a334f7f1fc06e1`. Injects irisOS dispatch into `vendor/mlibc/meson.build` and symlinks `vendor/mlibc/sysdeps/iris -> sdk/mlibc-sysdeps/iris`.
+     - [`scripts/fetch_compiler_rt.sh`](scripts/fetch_compiler_rt.sh): Sparse-checkouts LLVM `compiler-rt/lib/builtins` (pinned tag `llvmorg-21.1.0`) into `vendor/compiler-rt/lib/builtins/` to provide soft-float quadruple precision (128-bit `long double` for ARM64) and complex arithmetic.
+     - [`.gitignore`](.gitignore): Excludes `vendor/mlibc/*` and `vendor/compiler-rt/*` to keep the main Git repository lightweight while preserving `.gitkeep`.
+  2. **irisOS Sysdeps Layer ([`sdk/mlibc-sysdeps/iris/`](sdk/mlibc-sysdeps/iris/)):**
      - **Memory Management (`generic/generic.cpp`):** `sys_anon_allocate`, `sys_anon_free`, `sys_vm_map`, `sys_vm_unmap` using Zircon VMOs (`zx_vmo_create`) and VMAR mappings (`zx_vmar_map`, `zx_vmar_unmap`).
      - **Debug Console Output:** `sys_libc_log` and `sys_write` routing directly to `zx_debuglog_write()` via startup logging handles, enabling instant `printf()` output over serial console before VFS initialization.
      - **Process Termination:** `sys_exit` mapping directly to `zx_process_exit()`.
@@ -317,9 +317,9 @@ welcome to Zircon
      - `generic/thread.cpp`: `__mlibc_enter_thread()` and `sys_prepare_stack()`.
      - Register unpacking assembly: `generic/thread_entry_x86_64.S` and `generic/thread_entry_aarch64.S`.
   4. **Build System Orchestration:**
-     - Cross-compilation toolchain files: [`build/toolchains/meson-x86_64.txt`](file:///Users/stefan/Dev/irisos/build/toolchains/meson-x86_64.txt) and [`build/toolchains/meson-arm64.txt`](file:///Users/stefan/Dev/irisos/build/toolchains/meson-arm64.txt) configured with Homebrew LLVM Clang, `-nostdlib`, `-nostdinc++`, `-ffreestanding`, and `-D_GNU_SOURCE`.
-     - Integrated `builtins-x86_64`, `builtins-arm64`, `mlibc-x86_64`, `mlibc-arm64`, and `mlibc` targets into [`build/Makefile`](file:///Users/stefan/Dev/irisos/build/Makefile).
-     - Subsystem documentation in [`docs/mlibc_sysdeps.md`](file:///Users/stefan/Dev/irisos/docs/mlibc_sysdeps.md).
+     - Cross-compilation toolchain files: [`build/toolchains/meson-x86_64.txt`](build/toolchains/meson-x86_64.txt) and [`build/toolchains/meson-arm64.txt`](build/toolchains/meson-arm64.txt) configured with Homebrew LLVM Clang, `-nostdlib`, `-nostdinc++`, `-ffreestanding`, and `-D_GNU_SOURCE`.
+     - Integrated `builtins-x86_64`, `builtins-arm64`, `mlibc-x86_64`, `mlibc-arm64`, and `mlibc` targets into [`build/Makefile`](build/Makefile).
+     - Subsystem documentation in [`docs/mlibc_sysdeps.md`](docs/mlibc_sysdeps.md).
 - **Artifacts Produced & Verified:**
   - `x86_64`:
     - `out/build-x86_64/mlibc/libc.a`: Static C library archive (11 MB)
@@ -339,10 +339,10 @@ welcome to Zircon
 ### Step 3.3: First User-Space C Program (`apps/tests/hello_c`) in QEMU
 - **Status:** COMPLETED
 - **Source Files:**
-  - [`apps/tests/hello_c/main.c`](file:///Users/stefan/Dev/irisos/apps/tests/hello_c/main.c): Standard POSIX C application using `#include <stdio.h>`, `<stdlib.h>`, and `<string.h>`, allocating memory via `malloc()`, copying via `strcpy()`, printing formatted text via `printf()`, and releasing via `free()`.
-  - [`sdk/mlibc-sysdeps/iris/generic/entry.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/entry.cpp): Implemented static-PIE self-relocation (`self_relocate()`) processing `R_X86_64_RELATIVE` and `R_AARCH64_RELATIVE` relocations from `.dynamic` (`DT_RELA`), executing global initializers (`run_init_array()`), initializing stdio files (`stdin`, `stdout`, `stderr`), and cleanly exiting via `fflush(nullptr); mlibc::sys_exit(result);`.
-  - [`servers/iris_init/src/main.c`](file:///Users/stefan/Dev/irisos/servers/iris_init/src/main.c): Freestanding BOOTFS ELF loader resolving segments, creating child process/thread, mapping the child vDSO in accordance with Zircon microkernel policies (`VDso::valid_code_mapping`), and passing `g_debuglog_handle` as `PA_FDIO_LOGGER` so `printf()` streams directly to the UART console.
-  - [`sdk/libiris/src/spawn.c`](file:///Users/stefan/Dev/irisos/sdk/libiris/src/spawn.c): Enhanced `iris_elf_load_segments()` with 64-bit page masks and vDSO segment support.
+  - [`apps/tests/hello_c/main.c`](apps/tests/hello_c/main.c): Standard POSIX C application using `#include <stdio.h>`, `<stdlib.h>`, and `<string.h>`, allocating memory via `malloc()`, copying via `strcpy()`, printing formatted text via `printf()`, and releasing via `free()`.
+  - [`sdk/mlibc-sysdeps/iris/generic/entry.cpp`](sdk/mlibc-sysdeps/iris/generic/entry.cpp): Implemented static-PIE self-relocation (`self_relocate()`) processing `R_X86_64_RELATIVE` and `R_AARCH64_RELATIVE` relocations from `.dynamic` (`DT_RELA`), executing global initializers (`run_init_array()`), initializing stdio files (`stdin`, `stdout`, `stderr`), and cleanly exiting via `fflush(nullptr); mlibc::sys_exit(result);`.
+  - [`servers/iris_init/src/main.c`](servers/iris_init/src/main.c): Freestanding BOOTFS ELF loader resolving segments, creating child process/thread, mapping the child vDSO in accordance with Zircon microkernel policies (`VDso::valid_code_mapping`), and passing `g_debuglog_handle` as `PA_FDIO_LOGGER` so `printf()` streams directly to the UART console.
+  - [`sdk/libiris/src/spawn.c`](sdk/libiris/src/spawn.c): Enhanced `iris_elf_load_segments()` with 64-bit page masks and vDSO segment support.
 - **Verification Commands & Results:**
   - Build commands:
     ```bash
@@ -384,7 +384,7 @@ welcome to Zircon
   - Removed `lwext4` to eliminate GPL contamination risks in shared libraries and Ring 3 daemons.
   - Migrated primary root and user filesystems to **FreeBSD UFS2 / FFS (`libufs`, BSD 2-Clause)**.
   - Created standalone public repository [`stirbeiu/libufs-standalone`](https://github.com/stirbeiu/libufs-standalone) containing userland `libufs` and kernel UFS2/FFS structures extracted from FreeBSD 14.2 (`releng/14.2`).
-  - Implemented [`scripts/fetch_ufs.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_ufs.sh) featuring primary mirror fetching with automatic fallback to FreeBSD upstream and `--clean` support.
+  - Implemented [`scripts/fetch_ufs.sh`](scripts/fetch_ufs.sh) featuring primary mirror fetching with automatic fallback to FreeBSD upstream and `--clean` support.
 - **Mirrors Created & Populated under `stirbeiu`:**
   - `stirbeiu/zircon-standalone`: Standalone Zircon microkernel mirror populated directly from verified `milestone-1011` tree with irisOS build patches.
   - `stirbeiu/libufs-standalone`: Standalone BSD 2-Clause UFS2/FFS filesystem and `libufs` library mirror.
@@ -395,32 +395,32 @@ welcome to Zircon
   - `stirbeiu/pixman`: Mirrored from `gitlab.freedesktop.org/pixman/pixman.git`.
   - `stirbeiu/freetype`: Fork of `freetype/freetype`.
 - **Primary + Fallback Pattern across Fetch Scripts:**
-  - [`scripts/fetch_zircon.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_zircon.sh): Primary `stirbeiu/zircon-standalone.git` -> Fallback `fuchsia.googlesource.com/zircon` with `--clean` and shallow clone.
-  - [`scripts/fetch_mlibc.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_mlibc.sh): Primary `stirbeiu/mlibc.git` and `stirbeiu/frigg.git` -> Fallback `managarm/mlibc.git` and `managarm/frigg.git` with `--clean`.
-  - [`scripts/fetch_ufs.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_ufs.sh): Primary `stirbeiu/libufs-standalone.git` -> Fallback `freebsd/freebsd-src.git` (`releng/14.2`) with `--clean`.
+  - [`scripts/fetch_zircon.sh`](scripts/fetch_zircon.sh): Primary `stirbeiu/zircon-standalone.git` -> Fallback `fuchsia.googlesource.com/zircon` with `--clean` and shallow clone.
+  - [`scripts/fetch_mlibc.sh`](scripts/fetch_mlibc.sh): Primary `stirbeiu/mlibc.git` and `stirbeiu/frigg.git` -> Fallback `managarm/mlibc.git` and `managarm/frigg.git` with `--clean`.
+  - [`scripts/fetch_ufs.sh`](scripts/fetch_ufs.sh): Primary `stirbeiu/libufs-standalone.git` -> Fallback `freebsd/freebsd-src.git` (`releng/14.2`) with `--clean`.
 - **Repository Isolation & Tracking:**
-  - Updated [`.gitignore`](file:///Users/stefan/Dev/irisos/.gitignore) to exclude all vendor trees (`vendor/mlibc/*`, `vendor/libufs/*`, `vendor/fatfs/*`, `vendor/mbedtls/*`, `vendor/toybox/*`, `vendor/pixman/*`, `vendor/freetype/*`, `vendor/compiler-rt/*`) while preserving `.gitkeep` markers.
-  - Updated [`THIRD_PARTY_LICENSES.md`](file:///Users/stefan/Dev/irisos/THIRD_PARTY_LICENSES.md) and [`AGENTS.md`](file:///Users/stefan/Dev/irisos/AGENTS.md) confirming 100% permissive licensing across the kernel, SDK, and Ring 3 servers.
+  - Updated [`.gitignore`](.gitignore) to exclude all vendor trees (`vendor/mlibc/*`, `vendor/libufs/*`, `vendor/fatfs/*`, `vendor/mbedtls/*`, `vendor/toybox/*`, `vendor/pixman/*`, `vendor/freetype/*`, `vendor/compiler-rt/*`) while preserving `.gitkeep` markers.
+  - Updated [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) and [`AGENTS.md`](AGENTS.md) confirming 100% permissive licensing across the kernel, SDK, and Ring 3 servers.
 
 ---
 
 ### Step 3.5: Client-Side File Descriptor Table, `posix_spawn` & FD Inheritance (100% VERIFIED)
 - **Status:** COMPLETED & VERIFIED
 - **Client-Side File Descriptor Table (`sdk/mlibc-sysdeps/iris/`):**
-  - Implemented per-process file descriptor table in [`include/iris/fd_table.h`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/include/iris/fd_table.h) and [`generic/generic.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/generic.cpp) supporting up to 256 file descriptors (`IRIS_MAX_FD`).
+  - Implemented per-process file descriptor table in [`include/iris/fd_table.h`](sdk/mlibc-sysdeps/iris/include/iris/fd_table.h) and [`generic/generic.cpp`](sdk/mlibc-sysdeps/iris/generic/generic.cpp) supporting up to 256 file descriptors (`IRIS_MAX_FD`).
   - Pre-allocated stdio descriptors (FDs 0, 1, 2) routed to the debuglog handle until explicit channels are bound.
   - Implemented `sys_open`, `sys_read`, `sys_write`, `sys_close`, `sys_seek`, `sys_isatty`, and `sys_fstat` using the FD table.
   - Added support for `/dev/console`, `/dev/debuglog`, `/dev/null`, and `/dev/zero` virtual character devices.
 - **Process Spawning Primitives & FD Inheritance (`sys_spawn`):**
   - Implemented `mlibc::sys_spawn` in `generic.cpp` (wrapped with `#if !MLIBC_BUILDING_RTLD` to keep `ld-iris.so` freestanding).
   - Iterates over active descriptors in `g_fd_table` and constructs `iris_spawn_action_t` arrays with `IRIS_SPAWN_ACTION_ADD_FD` / `PA_HND(PA_FD, fd)`.
-  - Injected `mlibc::sys_spawn` declaration and hook into `vendor/mlibc` via [`scripts/fetch_mlibc.sh`](file:///Users/stefan/Dev/irisos/scripts/fetch_mlibc.sh).
-  - Enhanced child process startup in [`entry.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/entry.cpp) to extract all `PA_HND(PA_FD, fd)` descriptors into the child's table upon launch.
+  - Injected `mlibc::sys_spawn` declaration and hook into `vendor/mlibc` via [`scripts/fetch_mlibc.sh`](scripts/fetch_mlibc.sh).
+  - Enhanced child process startup in [`entry.cpp`](sdk/mlibc-sysdeps/iris/generic/entry.cpp) to extract all `PA_HND(PA_FD, fd)` descriptors into the child's table upon launch.
 - **vDSO Dynamic System Call Dispatch (Zero Direct `syscall`s):**
   - Exported complete C wrappers for all Zircon system calls (`zx_channel_*`, `zx_process_*`, `zx_thread_*`, `zx_vmo_*`, `zx_vmar_*`, `zx_clock_*`) dynamically dispatched through `libzircon.so` vDSO symbol lookup.
   - Removed static `libzircon.a` from user application linking to eliminate illegal direct `syscall` instructions outside vDSO.
 - **Documentation:**
-  - Authored [`docs/build_system.md`](file:///Users/stefan/Dev/irisos/docs/build_system.md) documenting the multi-toolchain orchestrator, Homebrew LLVM setup, target triples, and dynamic linker architecture (`ld-iris.so` + `libc.so`).
+  - Authored [`docs/build_system.md`](docs/build_system.md) documenting the multi-toolchain orchestrator, Homebrew LLVM setup, target triples, and dynamic linker architecture (`ld-iris.so` + `libc.so`).
 - **Dual-Architecture QEMU Verification Proofs:**
   - x86_64 QEMU output:
     ```text
@@ -496,7 +496,7 @@ welcome to Zircon
   - Updated `scripts/run_qemu.sh` to attach the virtual drive via `-drive file=out/images/disk_<arch>.raw,if=none,id=hd0,format=raw -device virtio-blk-pci,drive=hd0`.
   - In `iris_init`: discovers VirtIO block controller, spawns `bin/virtio_blk`, issues `BLK_GET_INFO`, writes 512-byte verification pattern to Sector 100, reads it back over IPC, and verifies 512/512 bytes match.
 - **Documentation:**
-  - Authored [`docs/virtio_drivers.md`](file:///Users/stefan/Dev/irisos/docs/virtio_drivers.md) detailing unified PCIe ECAM architecture, VirtIO 1.0 compliance, BTI DMA lifecycle, and block IPC protocol.
+  - Authored [`docs/virtio_drivers.md`](docs/virtio_drivers.md) detailing unified PCIe ECAM architecture, VirtIO 1.0 compliance, BTI DMA lifecycle, and block IPC protocol.
 - **Dual-Architecture QEMU Verification Proofs:**
   - **x86_64 QEMU Console Output (`make run-x86`):**
     ```text

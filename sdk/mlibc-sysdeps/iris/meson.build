@@ -5,16 +5,19 @@ sysdep_supported_options = {
 	'bsd': true,
 }
 
-zircon_dep = declare_dependency(link_args: ['-l:libzircon.a'])
+arch_dir = host_machine.cpu_family() == 'aarch64' ? 'build-arm64' : 'build-x86_64'
+lib_dir = meson.project_source_root() / '../../out' / arch_dir / 'lib'
+
+zircon_dep = declare_dependency(link_args: ['-L' + lib_dir, '-l:libzircon.a'])
 libc_deps += [zircon_dep]
 rtld_deps += [zircon_dep]
 
 builtins_name = 'libclang_rt.builtins-' + host_machine.cpu_family() + '.a'
-builtins_dep = declare_dependency(link_args: ['-l:' + builtins_name])
+builtins_dep = declare_dependency(link_args: ['-L' + lib_dir, '-l:' + builtins_name])
 libc_deps += [builtins_dep]
 rtld_deps += [builtins_dep]
 
-iris_dep = declare_dependency(link_args: ['-l:libiris.a'])
+iris_dep = declare_dependency(link_args: ['-L' + lib_dir, '-l:libiris.a'])
 libc_deps += [iris_dep]
 
 rtld_sources += files(

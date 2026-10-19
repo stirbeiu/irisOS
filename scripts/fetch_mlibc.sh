@@ -104,6 +104,11 @@ replacement = """if host_machine.system() == '\''iris'\''
 	libc_include_dirs += include_directories('\''sysdeps/iris/include'\'')
 	rtld_include_dirs += include_directories('\''../../sdk/libiris/include'\'')
 	libc_include_dirs += include_directories('\''../../sdk/libiris/include'\'')
+	rtld_include_dirs += include_directories('\''../../kernel/zircon/system/public'\'')
+	libc_include_dirs += include_directories('\''../../kernel/zircon/system/public'\'')
+	iris_arch_gen = host_machine.cpu_family() == '\''aarch64'\'' ? '\''../../out/build-arm64/gen'\'' : '\''../../out/build-x86_64/gen'\''
+	rtld_include_dirs += include_directories(iris_arch_gen)
+	libc_include_dirs += include_directories(iris_arch_gen)
 	internal_conf.set10('\''MLIBC_MAP_DSO_SEGMENTS'\'', true)
 	internal_conf.set10('\''MLIBC_MMAP_ALLOCATE_DSO'\'', true)
 	subdir('\''sysdeps/iris'\'')

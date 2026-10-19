@@ -83,10 +83,10 @@ irisOS targets 64-bit architectures only with zero legacy 16-bit or 32-bit suppo
 ### 4.3 Native SDK (`sdk/libiris/`)
 * Built via CMake as both static (`libiris.a`) and shared (`libiris.so`) libraries.
 * Provides:
-  * 24-byte IPC wire protocol header ([`iris/ipc.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/ipc.h)).
-  * Channel message/handle transfer primitives ([`iris/channel.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/channel.h)).
-  * VMO allocation and mapping helpers ([`iris/vmo.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/vmo.h)).
-  * User-space process spawning primitives ([`iris/spawn.h`](file:///Users/stefan/Dev/irisos/sdk/libiris/include/iris/spawn.h)).
+  * 24-byte IPC wire protocol header ([`iris/ipc.h`](../sdk/libiris/include/iris/ipc.h)).
+  * Channel message/handle transfer primitives ([`iris/channel.h`](../sdk/libiris/include/iris/channel.h)).
+  * VMO allocation and mapping helpers ([`iris/vmo.h`](../sdk/libiris/include/iris/vmo.h)).
+  * User-space process spawning primitives ([`iris/spawn.h`](../sdk/libiris/include/iris/spawn.h)).
 
 ### 4.4 C Library & Dynamic Linker (`vendor/mlibc` + `sdk/mlibc-sysdeps/iris/`)
 * Cross-compiled using Meson and Ninja with our native irisOS sysdeps.
