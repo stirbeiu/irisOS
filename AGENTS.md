@@ -21,7 +21,7 @@ End-users and businesses must be able to develop and distribute **100% proprieta
 
 1. **Zone 1 — SDK & Shared Libraries (STRICTLY MIT / BSD / ISC / Apache 2.0 / FTL ONLY):**
    * Any library linked by user-space applications or drivers MUST use a permissive license.
-   * **Strictly NO GPL or LGPL** in `sdk/` or core system libraries (`libiris`, `libiris_gui`, `mlibc`, `pixman`, `freetype`, `libzircon.so`).
+   * **Strictly NO GPL or LGPL** in `sdk/` or core system libraries (`libiris`, `libiris_gui`, `mlibc`, `pixman`, `freetype`, `libzircon.so`). FreeType is explicitly designated as `FTL (Permissive BSD-style)`.
 2. **Zone 2 — Standalone Programs & Utilities (MIT / BSD / GPL Allowed):**
    * Standalone executables that run in their own address space and communicate only via IPC or standard streams (`toybox`, and optional user-installable packages like `bash`, `coreutils`, or `nano`) may use any FOSS license.
 
@@ -108,7 +108,7 @@ End-users and businesses must be able to develop and distribute **100% proprieta
 ### 4.8 Graphics & Windowing
 * **Drivers:** UEFI GOP Framebuffer fallback + `virtio-gpu-pci` and `virtio-input-pci`.
 * **Compositor (`iris_compositor`):** Zero-copy shared memory windowing using Zircon **VMOs** + IPC damage notifications.
-* **Rendering Libraries:** **Pixman** (MIT) for 2D SIMD compositing + **FreeType** (FTL/BSD) for font rendering.
+* **Rendering Libraries:** **Pixman** (MIT) for 2D SIMD compositing + **FreeType** (FTL (Permissive BSD-style)) for font rendering.
 * **System Shell & CLI Utilities:** **`Toybox`** (0BSD) compiled as a single binary providing `sh` and 200+ POSIX utilities without relying on `fork()`.
 
 ### 4.9 Multi-Build System Orchestrator (`build/`)
@@ -157,7 +157,7 @@ irisOS/
 │   ├── fatfs/                # (BSD) FAT32 library for ESP partition [CMake]
 │   ├── mbedtls/              # (Apache 2.0) AES-256-XTS & Argon2 crypto [CMake]
 │   ├── pixman/               # (MIT) 2D pixel manipulation library [Meson]
-│   └── freetype/             # (FTL/BSD) Font engine [Meson/CMake]
+│   └── freetype/             # (FTL (Permissive BSD-style)) Font engine [Meson/CMake]
 ├── PROGRESS.md               # Live step-by-step milestone and progress tracker
 └── out/                      # Git-ignored build output & QEMU disk images
 ```

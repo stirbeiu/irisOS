@@ -16,8 +16,19 @@ All code in `kernel/`, `sdk/`, and shared system libraries (`/System/Libraries`)
 | **FatFs** | `http://elm-chan.org/fsw/ff/00index_e.html` | `https://github.com/stirbeiu/fatfs` | BSD-like (FatFs license) | FAT32 filesystem implementation for the UEFI `ESP` partition |
 | **mbedtls** | `https://github.com/Mbed-TLS/mbedtls` | `https://github.com/stirbeiu/mbedtls` | Apache 2.0 | AES-256-XTS & Argon2 cryptographic engine for `iris_crypt` |
 | **pixman** | `https://gitlab.freedesktop.org/pixman/pixman` | `https://github.com/stirbeiu/pixman` | MIT | 2D pixel manipulation library for `iris_compositor` & `libiris_gui` |
-| **FreeType** | `https://gitlab.freedesktop.org/freetype/freetype` | `https://github.com/stirbeiu/freetype` | FreeType License (FTL) / BSD | TrueType font rendering engine for desktop GUI |
+| **FreeType** | `https://gitlab.freedesktop.org/freetype/freetype` | `https://github.com/stirbeiu/freetype` | FreeType License (FTL) | TrueType font rendering engine for desktop GUI |
 | **LLVM / compiler-rt** | `https://github.com/llvm/llvm-project` | `https://github.com/llvm/llvm-project` (Homebrew LLVM) | Apache 2.0 with LLVM Exception | Low-level runtime builtins (`libclang_rt.builtins-*.a`) |
+
+### FreeType License Election & Required Attribution
+Upstream FreeType is dual-licensed under two alternative licenses:
+1. The **FreeType License (FTL)** (a permissive BSD-style license with credit attribution).
+2. The **GNU General Public License (GPLv2)**.
+
+To strictly uphold irisOS's **Zone 1 Permissive Licensing Policy** and guarantee zero GPL contamination in shared libraries (`/System/Libraries/libfreetype.so`), **irisOS strictly elects to license and redistribute FreeType under the FreeType License (FTL)**.
+
+In accordance with Section 2 ("Redistribution") of the FreeType License, any redistribution of binary distributions or documentation includes the following required attribution:
+
+> "Portions of this software are copyright © 1996-2024 The FreeType Project (www.freetype.org). All rights reserved."
 
 ---
 
