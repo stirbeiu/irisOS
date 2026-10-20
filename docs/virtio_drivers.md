@@ -98,8 +98,8 @@ Communication between filesystem/storage clients and `bin/virtio_blk` uses raw Z
 | Opcode Name | Value | Description |
 |:---|:---:|:---|
 | `IRIS_BLK_OP_GET_INFO` | `0x0050` | Query total capacity and sector size |
-| `IRIS_BLK_OP_READ` | `0x0051` | Read $N$ contiguous sectors into response buffer |
-| `IRIS_BLK_OP_WRITE` | `0x0052` | Write $N$ contiguous sectors from request payload |
+| `IRIS_BLK_OP_READ` | `0x0051` | Read N contiguous sectors into response buffer |
+| `IRIS_BLK_OP_WRITE` | `0x0052` | Write N contiguous sectors from request payload |
 | `IRIS_BLK_OP_FLUSH` | `0x0053` | Flush non-volatile disk write cache |
 
 ### 4.2 Data Structures

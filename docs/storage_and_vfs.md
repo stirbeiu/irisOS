@@ -40,7 +40,7 @@ In accordance with the irisOS microkernel philosophy (Section 2 & Section 4.7 of
 
 ## 2. 128 MB 4-Partition GPT Disk Layout (`build/mkimage.sh` & `scripts/mk_gpt_disk.py`)
 
-`build/mkimage.sh` and `scripts/mk_gpt_disk.py` generate a 128 MB (`262,144` sectors $\times$ `512` bytes = `134,217,728` bytes) raw GPT disk image (`out/images/disk_<arch>.raw`, symlinked at `out/images/disk.img`) with a valid Protective MBR at LBA `0`, Primary GPT Header & Partition Table at LBA `1..33`, and Backup GPT Partition Table & Header at LBA `262111..262143`:
+`build/mkimage.sh` and `scripts/mk_gpt_disk.py` generate a 128 MB (`262,144` sectors × `512` bytes = `134,217,728` bytes) raw GPT disk image (`out/images/disk_<arch>.raw`, symlinked at `out/images/disk.img`) with a valid Protective MBR at LBA `0`, Primary GPT Header & Partition Table at LBA `1..33`, and Backup GPT Partition Table & Header at LBA `262111..262143`:
 
 | Partition # | Label | LBA Range | Size | Filesystem | Encryption | Mount Point / Role |
 |---|---|---|---|---|---|---|
@@ -81,9 +81,15 @@ At startup, `iris_crypt` inspects LBA `1` for `"EFI PART"` and locates Partition
 
 ### 3.3 Sector Offset Translation & Per-Sector XTS Tweak
 * **Logical-to-Physical Translation**:
-  $$\text{Physical LBA } P = \text{part\_start\_lba} + 8 + \text{Logical Sector } L$$
+  ```text
+  Physical LBA P = part_start_lba + 8 + Logical Sector L
+  ```
+  Where:
+  - `part_start_lba`: Starting physical LBA of Partition 4 (`Data`, typically `198656`).
+  - `8`: Physical sectors 0..7 (4 KB) reserved for the `iris_crypt_header_t` metadata header.
+  - `Logical Sector L`: Zero-indexed plaintext logical sector requested by `iris_fshost` (`0 .. 61431`).
 * **Per-Sector AES-256-XTS Encryption/Decryption**:
-  Each 512-byte sector is encrypted/decrypted as an independent XTS data unit (`mbedtls_aes_crypt_xts`), where the 16-byte `data_unit` tweak encodes the 64-bit logical sector number $L + i$ in little-endian byte order.
+  Each 512-byte sector is encrypted/decrypted as an independent XTS data unit (`mbedtls_aes_crypt_xts`), where the 16-byte `data_unit` tweak encodes the 64-bit logical sector number (`L + i`) in little-endian byte order.
 
 ---
 
