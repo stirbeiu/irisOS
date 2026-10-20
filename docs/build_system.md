@@ -55,15 +55,15 @@ irisOS targets 64-bit architectures only with zero legacy 16-bit or 32-bit suppo
   * Meson Cross File: [`build/toolchains/meson-x86_64.txt`](../build/toolchains/meson-x86_64.txt)
   * CMake Toolchain: [`build/toolchains/x86_64-iris.cmake`](../build/toolchains/x86_64-iris.cmake)
 
-### 3.2 ARM64 (AArch64) Target
+### 3.2 AArch64 Target
 
 * **Freestanding / Microkernel / SDK:**
   * Target Triple: `aarch64-unknown-elf`
   * Compiler Flags: `-ffreestanding -fno-builtin -fno-stack-protector -fPIE`
 * **C Library / Dynamic Runtime (mlibc):**
   * Target Triple: `aarch64-unknown-linux-gnu`
-  * Meson Cross File: [`build/toolchains/meson-arm64.txt`](../build/toolchains/meson-arm64.txt)
-  * CMake Toolchain: [`build/toolchains/arm64-iris.cmake`](../build/toolchains/arm64-iris.cmake)
+  * Meson Cross File: [`build/toolchains/meson-aarch64.txt`](../build/toolchains/meson-aarch64.txt)
+  * CMake Toolchain: [`build/toolchains/aarch64-iris.cmake`](../build/toolchains/aarch64-iris.cmake)
 
 ---
 
@@ -125,7 +125,7 @@ Both `ld-iris.so` and `libc.so` are fully compiled and verified in the build tre
 
 ## 6. Build Targets & Execution Commands
 
-irisOS provides a unified CLI and Makefile interface at the repository root supporting 3 target categories: all architectures (`all`), x86_64 (`x86_64`), and ARM64 (`aarch64`).
+irisOS provides a unified CLI and Makefile interface at the repository root supporting 3 target categories: all architectures (`all`), x86_64 (`x86_64`), and AArch64 (`aarch64`).
 
 ### 6.1 System Build Commands
 
@@ -133,7 +133,7 @@ irisOS provides a unified CLI and Makefile interface at the repository root supp
 | :--- | :--- |
 | `make build all` (or `./iris build all`) | Compiles microkernel, libc, SDK, drivers, and packages ESP images for **both** x86_64 and aarch64 |
 | `make build x86_64` (or `./iris build x86_64`) | Builds system and packages UEFI ESP image (`esp_x86_64.img`) for **x86_64** |
-| `make build aarch64` (or `./iris build aarch64`) | Builds system and packages UEFI ESP image (`esp_arm64.img`) for **aarch64** |
+| `make build aarch64` (or `./iris build aarch64`) | Builds system and packages UEFI ESP image (`esp_aarch64.img`) for **aarch64** |
 
 ### 6.2 Virtual Machine Run Commands
 
@@ -152,6 +152,6 @@ For granular rebuilds of individual components, the orchestrator in [`build/Make
 | Target Command | Description |
 | :--- | :--- |
 | `make -C build mlibc-x86_64` | Rebuilds only mlibc (`libc.a`, `libc.so`, `ld-iris.so`) for x86_64 |
-| `make -C build mlibc-arm64` | Rebuilds only mlibc for aarch64 |
+| `make -C build mlibc-aarch64` | Rebuilds only mlibc for aarch64 |
 | `make -C build virtio-blk-x86_64` | Rebuilds only the Ring 3 PCIe VirtIO block driver daemon |
 | `make -C build clean` | Cleans build outputs and compiled images |

@@ -5,7 +5,7 @@ sysdep_supported_options = {
 	'bsd': true,
 }
 
-arch_dir = host_machine.cpu_family() == 'aarch64' ? 'build-arm64' : 'build-x86_64'
+arch_dir = host_machine.cpu_family() == 'aarch64' ? 'build-aarch64' : 'build-x86_64'
 lib_dir = meson.project_source_root() / '../../out' / arch_dir / 'lib'
 
 zircon_dep = declare_dependency(link_args: ['-L' + lib_dir, '-l:libzircon.a'])

@@ -3,8 +3,8 @@
 # irisOS - QEMU UEFI Virtual Machine Launcher
 #
 # Supports:
-#  - x86_64 (q35 machine with EDK2 OVMF UEFI and VirtIO disk)
-#  - arm64  (virt machine with EDK2 AAVMF UEFI and VirtIO disk)
+#  - x86_64  (q35 machine with EDK2 OVMF UEFI, NVMe ESP boot, and VirtIO disk)
+#  - aarch64 (virt machine with EDK2 AAVMF UEFI, NVMe ESP boot, and VirtIO disk)
 # ==============================================================================
 
 set -euo pipefail
@@ -31,33 +31,33 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [-a x86_64|aarch64|arm64] [--headless]"
+            echo "Usage: $0 [-a x86_64|aarch64] [--headless]"
             echo "Defaults to opening a QEMU window with serial console output in stdio."
             exit 0
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [-a x86_64|aarch64|arm64] [--headless]"
+            echo "Usage: $0 [-a x86_64|aarch64] [--headless]"
             exit 1
             ;;
     esac
 done
 
 case "${ARCH}" in
-    x86_64|x64)
+    x86_64)
         ARCH_NAME="x86_64"
         QEMU_BIN="qemu-system-x86_64"
         UEFI_CODE="/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
         ESP_IMAGE="${IMAGES_DIR}/esp_x86_64.img"
         ;;
-    aarch64|arm64)
-        ARCH_NAME="arm64"
+    aarch64)
+        ARCH_NAME="aarch64"
         QEMU_BIN="qemu-system-aarch64"
         UEFI_CODE="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
         UEFI_VARS_SRC="/opt/homebrew/share/qemu/edk2-arm-vars.fd"
-        UEFI_VARS_TMP="/tmp/edk2-arm-vars-$$.fd"
+        UEFI_VARS_TMP="/tmp/edk2-aarch64-vars-$$.fd"
         trap 'rm -f "${UEFI_VARS_TMP}" 2>/dev/null || true' EXIT
-        ESP_IMAGE="${IMAGES_DIR}/esp_arm64.img"
+        ESP_IMAGE="${IMAGES_DIR}/esp_aarch64.img"
         ;;
     *)
         echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'aarch64'."
@@ -103,26 +103,31 @@ echo " Display:    ${DISPLAY_MODE}"
 echo " (Press Ctrl+A then X in terminal to terminate QEMU, or close the GUI window)"
 echo "======================================================================"
 
+# Note: ESP_IMAGE is attached via NVMe (bootindex=0) so that DISK_RAW (hd0) is
+# the sole VirtIO Block device (0x1AF4:0x1001) on the PCIe bus. This prevents
+# Ring 3 block tests/encryption on hd0 from ever touching the FAT32 UEFI ESP.
 if [[ "${ARCH_NAME}" == "x86_64" ]]; then
     exec "${QEMU_BIN}" \
         -machine q35 \
         -cpu max \
         -m 512M \
         -smp 2 \
+        -nic none \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
-        -drive file="${ESP_IMAGE}",format=raw,if=virtio \
+        -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
+        -device nvme,drive=bootdisk,serial=irisboot,bootindex=0 \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
         -device virtio-rng-pci \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"
 else
-    # Prepare writable vars for arm64 UEFI
+    # Prepare writable vars for aarch64 UEFI
     cp -f "${UEFI_VARS_SRC}" "${UEFI_VARS_TMP}"
 
-    ARM_EXTRA_ARGS=()
+    AARCH64_EXTRA_ARGS=()
     if [[ "${GUI}" == "1" ]]; then
-        ARM_EXTRA_ARGS+=("-device" "ramfb")
+        AARCH64_EXTRA_ARGS+=("-device" "ramfb")
     fi
 
     exec "${QEMU_BIN}" \
@@ -130,14 +135,15 @@ else
         -cpu max \
         -m 512M \
         -smp 2 \
+        -nic none \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive if=pflash,format=raw,file="${UEFI_VARS_TMP}" \
-        -device virtio-blk-pci,drive=bootdisk \
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
+        -device nvme,drive=bootdisk,serial=irisboot,bootindex=0 \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
         -device virtio-rng-pci \
-        ${ARM_EXTRA_ARGS[@]+"${ARM_EXTRA_ARGS[@]}"} \
+        ${AARCH64_EXTRA_ARGS[@]+"${AARCH64_EXTRA_ARGS[@]}"} \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"
 fi

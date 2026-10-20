@@ -33,7 +33,7 @@ run:
 
 else
 
-.PHONY: default help all clean x86_64 aarch64 arm64
+.PHONY: default help all clean x86_64 aarch64
 
 default: help
 
@@ -50,9 +50,6 @@ x86_64:
 	@$(IRIS_CLI) build x86_64
 
 aarch64:
-	@$(IRIS_CLI) build aarch64
-
-arm64:
 	@$(IRIS_CLI) build aarch64
 
 endif

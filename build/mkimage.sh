@@ -4,7 +4,7 @@
 #
 # Generates:
 #  1. Bootable ZBI image (iris_a.zbi) containing kernel, cmdline, and iris_init in BOOTFS
-#  2. FAT32 UEFI ESP partition image (esp.img) containing Gigaboot + iris_a.zbi
+#  2. FAT32 UEFI ESP partition image (esp_<arch>.img) containing Gigaboot + iris_a.zbi
 # ==============================================================================
 
 set -euo pipefail
@@ -18,26 +18,28 @@ ZIRCON_DIR="${ROOT_DIR}/kernel/zircon"
 ARCH="${1:-x86_64}"
 
 case "${ARCH}" in
-    x86_64|x64)
+    x86_64)
         ARCH_NAME="x86_64"
         ZBI_ARCH="x64"
         PROJECT_NAME="x64"
+        TOOLCHAIN_ARCH="x86_64"
         EFI_BIN_NAME="BOOTX64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-x64-clang"
         BUILD_DIR="${OUT_DIR}/build-x86_64"
         CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy gfxconsole.early=true"
         ;;
-    aarch64|arm64)
-        ARCH_NAME="arm64"
+    aarch64)
+        ARCH_NAME="aarch64"
         ZBI_ARCH="arm64"
         PROJECT_NAME="arm64"
+        TOOLCHAIN_ARCH="arm64"
         EFI_BIN_NAME="BOOTAA64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-arm64-clang"
-        BUILD_DIR="${OUT_DIR}/build-arm64"
+        BUILD_DIR="${OUT_DIR}/build-aarch64"
         CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy gfxconsole.early=true"
         ;;
     *)
-        echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'arm64'."
+        echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'aarch64'."
         exit 1
         ;;
 esac
@@ -84,7 +86,7 @@ if [[ ! -f "${EFI_SRC}" ]]; then
         USE_CLANG=true \
         USE_LLD=true \
         CLANG_TOOLCHAIN_PREFIX="/opt/homebrew/opt/llvm/bin/" \
-        "ARCH_${ARCH_NAME}_TOOLCHAIN_INCLUDED=1" \
+        "ARCH_${TOOLCHAIN_ARCH}_TOOLCHAIN_INCLUDED=1" \
         ENABLE_BUILD_SYSROOT=false
 fi
 
@@ -94,9 +96,9 @@ IRIS_ZBI="${BUILD_DIR}/iris_a.zbi"
 echo "==> Creating bootable ZBI: ${IRIS_ZBI}"
 
 EXTRA_ZBI_INPUTS=()
-if [[ "${ARCH_NAME}" == "arm64" ]]; then
+if [[ "${ARCH_NAME}" == "aarch64" ]]; then
     QEMU_BOARD_ZBI="${BUILD_DIR}/qemu_board.zbi"
-    python3 "${ROOT_DIR}/scripts/gen_qemu_arm64_zbi.py" "${QEMU_BOARD_ZBI}"
+    python3 "${ROOT_DIR}/scripts/gen_qemu_aarch64_zbi.py" "${QEMU_BOARD_ZBI}"
     EXTRA_ZBI_INPUTS+=("${QEMU_BOARD_ZBI}")
 fi
 

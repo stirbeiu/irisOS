@@ -28,7 +28,7 @@ USAGE:
 TARGET ARCHITECTURES:
   all                    Both x86_64 and aarch64 architectures
   x86_64                 64-bit x86 architecture (UEFI q35)
-  aarch64 (or arm64)     64-bit ARM architecture (UEFI virt)
+  aarch64                64-bit ARM architecture (UEFI virt)
 
 BUILD COMMANDS:
   make build all         Build system images for both x86_64 and aarch64
@@ -55,14 +55,14 @@ cmd_build() {
             echo "==> (1/2) Building x86_64..."
             make -C "${BUILD_DIR}" image-x86_64
             echo "==> (2/2) Building aarch64..."
-            make -C "${BUILD_DIR}" image-arm64
+            make -C "${BUILD_DIR}" image-aarch64
             echo "======================================================================"
             echo " [irisOS] Successfully built images for both architectures!"
             echo "   - x86_64:  ${IMAGES_DIR}/esp_x86_64.img"
-            echo "   - aarch64: ${IMAGES_DIR}/esp_arm64.img"
+            echo "   - aarch64: ${IMAGES_DIR}/esp_aarch64.img"
             echo "======================================================================"
             ;;
-        x86_64|x64)
+        x86_64)
             echo "======================================================================"
             echo " [irisOS] Building for x86_64..."
             echo "======================================================================"
@@ -71,13 +71,13 @@ cmd_build() {
             echo " [irisOS] x86_64 build complete: ${IMAGES_DIR}/esp_x86_64.img"
             echo "======================================================================"
             ;;
-        aarch64|arm64)
+        aarch64)
             echo "======================================================================"
             echo " [irisOS] Building for aarch64..."
             echo "======================================================================"
-            make -C "${BUILD_DIR}" image-arm64
+            make -C "${BUILD_DIR}" image-aarch64
             echo "======================================================================"
-            echo " [irisOS] aarch64 build complete: ${IMAGES_DIR}/esp_arm64.img"
+            echo " [irisOS] aarch64 build complete: ${IMAGES_DIR}/esp_aarch64.img"
             echo "======================================================================"
             ;;
         "")
@@ -122,35 +122,35 @@ EOF
                 echo "==> x86_64 image not found. Building first..."
                 make -C "${BUILD_DIR}" image-x86_64
             fi
-            if [[ ! -f "${IMAGES_DIR}/esp_arm64.img" ]]; then
+            if [[ ! -f "${IMAGES_DIR}/esp_aarch64.img" ]]; then
                 echo "==> aarch64 image not found. Building first..."
-                make -C "${BUILD_DIR}" image-arm64
+                make -C "${BUILD_DIR}" image-aarch64
             fi
 
             echo "==> Launching dual VMs (Ctrl+C to terminate both)..."
             "${SCRIPT_DIR}/run_qemu.sh" -a x86_64 2>&1 | awk '{ print "[x86_64]  " $0; fflush(); }' &
             PID_X86=$!
 
-            "${SCRIPT_DIR}/run_qemu.sh" -a arm64 2>&1 | awk '{ print "[aarch64] " $0; fflush(); }' &
-            PID_ARM=$!
+            "${SCRIPT_DIR}/run_qemu.sh" -a aarch64 2>&1 | awk '{ print "[aarch64] " $0; fflush(); }' &
+            PID_AARCH64=$!
 
             cleanup() {
                 echo ""
-                echo "==> Shutting down dual QEMU instances (${PID_X86}, ${PID_ARM})..."
-                kill -TERM "${PID_X86}" "${PID_ARM}" 2>/dev/null || true
-                wait "${PID_X86}" "${PID_ARM}" 2>/dev/null || true
+                echo "==> Shutting down dual QEMU instances (${PID_X86}, ${PID_AARCH64})..."
+                kill -TERM "${PID_X86}" "${PID_AARCH64}" 2>/dev/null || true
+                wait "${PID_X86}" "${PID_AARCH64}" 2>/dev/null || true
             }
             trap cleanup INT TERM EXIT
 
-            wait "${PID_X86}" "${PID_ARM}" 2>/dev/null || true
+            wait "${PID_X86}" "${PID_AARCH64}" 2>/dev/null || true
             ;;
-        x86_64|x64)
+        x86_64)
             # Run existing image in QEMU window with serial console
             exec "${SCRIPT_DIR}/run_qemu.sh" -a x86_64
             ;;
-        aarch64|arm64)
+        aarch64)
             # Run existing image in QEMU window with serial console
-            exec "${SCRIPT_DIR}/run_qemu.sh" -a arm64
+            exec "${SCRIPT_DIR}/run_qemu.sh" -a aarch64
             ;;
         "")
             echo "Error: Missing architecture target for 'run'."

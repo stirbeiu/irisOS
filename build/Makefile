@@ -35,7 +35,7 @@ endif
 
 all: image-x86_64
 all-x86_64: image-x86_64
-all-arm64: image-arm64
+all-aarch64: image-aarch64
 
 # ------------------------------------------------------------------------------
 # Host Tools (Darwin Apple Silicon)
@@ -136,8 +136,8 @@ kernel-x86_64: tools
 	@cp -f $(ZIRCON_DIR)/build-x64-clang/kernel.zbi $(OUT_DIR)/build-x86_64/kernel/kernel.zbi
 	@echo "    [DONE] $(OUT_DIR)/build-x86_64/kernel/zircon.elf"
 
-kernel-arm64: tools
-	@echo "==> Building Zircon microkernel (arm64)..."
+kernel-aarch64: tools
+	@echo "==> Building Zircon microkernel (aarch64)..."
 	@$(MAKE) -C $(ZIRCON_DIR) \
 		build-arm64-clang/zircon.elf \
 		build-arm64-clang/kernel.zbi \
@@ -147,10 +147,10 @@ kernel-arm64: tools
 		CLANG_TOOLCHAIN_PREFIX=$(LLVM_PREFIX)/bin/ \
 		ARCH_arm64_TOOLCHAIN_INCLUDED=1 \
 		ENABLE_BUILD_SYSROOT=false
-	@mkdir -p $(OUT_DIR)/build-arm64/kernel
-	@cp -f $(ZIRCON_DIR)/build-arm64-clang/zircon.elf $(OUT_DIR)/build-arm64/kernel/zircon.elf
-	@cp -f $(ZIRCON_DIR)/build-arm64-clang/kernel.zbi $(OUT_DIR)/build-arm64/kernel/kernel.zbi
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/kernel/zircon.elf"
+	@mkdir -p $(OUT_DIR)/build-aarch64/kernel
+	@cp -f $(ZIRCON_DIR)/build-arm64-clang/zircon.elf $(OUT_DIR)/build-aarch64/kernel/zircon.elf
+	@cp -f $(ZIRCON_DIR)/build-arm64-clang/kernel.zbi $(OUT_DIR)/build-aarch64/kernel/kernel.zbi
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/kernel/zircon.elf"
 
 build-x86_64: tools kernel-x86_64 fetch-mlibc fetch-mbedtls
 	@mkdir -p $(OUT_DIR)/build-x86_64
@@ -159,12 +159,12 @@ build-x86_64: tools kernel-x86_64 fetch-mlibc fetch-mbedtls
 		-G Ninja
 	@ninja -C $(OUT_DIR)/build-x86_64
 
-build-arm64: tools kernel-arm64 fetch-mlibc fetch-mbedtls
-	@mkdir -p $(OUT_DIR)/build-arm64
-	@cmake -B $(OUT_DIR)/build-arm64 -S $(BUILD_DIR) \
-		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/arm64-iris.cmake \
+build-aarch64: tools kernel-aarch64 fetch-mlibc fetch-mbedtls
+	@mkdir -p $(OUT_DIR)/build-aarch64
+	@cmake -B $(OUT_DIR)/build-aarch64 -S $(BUILD_DIR) \
+		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/aarch64-iris.cmake \
 		-G Ninja
-	@ninja -C $(OUT_DIR)/build-arm64
+	@ninja -C $(OUT_DIR)/build-aarch64
 
 # ------------------------------------------------------------------------------
 # compiler-rt Builtins, mlibc C Library & Mbed-TLS Crypto
@@ -183,12 +183,12 @@ mbedtls-x86_64: mlibc-x86_64 fetch-mbedtls
 	@ninja -C $(OUT_DIR)/build-x86_64 mbedcrypto
 	@echo "    [DONE] $(OUT_DIR)/build-x86_64/lib/libmbedcrypto.a"
 
-mbedtls-arm64: mlibc-arm64 fetch-mbedtls
-	@echo "==> Building libmbedcrypto.a (arm64)..."
-	@ninja -C $(OUT_DIR)/build-arm64 mbedcrypto
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/lib/libmbedcrypto.a"
+mbedtls-aarch64: mlibc-aarch64 fetch-mbedtls
+	@echo "==> Building libmbedcrypto.a (aarch64)..."
+	@ninja -C $(OUT_DIR)/build-aarch64 mbedcrypto
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/lib/libmbedcrypto.a"
 
-mbedtls: mbedtls-x86_64 mbedtls-arm64
+mbedtls: mbedtls-x86_64 mbedtls-aarch64
 
 builtins-x86_64: fetch-compiler-rt
 	@mkdir -p $(OUT_DIR)/build-x86_64/lib $(OUT_DIR)/build-x86_64/builtins
@@ -201,16 +201,16 @@ builtins-x86_64: fetch-compiler-rt
 	@$(LLVM_PREFIX)/bin/llvm-ar rcs $(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a $(OUT_DIR)/build-x86_64/builtins/*.o
 	@echo "    [DONE] $(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a"
 
-builtins-arm64: fetch-compiler-rt
-	@mkdir -p $(OUT_DIR)/build-arm64/lib $(OUT_DIR)/build-arm64/builtins
-	@echo "==> Building compiler-rt builtins (arm64)..."
+builtins-aarch64: fetch-compiler-rt
+	@mkdir -p $(OUT_DIR)/build-aarch64/lib $(OUT_DIR)/build-aarch64/builtins
+	@echo "==> Building compiler-rt builtins (aarch64)..."
 	@for f in $(ROOT_DIR)/vendor/compiler-rt/lib/builtins/*.c; do \
 		$(HOST_CC) -c "$$f" --target=aarch64-unknown-linux-gnu -O2 -fPIC \
 			-I$(ROOT_DIR)/vendor/compiler-rt/lib/builtins \
-			-o $(OUT_DIR)/build-arm64/builtins/$$(basename "$$f" .c).o 2>/dev/null || true; \
+			-o $(OUT_DIR)/build-aarch64/builtins/$$(basename "$$f" .c).o 2>/dev/null || true; \
 	done
-	@$(LLVM_PREFIX)/bin/llvm-ar rcs $(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a $(OUT_DIR)/build-arm64/builtins/*.o
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a"
+	@$(LLVM_PREFIX)/bin/llvm-ar rcs $(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a $(OUT_DIR)/build-aarch64/builtins/*.o
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a"
 
 mlibc-x86_64: build-x86_64 builtins-x86_64 fetch-mlibc
 	@echo "==> Building mlibc (x86_64)..."
@@ -224,19 +224,19 @@ mlibc-x86_64: build-x86_64 builtins-x86_64 fetch-mlibc
 	@ninja -C $(OUT_DIR)/build-x86_64/mlibc
 	@echo "    [DONE] mlibc x86_64"
 
-mlibc-arm64: build-arm64 builtins-arm64 fetch-mlibc
-	@echo "==> Building mlibc (arm64)..."
-	@if [ ! -d "$(OUT_DIR)/build-arm64/mlibc" ]; then \
-		meson setup $(OUT_DIR)/build-arm64/mlibc $(ROOT_DIR)/vendor/mlibc \
-			--cross-file $(BUILD_DIR)/toolchains/meson-arm64.txt \
+mlibc-aarch64: build-aarch64 builtins-aarch64 fetch-mlibc
+	@echo "==> Building mlibc (aarch64)..."
+	@if [ ! -d "$(OUT_DIR)/build-aarch64/mlibc" ]; then \
+		meson setup $(OUT_DIR)/build-aarch64/mlibc $(ROOT_DIR)/vendor/mlibc \
+			--cross-file $(BUILD_DIR)/toolchains/meson-aarch64.txt \
 			--default-library=both \
 			-Dld_library_name=ld-iris \
 			-Dlibgcc_dependency=false; \
 	fi
-	@ninja -C $(OUT_DIR)/build-arm64/mlibc
-	@echo "    [DONE] mlibc arm64"
+	@ninja -C $(OUT_DIR)/build-aarch64/mlibc
+	@echo "    [DONE] mlibc aarch64"
 
-mlibc: mlibc-x86_64 mlibc-arm64
+mlibc: mlibc-x86_64 mlibc-aarch64
 
 # ------------------------------------------------------------------------------
 # User-Space Interactive Test Suite (its_irisOS)
@@ -268,13 +268,13 @@ its-irisOS-x86_64: mlibc-x86_64
 		-o $(OUT_DIR)/build-x86_64/bin/its_irisOS
 	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/its_irisOS"
 
-its-irisOS-arm64: mlibc-arm64
-	@echo "==> Compiling its_irisOS (arm64)..."
-	@mkdir -p $(OUT_DIR)/build-arm64/bin
+its-irisOS-aarch64: mlibc-aarch64
+	@echo "==> Compiling its_irisOS (aarch64)..."
+	@mkdir -p $(OUT_DIR)/build-aarch64/bin
 	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
 	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
 		-isystem "$$CLANG_RES" \
-		-isystem $(OUT_DIR)/build-arm64/mlibc \
+		-isystem $(OUT_DIR)/build-aarch64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
 		-isystem $(ROOT_DIR)/sdk/libiris/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
@@ -283,19 +283,19 @@ its-irisOS-arm64: mlibc-arm64
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/include \
-		-c $(ROOT_DIR)/apps/tests/its_irisOS/main.c -o $(OUT_DIR)/build-arm64/its_irisOS.o
+		-c $(ROOT_DIR)/apps/tests/its_irisOS/main.c -o $(OUT_DIR)/build-aarch64/its_irisOS.o
 	@/opt/homebrew/bin/ld.lld -pie -z text \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
-		$(OUT_DIR)/build-arm64/its_irisOS.o \
-		$(OUT_DIR)/build-arm64/mlibc/libc.a \
-		$(OUT_DIR)/build-arm64/lib/libiris.a \
-		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
-		-o $(OUT_DIR)/build-arm64/bin/its_irisOS
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/its_irisOS"
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-aarch64/its_irisOS.o \
+		$(OUT_DIR)/build-aarch64/mlibc/libc.a \
+		$(OUT_DIR)/build-aarch64/lib/libiris.a \
+		$(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-aarch64/bin/its_irisOS
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/bin/its_irisOS"
 
-its-irisOS: its-irisOS-x86_64 its-irisOS-arm64
+its-irisOS: its-irisOS-x86_64 its-irisOS-aarch64
 
 # ------------------------------------------------------------------------------
 # Ring 3 VirtIO Block Driver Daemon (bin/virtio_blk)
@@ -331,38 +331,38 @@ virtio-blk-x86_64: mlibc-x86_64
 		-o $(OUT_DIR)/build-x86_64/bin/virtio_blk
 	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/virtio_blk"
 
-virtio-blk-arm64: mlibc-arm64
-	@echo "==> Compiling virtio_blk (arm64)..."
-	@mkdir -p $(OUT_DIR)/build-arm64/bin
+virtio-blk-aarch64: mlibc-aarch64
+	@echo "==> Compiling virtio_blk (aarch64)..."
+	@mkdir -p $(OUT_DIR)/build-aarch64/bin
 	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
 	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
 		-isystem "$$CLANG_RES" \
-		-isystem $(OUT_DIR)/build-arm64/mlibc \
+		-isystem $(OUT_DIR)/build-aarch64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
 		-isystem $(ROOT_DIR)/sdk/libiris/include \
 		-isystem $(ROOT_DIR) \
 		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
-		-isystem $(OUT_DIR)/build-arm64/gen \
-		-isystem $(OUT_DIR)/build-arm64/gen/zircon \
+		-isystem $(OUT_DIR)/build-aarch64/gen \
+		-isystem $(OUT_DIR)/build-aarch64/gen/zircon \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/include \
-		-c $(ROOT_DIR)/servers/drivers/virtio_blk/src/main.c -o $(OUT_DIR)/build-arm64/virtio_blk.o
+		-c $(ROOT_DIR)/servers/drivers/virtio_blk/src/main.c -o $(OUT_DIR)/build-aarch64/virtio_blk.o
 	@/opt/homebrew/bin/ld.lld -pie -z text \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
-		$(OUT_DIR)/build-arm64/virtio_blk.o \
-		$(OUT_DIR)/build-arm64/mlibc/libc.a \
-		$(OUT_DIR)/build-arm64/lib/libiris.a \
-		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
-		-o $(OUT_DIR)/build-arm64/bin/virtio_blk
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/virtio_blk"
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-aarch64/virtio_blk.o \
+		$(OUT_DIR)/build-aarch64/mlibc/libc.a \
+		$(OUT_DIR)/build-aarch64/lib/libiris.a \
+		$(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-aarch64/bin/virtio_blk
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/bin/virtio_blk"
 
-virtio-blk: virtio-blk-x86_64 virtio-blk-arm64
+virtio-blk: virtio-blk-x86_64 virtio-blk-aarch64
 
 # ------------------------------------------------------------------------------
 # Ring 3 Block Encryption Proxy Daemon (bin/iris_crypt)
@@ -402,42 +402,42 @@ iris-crypt-x86_64: mlibc-x86_64 mbedtls-x86_64
 		-o $(OUT_DIR)/build-x86_64/bin/iris_crypt
 	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/iris_crypt"
 
-iris-crypt-arm64: mlibc-arm64 mbedtls-arm64
-	@echo "==> Compiling iris_crypt (arm64)..."
-	@mkdir -p $(OUT_DIR)/build-arm64/bin
+iris-crypt-aarch64: mlibc-aarch64 mbedtls-aarch64
+	@echo "==> Compiling iris_crypt (aarch64)..."
+	@mkdir -p $(OUT_DIR)/build-aarch64/bin
 	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
 	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
 		-DMBEDTLS_CONFIG_FILE='"mbedtls_iris_config.h"' \
 		-isystem "$$CLANG_RES" \
-		-isystem $(OUT_DIR)/build-arm64/mlibc \
+		-isystem $(OUT_DIR)/build-aarch64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
 		-isystem $(ROOT_DIR)/sdk/libiris/include \
 		-isystem $(ROOT_DIR)/vendor/mbedtls/include \
 		-isystem $(ROOT_DIR)/build \
 		-isystem $(ROOT_DIR) \
 		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
-		-isystem $(OUT_DIR)/build-arm64/gen \
-		-isystem $(OUT_DIR)/build-arm64/gen/zircon \
+		-isystem $(OUT_DIR)/build-aarch64/gen \
+		-isystem $(OUT_DIR)/build-aarch64/gen/zircon \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/include \
-		-c $(ROOT_DIR)/servers/iris_crypt/src/main.c -o $(OUT_DIR)/build-arm64/iris_crypt.o
+		-c $(ROOT_DIR)/servers/iris_crypt/src/main.c -o $(OUT_DIR)/build-aarch64/iris_crypt.o
 	@/opt/homebrew/bin/ld.lld -pie -z text \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
-		$(OUT_DIR)/build-arm64/iris_crypt.o \
-		$(OUT_DIR)/build-arm64/lib/libmbedcrypto.a \
-		$(OUT_DIR)/build-arm64/mlibc/libc.a \
-		$(OUT_DIR)/build-arm64/lib/libiris.a \
-		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
-		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
-		-o $(OUT_DIR)/build-arm64/bin/iris_crypt
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/iris_crypt"
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-aarch64/iris_crypt.o \
+		$(OUT_DIR)/build-aarch64/lib/libmbedcrypto.a \
+		$(OUT_DIR)/build-aarch64/mlibc/libc.a \
+		$(OUT_DIR)/build-aarch64/lib/libiris.a \
+		$(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-aarch64/bin/iris_crypt
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/bin/iris_crypt"
 
-iris-crypt: iris-crypt-x86_64 iris-crypt-arm64
+iris-crypt: iris-crypt-x86_64 iris-crypt-aarch64
 
 # ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
@@ -445,46 +445,46 @@ iris-crypt: iris-crypt-x86_64 iris-crypt-arm64
 image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64 iris-crypt-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-arm64: build-arm64 its-irisOS-arm64 virtio-blk-arm64 iris-crypt-arm64
-	@$(BUILD_DIR)/mkimage.sh arm64
+image-aarch64: build-aarch64 its-irisOS-aarch64 virtio-blk-aarch64 iris-crypt-aarch64
+	@$(BUILD_DIR)/mkimage.sh aarch64
 
-run: run-x86
-run-gui: run-x86-gui
+run: run-x86_64
+run-gui: run-x86_64-gui
 
-run-x86: image-x86_64
+run-x86_64: image-x86_64
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 $(if $(filter 1,$(GUI)),--gui,)
 
-run-arm: image-arm64
-	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 $(if $(filter 1,$(GUI)),--gui,)
+run-aarch64: image-aarch64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a aarch64 $(if $(filter 1,$(GUI)),--gui,)
 
-run-x86-gui: image-x86_64
+run-x86_64-gui: image-x86_64
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 --gui
 
-run-arm-gui: image-arm64
-	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 --gui
+run-aarch64-gui: image-aarch64
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a aarch64 --gui
 
 # ------------------------------------------------------------------------------
 # Direct QEMU Execution (Fast launch without rebuilding or repacking images)
 # ------------------------------------------------------------------------------
-qemu-x86:
+qemu-x86_64:
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 $(if $(filter 1,$(GUI)),--gui,)
 
-qemu-arm:
-	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 $(if $(filter 1,$(GUI)),--gui,)
+qemu-aarch64:
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a aarch64 $(if $(filter 1,$(GUI)),--gui,)
 
-qemu-x86-gui:
+qemu-x86_64-gui:
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 --gui
 
-qemu-arm-gui:
-	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 --gui
+qemu-aarch64-gui:
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a aarch64 --gui
 
-qemu: qemu-x86
-qemu-gui: qemu-x86-gui
+qemu: qemu-x86_64
+qemu-gui: qemu-x86_64-gui
 
 clean-kernel:
 	@rm -rf $(ZIRCON_DIR)/build-x64-clang $(ZIRCON_DIR)/build-arm64-clang
 	@echo "==> Cleaned kernel build outputs."
 
 clean: clean-kernel
-	@rm -rf $(OUT_DIR)/build-x86_64 $(OUT_DIR)/build-arm64 $(HOST_OUT) $(OUT_DIR)/images
+	@rm -rf $(OUT_DIR)/build-x86_64 $(OUT_DIR)/build-aarch64 $(OUT_DIR)/build-arm64 $(HOST_OUT) $(OUT_DIR)/images
 	@echo "==> Cleaned build output."

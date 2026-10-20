@@ -80,7 +80,7 @@
 #if defined(__x86_64__)
 #define IRIS_ARCH_NAME "x86_64"
 #elif defined(__aarch64__)
-#define IRIS_ARCH_NAME "arm64"
+#define IRIS_ARCH_NAME "aarch64"
 #else
 #define IRIS_ARCH_NAME "unknown"
 #endif
