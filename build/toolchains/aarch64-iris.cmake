@@ -1,4 +1,4 @@
-# CMake toolchain file for irisOS ARM64 (aarch64)
+# CMake toolchain file for irisOS AArch64 (aarch64)
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==============================================================================
-# irisOS - QEMU ARM64 Board Configuration ZBI Generator
+# irisOS - QEMU AArch64 Board Configuration ZBI Generator
 #
 # Generates a ZBI containing board metadata for QEMU 'virt' machine:
 #  - PLATFORM_ID (QEMU)

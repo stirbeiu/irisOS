@@ -1,10 +1,10 @@
 # irisOS
 
-irisOS is a modern, 64-bit, microkernel-based operating system designed for `x86_64` and `ARM64` (`aarch64`) architectures.
+irisOS is a modern, 64-bit, microkernel-based operating system designed for `x86_64` and `AArch64` (`aarch64`) architectures.
 
 ## Core Philosophy
 
-- **True Microkernel Architecture:** Built upon a stripped-down Zircon microkernel (`bringup` target). Drivers, filesystems, cryptographic services, and window compositors run strictly in user-space (Ring 3 on x86_64 / EL0 on ARM64).
+- **True Microkernel Architecture:** Built upon a stripped-down Zircon microkernel (`bringup` target). Drivers, filesystems, cryptographic services, and window compositors run strictly in user-space (Ring 3 on x86_64 / EL0 on AArch64).
 - **Zero Legacy Bloat:** Pure UEFI boot only (Gigaboot). No 16/32-bit legacy BIOS or real-mode code.
 - **Two-Zone Licensing Policy:** 
   - **Zone 1 (SDK & Shared Libraries):** Strictly permissive (MIT, BSD, Apache 2.0, FTL). Zero GPL/LGPL contamination.
@@ -18,14 +18,14 @@ irisOS is a modern, 64-bit, microkernel-based operating system designed for `x86
 
 ```text
 irisOS/
-├── Makefile                  # Root Makefile orchestrating build and run commands
+├── Makefile                  # Root Makefile orchestrating build, run, and test commands
 ├── iris                      # Standalone CLI build & run manager (scripts/iris.sh)
 ├── build/                    # Build orchestrator & toolchain configs
 │   ├── Makefile              # Subsystem build orchestrator
-│   ├── toolchains/           # Homebrew LLVM toolchains (x86_64, arm64)
-│   └── mkimage.sh            # Dual-ZBI and GPT disk image packager
+│   ├── toolchains/           # Homebrew LLVM toolchains (x86_64, aarch64)
+│   └── mkimage.sh            # Dual-ZBI and 4-partition GPT disk image packager
 ├── docs/                     # Subsystem guides (IPC, VFS, build system, drivers)
-├── scripts/                  # Fetch, build, and QEMU run scripts
+├── scripts/                  # Fetch, build, test, and QEMU run scripts
 ├── kernel/                   # [Kernel Zone - MIT] Pinned Zircon microkernel
 ├── sdk/                      # [SDK Zone - MIT/BSD] Native APIs & mlibc sysdeps
 ├── servers/                  # [Server Zone - MIT/BSD] Ring 3 daemons & PCIe drivers
@@ -43,7 +43,7 @@ brew install llvm cmake ninja meson qemu xorriso mtools
 
 Cross-compilation is configured via `/opt/homebrew/opt/llvm` binaries in `build/toolchains/`.
 
-## Building & Running
+## Building, Running & Testing
 
 irisOS provides high-level commands via `make` or the `./iris` CLI helper.
 
@@ -55,10 +55,10 @@ Choose from 3 target commands depending on your architecture target:
 # Build for BOTH x86_64 and aarch64
 make build all
 
-# Build ONLY for x86_64 (creates out/images/esp_x86_64.img)
+# Build ONLY for x86_64 (creates out/images/esp_x86_64.img and disk_x86_64.raw)
 make build x86_64
 
-# Build ONLY for aarch64 (creates out/images/esp_arm64.img)
+# Build ONLY for aarch64 (creates out/images/esp_aarch64.img and disk_aarch64.raw)
 make build aarch64
 ```
 
@@ -79,9 +79,24 @@ make run all
 
 *(Press `Ctrl+A` then `X` in the terminal to exit QEMU, or close the Cocoa window)*.
 
-### 3. Alternative CLI: `./iris`
+### 3. Automated Headless Verification (Test Suite)
 
-All build and run operations can also be executed directly via the `./iris` CLI:
+Run automated headless QEMU test suites with non-blocking stdio and strict timeouts to verify hardware driver enumeration, AES-256-XTS encryption, GPT parsing, UFS2 mounting, and persistent VFS operations:
+
+```bash
+# Verify BOTH architectures
+make test all
+
+# Verify x86_64 in QEMU
+make test x86_64
+
+# Verify aarch64 in QEMU
+make test aarch64
+```
+
+### 4. Alternative CLI: `./iris`
+
+All build, run, and test operations can also be executed directly via the `./iris` CLI:
 
 ```bash
 ./iris build all
@@ -92,15 +107,34 @@ All build and run operations can also be executed directly via the `./iris` CLI:
 ./iris run aarch64
 ./iris run all
 
+./iris test all
+./iris test x86_64
+./iris test aarch64
+
 ./iris clean
 ./iris help
 ```
 
-## Documentation & Roadmap
+## Subsystem Documentation
 
-- See [`AGENTS.md`](AGENTS.md) for full architectural specifications, licensing boundaries, and the 6-phase roadmap.
-- See [`PROGRESS.md`](PROGRESS.md) for live step-by-step progress and verification logs.
-- See [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for licensing details of upstream third-party dependencies.
+Detailed architectural and developer guides are maintained in [`docs/`](docs/):
+- **[Build System & Toolchains](docs/build_system.md)**: Heterogeneous orchestrator (CMake, Meson, Make), Homebrew LLVM setup, and target triples (`x86_64-unknown-elf`, `aarch64-unknown-elf`).
+- **[IPC Wire Protocol](docs/ipc_protocol.md)**: 24-byte C-ABI header (`iris_msg_hdr_t`), handle passing, and subsystem opcode spaces.
+- **[Standard C Library & Sysdeps](docs/mlibc_sysdeps.md)**: `mlibc` port, client-side FD table (`/dev/console`, `/dev/null`), and `posix_spawn()`.
+- **[PCIe & VirtIO Drivers](docs/virtio_drivers.md)**: ECAM discovery, VirtIO 1.0+ configuration, and Ring 3 BTI DMA (`virtio-blk-pci`).
+- **[Storage, Encryption & VFS](docs/storage_and_vfs.md)**: 4-partition GPT disk layout, `iris_crypt` AES-256-XTS proxy with Argon2id, FreeBSD UFS2 (`libufs`), and `iris_fshost` VFS routing.
+
+## Roadmap & Status
+
+| Phase | Milestone | Status |
+| :--- | :--- | :--- |
+| **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
+| **Phase 3** | Safe SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
+| **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
+| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **NEXT UP** |
+| **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |
+
+See [`PROGRESS.md`](PROGRESS.md) for live step-by-step progress and verification logs.
 
 ## Maintainers & Contributors
 

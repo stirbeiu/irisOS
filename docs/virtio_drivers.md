@@ -2,11 +2,11 @@
 
 ## 1. Architectural Overview & Philosophy
 
-In accordance with irisOS's microkernel philosophy, device drivers do **not** run in kernel mode (Ring 0 on x86_64, EL1 on ARM64). All hardware drivers execute strictly as unprivileged user-space server processes (**Ring 3 / EL0**).
+In accordance with irisOS's microkernel philosophy, device drivers do **not** run in kernel mode (Ring 0 on x86_64, EL1 on AArch64). All hardware drivers execute strictly as unprivileged user-space server processes (**Ring 3 / EL0**).
 
 To avoid architecture-specific driver fragmentation (e.g. legacy x86 I/O ports vs ARM MMIO), irisOS standardizes on **PCIe Enhanced Configuration Access Mechanism (ECAM)** across both target architectures:
 - **x86_64 (QEMU `-M q35` with EDK2/OVMF):** Physical ECAM base at `0xE0000000ULL` (mapped via `zx_vmo_create_physical()`).
-- **ARM64 (QEMU `-M virt` with EDK2):** Physical ECAM base at `0x4010000000ULL` (mapped via `zx_vmo_create_physical()`).
+- **AArch64 (QEMU `-M virt` with EDK2):** Physical ECAM base at `0x4010000000ULL` (mapped via `zx_vmo_create_physical()`).
 
 ```text
 +-------------------------------------------------------------------------+
@@ -148,27 +148,18 @@ During system boot, `iris_init` discovers the PCIe VirtIO block controller, spaw
 [iris_init] Phase 4 Step 4.1 verification COMPLETE!
 ```
 
-### Verification Output (ARM64 - QEMU virt)
+### Verification Output (AArch64 - QEMU virt)
 ```text
-[iris_init] Phase 4 Step 4.1: Unified PCIe Discovery & Block Driver
-[iris_init] ========================================================
-[iris_init] Mapping ECAM at phys 0x0000004010000000...
-[iris_init] Discovered VirtIO Block Device at PCI 0x00:0x02 (Vendor: 0x1af4, Device: 0x1001)
-[iris_init] Spawning bin/virtio_blk driver daemon...
-[virtio_blk] irisOS VirtIO Block Driver Daemon starting...
-[virtio_blk] Mapping PCIe ECAM configuration space...
-[virtio_blk] Scanning PCIe buses for VirtIO block device...
-[virtio_blk] Discovered VirtIO Block device at PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001)
-[virtio_blk] Mapped BAR 4 (phys: 0x8000004000) to vaddr: 0x51eafeb4b000
-[virtio_blk] Configuring Virtqueue 0 (size: 256 descriptors)...
-[virtio_blk] VirtIO block device active! Capacity: 131072 sectors (64 MB)
-[virtio_blk] Entering IPC server loop on channel...
-[iris_init] Sending BLK_GET_INFO query over IPC channel...
-[iris_init] VirtIO Block query successful! Capacity: 0x0000000000020000 sectors, Sector Size: 0x0000000000000200 bytes
-[iris_init] Preparing 512-byte verification pattern for Sector 100...
-[iris_init] Writing Sector 100 via IPC request...
-[iris_init] Sector 100 write confirmed OK. Reading back over IPC...
-[iris_init] Sector 100 read/write data verification: MATCHED! (512/512 bytes OK)
-[iris_init] VirtIO Block read/write test on Sector 100: PASSED!
-[iris_init] Phase 4 Step 4.1 verification COMPLETE!
+[  OK  ] Mapped PCIe ECAM configuration space at phys 0x0000004010000000.
+[  OK  ] Discovered VirtIO Block Device at PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+[  OK  ] Located bin/virtio_blk in BOOTFS (2367736 bytes).
+[  OK  ] Started process virtio_blk (bin/virtio_blk).
+[  OK  ] virtio_blk: Bound to PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+[  OK  ] virtio_blk: Mapped BAR 4 (phys 0x8000000000 -> vaddr 0xbe4abaaa9000).
+[  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (262144 sectors, 128 MB).
+[  OK  ] virtio_blk: IPC server listening on control channel.
+[  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 262144 sectors (512 bytes/sector).
+[  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+[  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+[  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
 ```

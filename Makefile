@@ -31,6 +31,15 @@ else ifeq ($(CMD),run)
 run:
 	@$(IRIS_CLI) run $(RUN_ARGS)
 
+else ifeq ($(CMD),test)
+  TEST_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  # Suppress errors for subsequent words treated as goals
+  %::
+	@:
+.PHONY: test
+test:
+	@$(IRIS_CLI) test $(TEST_ARGS)
+
 else
 
 .PHONY: default help all clean x86_64 aarch64

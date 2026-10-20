@@ -34,8 +34,8 @@ USAGE:
 
 TARGET ARCHITECTURES:
   all                    Both x86_64 and aarch64 architectures
-  x86_64                 64-bit x86 architecture (UEFI q35)
-  aarch64                64-bit ARM architecture (UEFI virt)
+  x86_64                 64-bit x86_64 architecture (UEFI q35)
+  aarch64                64-bit AArch64 architecture (UEFI virt)
 
 BUILD COMMANDS:
   make build all         Build system images for both x86_64 and aarch64
@@ -47,7 +47,12 @@ RUN COMMANDS (QEMU window + serial console in stdio):
   make run x86_64        Boot x86_64 VM (without rebuilding)
   make run aarch64       Boot aarch64 VM (without rebuilding)
 
-(You can also use './iris build ...' and './iris run ...' directly)
+TEST COMMANDS (Automated headless QEMU verification):
+  make test all          Test both x86_64 and aarch64
+  make test x86_64       Test x86_64
+  make test aarch64      Test aarch64
+
+(You can also use './iris build ...', './iris run ...', and './iris test ...' directly)
 ======================================================================
 EOF
 }

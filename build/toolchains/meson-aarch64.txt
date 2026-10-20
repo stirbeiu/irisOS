@@ -1,4 +1,4 @@
-# Meson cross-compilation file for irisOS ARM64 (aarch64)
+# Meson cross-compilation file for irisOS AArch64 (aarch64)
 [binaries]
 c = '/opt/homebrew/opt/llvm/bin/clang'
 cpp = '/opt/homebrew/opt/llvm/bin/clang++'

@@ -8,9 +8,9 @@ Always adhere strictly to the architectural rules, licensing boundaries, directo
 
 ## 2. Core Constraints & Philosophy
 * **OS Name:** `irisOS` (one word).
-* **Target Architectures:** `x86_64` and `ARM64` (`aarch64`) ONLY.
+* **Target Architectures:** `x86_64` and `AArch64` (`aarch64`) ONLY.
 * **Zero Legacy Bloat:** UEFI boot only. No 16-bit/32-bit real/protected mode code, no legacy BIOS.
-* **Microkernel Architecture:** Based on a stripped-down **Zircon** microkernel (`bringup` target only). All hardware drivers, filesystems, encryption layers, and window compositors run as isolated user-space processes in **Ring 3 (x86_64) / EL0 (ARM64)**.
+* **Microkernel Architecture:** Based on a stripped-down **Zircon** microkernel (`bringup` target only). All hardware drivers, filesystems, encryption layers, and window compositors run as isolated user-space processes in **Ring 3 (x86_64) / EL0 (AArch64)**.
 * **No Google UI/Runtime Frameworks:** Use ONLY the Zircon microkernel, its C vDSO (`libzircon.so`), and the `zbi` host packaging tool. Strictly exclude Dart, Flutter, FIDL, Scenic, and Fuchsia's component framework.
 * **Reuse Proven FOSS:** Avoid reinventing wheels. Use battle-tested open-source libraries in `vendor/`.
 
@@ -47,7 +47,7 @@ End-users and businesses must be able to develop and distribute **100% proprieta
 * **Build Wrapper:** Compile the Zircon microkernel, `libzircon.so` (vDSO), and the host `zbi` tool using irisOS's standalone CMake/Ninja build wrapper configured with Homebrew LLVM (falling back to a lightweight Linux container only if strictly required for a specific legacy assembly step).
 
 ### 4.3 Bootloader & Dual-ZBI A/B Image Format (Gigaboot)
-* **Bootloader:** **Gigaboot** (Zircon's native UEFI bootloader stub) compiled for UEFI x86_64 (`BOOTX64.EFI`) and ARM64 (`BOOTAA64.EFI`). Limine is excluded.
+* **Bootloader:** **Gigaboot** (Zircon's native UEFI bootloader stub) compiled for UEFI x86_64 (`BOOTX64.EFI`) and AArch64 (`BOOTAA64.EFI`). Limine is excluded.
 * **Dual-ZBI Layout on ESP:** To ensure kernel and early BOOTFS updates have full A/B rollback protection alongside `/System`, the FAT32 `ESP` stores two boot images:
   * `/EFI/BOOT/iris_a.zbi` (Kernel + Slot A BOOTFS)
   * `/EFI/BOOT/iris_b.zbi` (Kernel + Slot B BOOTFS)
@@ -91,7 +91,7 @@ End-users and businesses must be able to develop and distribute **100% proprieta
 * **FD Inheritance:** `posix_spawn()` transfers open file descriptors to child processes using Zircon's standard `PA_HND(PA_FD, fd)` handle info tags in `zx_proc_args_t`.
 
 ### 4.7 Storage, Encryption & A/B Updates
-* **Unified PCIe Device Discovery:** Standardize on **PCIe (ECAM)** for VirtIO devices (`virtio-blk-pci`, `virtio-gpu-pci`, `virtio-input-pci`) on BOTH `x86_64` (QEMU `-M q35`) and `ARM64` (QEMU `-M virt`). This allows `iris_init` and Ring 3 drivers to share a single PCIe enumeration codebase.
+* **Unified PCIe Device Discovery:** Standardize on **PCIe (ECAM)** for VirtIO devices (`virtio-blk-pci`, `virtio-gpu-pci`, `virtio-input-pci`) on BOTH `x86_64` (QEMU `-M q35`) and `AArch64` (QEMU `-M virt`). This allows `iris_init` and Ring 3 drivers to share a single PCIe enumeration codebase.
 * **Block Driver:** User-space `virtio-blk-pci` using Zircon **BTI (`zx_bti_pin`)** for safe DMA and `zx_interrupt_wait()` for PCIe MSI/INTx interrupts.
 * **Block-Level Encryption (`iris_crypt`):**
   * Sits as a block filter between `libufs` and `virtio-blk-pci`: `[libufs] <==> [iris_crypt] <==> [virtio-blk-pci]`.
@@ -132,7 +132,7 @@ irisOS/
 ├── docs/                     # Subsystem documentation (architecture, IPC, VFS, build guides)
 ├── scripts/
 │   ├── fetch_zircon.sh       # Fetches pinned commit of Zircon kernel + vDSO + zbi tool
-│   └── run_qemu.sh           # Launches QEMU (x86_64 q35 or arm64 virt) with UEFI & PCIe VirtIO
+│   └── run_qemu.sh           # Launches QEMU (x86_64 q35 or aarch64 virt) with UEFI & PCIe VirtIO
 ├── kernel/                   # [Kernel Zone - MIT]
 │   └── zircon/               # Pinned Zircon microkernel source tree
 ├── sdk/                      # [SDK Zone - STRICTLY MIT / BSD ONLY]
@@ -197,7 +197,7 @@ irisOS/
   1. Receives `zx_proc_args_t` from `userboot`.
   2. Extracts `PA_RESOURCE`, `PA_VMO_BOOTFS`, `PA_JOB_DEFAULT`, and `PA_VMO_VDSO`.
   3. Creates an early debug log via `zx_debuglog_create` and logs "Hello from irisOS" over serial.
-* Pack `iris_a.zbi` using `zbi` and boot in QEMU via Gigaboot on both `x86_64` (q35) and `arm64` (virt).
+* Pack `iris_a.zbi` using `zbi` and boot in QEMU via Gigaboot on both `x86_64` (q35) and `aarch64` (virt).
 * **Milestone:** `iris_init` boots from BOOTFS in QEMU on both architectures and prints "Hello from irisOS" to the debug serial log.
 
 ### Phase 3: The Safe SDK (`libiris`) & `mlibc` Integration
@@ -213,7 +213,7 @@ irisOS/
 
 ### Phase 4: PCIe Drivers, Storage Encryption & Filesystems
 
-* Implement ECAM PCIe bus scanning in `iris_init` / Ring 3 drivers to discover VirtIO devices across `x86_64` and `arm64`.
+* Implement ECAM PCIe bus scanning in `iris_init` / Ring 3 drivers to discover VirtIO devices across `x86_64` and `aarch64`.
 * Build the Ring 3 `virtio-blk-pci` driver using Zircon BTI (`zx_bti_pin`) for DMA and `zx_interrupt_wait()`.
 * Build `iris_crypt` using `vendor/mbedtls` (AES-256-XTS + Argon2):
   * Acts as a block-level IPC channel proxy above `virtio-blk-pci`.

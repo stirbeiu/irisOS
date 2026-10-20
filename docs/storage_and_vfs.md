@@ -6,7 +6,7 @@ This document specifies the storage stack, 4-partition GPT disk layout, block-le
 
 ## 1. Ring 3 Storage Pipeline Architecture
 
-In accordance with the irisOS microkernel philosophy (Section 2 & Section 4.7 of [`AGENTS.md`](../AGENTS.md)), no storage drivers, cryptographic transforms, or filesystem parsers reside in the Zircon kernel. All layers execute as isolated, unprivileged Ring 3 (`x86_64`) / EL0 (`arm64`) user-space server processes communicating over raw Zircon channels (`zx_channel_*`) using the 24-byte [`iris_msg_hdr_t`](../sdk/libiris/include/iris/ipc.h) wire protocol:
+In accordance with the irisOS microkernel philosophy (Section 2 & Section 4.7 of [`AGENTS.md`](../AGENTS.md)), no storage drivers, cryptographic transforms, or filesystem parsers reside in the Zircon kernel. All layers execute as isolated, unprivileged Ring 3 (`x86_64`) / EL0 (`AArch64`) user-space server processes communicating over raw Zircon channels (`zx_channel_*`) using the 24-byte [`iris_msg_hdr_t`](../sdk/libiris/include/iris/ipc.h) wire protocol:
 
 ```text
 +-------------------------------------------------------------------+

@@ -104,6 +104,12 @@ The header is declared in [`sdk/libiris/include/iris/ipc.h`](../sdk/libiris/incl
 * `IRIS_PTY_OP_DRAIN` (`0x0044`): Flush pending I/O buffers.
 * `IRIS_PTY_OP_SIGNAL` (`0x0045`): Send POSIX signal (`SIGINT`, `SIGWINCH`).
 
+#### IRIS_PROTO_DRIVER (`0x0006`)
+* `IRIS_BLK_OP_GET_INFO` (`0x0050`): Query block device geometry (sector count and sector size).
+* `IRIS_BLK_OP_READ` (`0x0051`): Read contiguous sectors via DMA or encrypted filter.
+* `IRIS_BLK_OP_WRITE` (`0x0052`): Write contiguous sectors via DMA or encrypted filter.
+* `IRIS_BLK_OP_FLUSH` (`0x0053`): Flush write cache to non-volatile storage.
+
 ---
 
 ## 4. Capability Model & Handle Transfer
