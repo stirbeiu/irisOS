@@ -52,7 +52,7 @@ TEST COMMANDS (Automated headless QEMU verification):
   make test x86_64       Test x86_64
   make test aarch64      Test aarch64
 
-(You can also use './iris build ...', './iris run ...', and './iris test ...' directly)
+(Tip: You can use './iris <cmd> <arch>' interchangeably with 'make <cmd> <arch>')
 ======================================================================
 EOF
 }
