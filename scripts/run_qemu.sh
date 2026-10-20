@@ -106,12 +106,14 @@ echo "======================================================================"
 if [[ "${ARCH_NAME}" == "x86_64" ]]; then
     exec "${QEMU_BIN}" \
         -machine q35 \
+        -cpu max \
         -m 512M \
         -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive file="${ESP_IMAGE}",format=raw,if=virtio \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
+        -device virtio-rng-pci \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"
 else
@@ -125,7 +127,7 @@ else
 
     exec "${QEMU_BIN}" \
         -M virt,gic-version=2 \
-        -cpu cortex-a53 \
+        -cpu max \
         -m 512M \
         -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
@@ -134,6 +136,7 @@ else
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
+        -device virtio-rng-pci \
         ${ARM_EXTRA_ARGS[@]+"${ARM_EXTRA_ARGS[@]}"} \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"

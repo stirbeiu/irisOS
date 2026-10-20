@@ -25,7 +25,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTX64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-x64-clang"
         BUILD_DIR="${OUT_DIR}/build-x86_64"
-        CMDLINE_ARGS="userboot=bin/iris_init kernel.serial=legacy gfxconsole.early=true"
+        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy gfxconsole.early=true"
         ;;
     aarch64|arm64)
         ARCH_NAME="arm64"
@@ -34,7 +34,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTAA64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-arm64-clang"
         BUILD_DIR="${OUT_DIR}/build-arm64"
-        CMDLINE_ARGS="userboot=bin/iris_init kernel.serial=legacy gfxconsole.early=true"
+        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy gfxconsole.early=true"
         ;;
     *)
         echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'arm64'."
@@ -50,14 +50,14 @@ if [[ ! -x "${HOST_TOOLS}/zbi" ]]; then
     make -C "${ROOT_DIR}/build" zbi
 fi
 
-# 2. Ensure iris_init, hello_c, and virtio_blk binaries exist
+# 2. Ensure iris_init, its_irisOS, and virtio_blk binaries exist
 if [[ ! -f "${BUILD_DIR}/bin/iris_init" ]]; then
     echo "==> Building iris_init for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
 fi
-if [[ ! -f "${BUILD_DIR}/bin/hello_c" ]]; then
-    echo "==> Building hello_c for ${ARCH_NAME}..."
-    make -C "${ROOT_DIR}/build" "hello-c-${ARCH_NAME}"
+if [[ ! -f "${BUILD_DIR}/bin/its_irisOS" ]]; then
+    echo "==> Building its_irisOS for ${ARCH_NAME}..."
+    make -C "${ROOT_DIR}/build" "its-irisOS-${ARCH_NAME}"
 fi
 if [[ ! -f "${BUILD_DIR}/bin/virtio_blk" ]]; then
     echo "==> Building virtio_blk for ${ARCH_NAME}..."
@@ -102,7 +102,7 @@ fi
     ${EXTRA_ZBI_INPUTS[@]+"${EXTRA_ZBI_INPUTS[@]}"} \
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
-            -e "bin/hello_c=${BUILD_DIR}/bin/hello_c" \
+            -e "bin/its_irisOS=${BUILD_DIR}/bin/its_irisOS" \
             -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk"
 
 # 6. Construct FAT32 UEFI ESP disk image

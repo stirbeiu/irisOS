@@ -54,8 +54,12 @@
  *  4. IPC Command Processing (IRIS_PROTO_DRIVER):
  *     - Listens on `server_ch` using standard 24-byte `iris_msg_hdr_t` wire protocol.
  *     - IRIS_BLK_OP_GET_INFO: returns total sector count and sector size (512 bytes).
- *     - IRIS_BLK_OP_READ: reads $N$ sectors into reply payload via virtqueue DMA.
- *     - IRIS_BLK_OP_WRITE: writes $N$ sectors from request payload to disk via virtqueue DMA.
+ *     - IRIS_BLK_OP_READ: reads N sectors into reply payload via virtqueue DMA.
+ *     - IRIS_BLK_OP_WRITE: writes N sectors from request payload to disk via virtqueue DMA.
+ *  5. Clean DMA Teardown:
+ *     - Resets the VirtIO device to halt DMA engines before releasing memory.
+ *     - Explicitly unpins both Pinned Memory Tokens (`g_vq_pmt` and `g_dma_pmt`) via
+ *       `zx_pmt_unpin()` prior to exit so the microkernel BTI reports zero leaked pages.
  */
 
 #include <stdio.h>
@@ -63,6 +67,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdarg.h>
+#include <unistd.h>
 
 #include <zircon/types.h>
 #include <zircon/process.h>
@@ -94,6 +100,11 @@ static uintptr_t g_doorbell_vaddr = 0;
 static uint16_t g_queue_size = 0;
 static uint16_t g_last_used_idx = 0;
 
+/* BTI & Pinned Memory Token (PMT) handles for clean teardown */
+static zx_handle_t g_bti     = ZX_HANDLE_INVALID;
+static zx_handle_t g_vq_pmt  = ZX_HANDLE_INVALID;
+static zx_handle_t g_dma_pmt = ZX_HANDLE_INVALID;
+
 /* Virtqueue memory mappings */
 static zx_vaddr_t g_vq_desc_vaddr = 0;
 static zx_vaddr_t g_vq_avail_vaddr = 0;
@@ -105,6 +116,21 @@ static zx_paddr_t  g_dma_paddr = 0;
 static zx_vaddr_t  g_dma_vaddr = 0;
 
 static uint64_t g_disk_capacity = 0;
+
+/**
+ * @brief Formats a single-line log message using snprintf and writes it atomically.
+ */
+static void blk_log(const char* fmt, ...) {
+    char line_buf[256];
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(line_buf, sizeof(line_buf), fmt, args);
+    va_end(args);
+    if (n > 0) {
+        size_t len = (size_t)n < sizeof(line_buf) ? (size_t)n : sizeof(line_buf) - 1;
+        write(1, line_buf, len);
+    }
+}
 
 /**
  * @brief Execute a synchronous VirtIO block transfer.
@@ -171,14 +197,15 @@ static zx_status_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t num
     while (used->idx == last_used) {
         __sync_synchronize();
         if (zx_clock_get_monotonic() > deadline) {
-            printf("[virtio_blk] ERROR: Transfer timed out on sector %llu!\n", (unsigned long long)sector);
+            blk_log("[FAILED] virtio_blk: Transfer timed out on sector %llu.\n",
+                    (unsigned long long)sector);
             return ZX_ERR_TIMED_OUT;
         }
     }
     g_last_used_idx = used->idx;
 
     if (*status_byte != VIRTIO_BLK_S_OK) {
-        printf("[virtio_blk] Device reported transfer error: 0x%02x\n", *status_byte);
+        blk_log("[FAILED] virtio_blk: Device reported transfer error 0x%02x.\n", *status_byte);
         return ZX_ERR_IO;
     }
 
@@ -189,18 +216,16 @@ static zx_status_t virtio_blk_do_io(uint32_t type, uint64_t sector, uint32_t num
  * @brief Initialize VirtIO Block device hardware and queues.
  */
 static zx_status_t init_virtio_block_device(void) {
-    printf("[virtio_blk] Mapping PCIe ECAM configuration space...\n");
-
     uint64_t ecam_phys = pci_get_default_ecam_base();
     if (ecam_phys == 0) {
-        printf("[virtio_blk] ERROR: Unsupported architecture for ECAM!\n");
+        blk_log("[FAILED] virtio_blk: Unsupported architecture for ECAM.\n");
         return ZX_ERR_NOT_SUPPORTED;
     }
 
     zx_handle_t ecam_vmo = ZX_HANDLE_INVALID;
     zx_status_t status = zx_vmo_create_physical(g_root_resource, ecam_phys, PCI_ECAM_SIZE_16_BUSES, &ecam_vmo);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: Failed to create ECAM physical VMO: %d\n", status);
+        blk_log("[FAILED] virtio_blk: Failed to create ECAM physical VMO (%d).\n", status);
         return status;
     }
 
@@ -210,18 +235,17 @@ static zx_status_t init_virtio_block_device(void) {
                          0, ecam_vmo, 0, PCI_ECAM_SIZE_16_BUSES, &ecam_vaddr);
     zx_handle_close(ecam_vmo);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: Failed to map ECAM window: %d\n", status);
+        blk_log("[FAILED] virtio_blk: Failed to map ECAM window (%d).\n", status);
         return status;
     }
 
-    printf("[virtio_blk] Scanning PCIe buses for VirtIO block device...\n");
     if (!pci_find_virtio_device(ecam_vaddr, 16, 0, &g_pci_dev)) {
-        printf("[virtio_blk] ERROR: No VirtIO block device discovered on PCIe bus!\n");
+        blk_log("[FAILED] virtio_blk: No VirtIO block device discovered on PCIe bus.\n");
         return ZX_ERR_NOT_FOUND;
     }
 
-    printf("[virtio_blk] Discovered VirtIO Block device at PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x)\n",
-           g_pci_dev.bus, g_pci_dev.dev, g_pci_dev.func, g_pci_dev.vendor_id, g_pci_dev.device_id);
+    blk_log("[  OK  ] virtio_blk: Bound to PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).\n",
+            g_pci_dev.bus, g_pci_dev.dev, g_pci_dev.func, g_pci_dev.vendor_id, g_pci_dev.device_id);
 
     /* Map device BARs containing capabilities */
     uint8_t bars_to_map[4] = { g_pci_dev.common_bar, g_pci_dev.notify_bar, g_pci_dev.isr_bar, g_pci_dev.device_bar };
@@ -232,7 +256,7 @@ static zx_status_t init_virtio_block_device(void) {
 
         uint64_t bar_phys = g_pci_dev.bars[b].phys_addr;
         if (bar_phys == 0) {
-            printf("[virtio_blk] ERROR: BAR %u has invalid physical address 0!\n", b);
+            blk_log("[FAILED] virtio_blk: BAR %u has invalid physical address 0.\n", b);
             return ZX_ERR_BAD_STATE;
         }
 
@@ -240,7 +264,7 @@ static zx_status_t init_virtio_block_device(void) {
         zx_handle_t bar_vmo = ZX_HANDLE_INVALID;
         status = zx_vmo_create_physical(g_root_resource, bar_phys, map_size, &bar_vmo);
         if (status != ZX_OK) {
-            printf("[virtio_blk] ERROR: zx_vmo_create_physical for BAR %u failed: %d\n", b, status);
+            blk_log("[FAILED] virtio_blk: zx_vmo_create_physical for BAR %u failed (%d).\n", b, status);
             return status;
         }
 
@@ -250,13 +274,13 @@ static zx_status_t init_virtio_block_device(void) {
                              0, bar_vmo, 0, map_size, &bar_vaddr);
         zx_handle_close(bar_vmo);
         if (status != ZX_OK) {
-            printf("[virtio_blk] ERROR: zx_vmar_map for BAR %u failed: %d\n", b, status);
+            blk_log("[FAILED] virtio_blk: zx_vmar_map for BAR %u failed (%d).\n", b, status);
             return status;
         }
 
         g_pci_dev.bars[b].vaddr = bar_vaddr;
-        printf("[virtio_blk] Mapped BAR %u (phys: 0x%llx) to vaddr: 0x%llx\n",
-               b, (unsigned long long)bar_phys, (unsigned long long)bar_vaddr);
+        blk_log("[  OK  ] virtio_blk: Mapped BAR %u (phys 0x%llx -> vaddr 0x%llx).\n",
+                b, (unsigned long long)bar_phys, (unsigned long long)bar_vaddr);
     }
 
     g_common_cfg = (volatile virtio_pci_common_cfg_t*)(g_pci_dev.bars[g_pci_dev.common_bar].vaddr + g_pci_dev.common_offset);
@@ -285,7 +309,7 @@ static zx_status_t init_virtio_block_device(void) {
     __sync_synchronize();
 
     if (!(g_common_cfg->device_status & VIRTIO_STATUS_FEATURES_OK)) {
-        printf("[virtio_blk] ERROR: VirtIO device rejected feature negotiation!\n");
+        blk_log("[FAILED] virtio_blk: VirtIO device rejected feature negotiation.\n");
         return ZX_ERR_NOT_SUPPORTED;
     }
 
@@ -293,42 +317,41 @@ static zx_status_t init_virtio_block_device(void) {
     g_common_cfg->queue_select = 0;
     g_queue_size = g_common_cfg->queue_size;
     if (g_queue_size == 0) {
-        printf("[virtio_blk] ERROR: Queue 0 unavailable on device!\n");
+        blk_log("[FAILED] virtio_blk: Queue 0 unavailable on device.\n");
         return ZX_ERR_NOT_FOUND;
     }
-    printf("[virtio_blk] Configuring Virtqueue 0 (size: %u descriptors)...\n", g_queue_size);
 
     /* Create dummy IOMMU and BTI */
     zx_iommu_desc_dummy_t dummy_desc = {0};
     zx_handle_t iommu = ZX_HANDLE_INVALID;
     status = zx_iommu_create(g_root_resource, ZX_IOMMU_TYPE_DUMMY, &dummy_desc, sizeof(dummy_desc), &iommu);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_iommu_create failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_iommu_create failed (%d).\n", status);
         return status;
     }
 
-    zx_handle_t bti = ZX_HANDLE_INVALID;
-    status = zx_bti_create(iommu, 0, 0, &bti);
+    status = zx_bti_create(iommu, 0, 0, &g_bti);
     zx_handle_close(iommu);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_bti_create failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_bti_create failed (%d).\n", status);
         return status;
     }
 
     /* Allocate physically contiguous memory for Virtqueue 0 (16 KB) */
     size_t vq_bytes = 16384u;
     zx_handle_t vq_vmo = ZX_HANDLE_INVALID;
-    status = zx_vmo_create_contiguous(bti, vq_bytes, 0, &vq_vmo);
+    status = zx_vmo_create_contiguous(g_bti, vq_bytes, 0, &vq_vmo);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_vmo_create_contiguous for virtqueue failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_vmo_create_contiguous for virtqueue failed (%d).\n", status);
         return status;
     }
 
+    /* Pin Virtqueue VMO via BTI and store g_vq_pmt token for teardown unpinning */
     zx_paddr_t vq_paddr = 0;
-    zx_handle_t vq_pmt = ZX_HANDLE_INVALID;
-    status = zx_bti_pin(bti, ZX_BTI_PERM_READ | ZX_BTI_PERM_WRITE | ZX_BTI_CONTIGUOUS, vq_vmo, 0, vq_bytes, &vq_paddr, 1, &vq_pmt);
+    status = zx_bti_pin(g_bti, ZX_BTI_PERM_READ | ZX_BTI_PERM_WRITE | ZX_BTI_CONTIGUOUS,
+                        vq_vmo, 0, vq_bytes, &vq_paddr, 1, &g_vq_pmt);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_bti_pin for virtqueue failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_bti_pin for virtqueue failed (%d).\n", status);
         return status;
     }
 
@@ -336,7 +359,7 @@ static zx_status_t init_virtio_block_device(void) {
     status = zx_vmar_map(zx_vmar_root_self(), ZX_VM_PERM_READ | ZX_VM_PERM_WRITE, 0, vq_vmo, 0, vq_bytes, &vq_vaddr);
     zx_handle_close(vq_vmo);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_vmar_map for virtqueue failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_vmar_map for virtqueue failed (%d).\n", status);
         return status;
     }
     memset((void*)vq_vaddr, 0, vq_bytes);
@@ -362,22 +385,23 @@ static zx_status_t init_virtio_block_device(void) {
 
     /* Allocate DMA buffer for block transfer headers and sector data (64 KB) */
     size_t dma_bytes = 65536u;
-    status = zx_vmo_create_contiguous(bti, dma_bytes, 0, &g_dma_vmo);
+    status = zx_vmo_create_contiguous(g_bti, dma_bytes, 0, &g_dma_vmo);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_vmo_create_contiguous for DMA failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_vmo_create_contiguous for DMA failed (%d).\n", status);
         return status;
     }
 
-    zx_handle_t dma_pmt = ZX_HANDLE_INVALID;
-    status = zx_bti_pin(bti, ZX_BTI_PERM_READ | ZX_BTI_PERM_WRITE | ZX_BTI_CONTIGUOUS, g_dma_vmo, 0, dma_bytes, &g_dma_paddr, 1, &dma_pmt);
+    /* Pin DMA transfer buffer via BTI and store g_dma_pmt token for teardown unpinning */
+    status = zx_bti_pin(g_bti, ZX_BTI_PERM_READ | ZX_BTI_PERM_WRITE | ZX_BTI_CONTIGUOUS,
+                        g_dma_vmo, 0, dma_bytes, &g_dma_paddr, 1, &g_dma_pmt);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_bti_pin for DMA buffer failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_bti_pin for DMA buffer failed (%d).\n", status);
         return status;
     }
 
     status = zx_vmar_map(zx_vmar_root_self(), ZX_VM_PERM_READ | ZX_VM_PERM_WRITE, 0, g_dma_vmo, 0, dma_bytes, &g_dma_vaddr);
     if (status != ZX_OK) {
-        printf("[virtio_blk] ERROR: zx_vmar_map for DMA buffer failed: %d\n", status);
+        blk_log("[FAILED] virtio_blk: zx_vmar_map for DMA buffer failed (%d).\n", status);
         return status;
     }
     memset((void*)g_dma_vaddr, 0, dma_bytes);
@@ -389,18 +413,53 @@ static zx_status_t init_virtio_block_device(void) {
     /* Read capacity in 512-byte sectors */
     g_disk_capacity = *(volatile uint64_t*)g_device_cfg;
 
-    printf("[virtio_blk] VirtIO block device active! Capacity: %llu sectors (%llu MB)\n",
-           (unsigned long long)g_disk_capacity,
-           (unsigned long long)(g_disk_capacity * 512u) / (1024u * 1024u));
+    blk_log("[  OK  ] virtio_blk: Virtqueue 0 (%u descriptors) & BTI DMA initialized (%llu sectors, %llu MB).\n",
+            g_queue_size,
+            (unsigned long long)g_disk_capacity,
+            (unsigned long long)(g_disk_capacity * 512u) / (1024u * 1024u));
 
     return ZX_OK;
+}
+
+/**
+ * @brief Reset VirtIO hardware and explicitly unpin BTI Pinned Memory Tokens (PMTs).
+ *
+ * Zircon's BusTransactionInitiatorDispatcher quarantines and flags any PMT whose
+ * handle is closed without first invoking `zx_pmt_unpin()`. Unpinning both
+ * `g_vq_pmt` and `g_dma_pmt` guarantees zero leaked pages on driver teardown.
+ */
+static void cleanup_virtio_block_device(void) {
+    if (g_common_cfg != NULL) {
+        g_common_cfg->device_status = VIRTIO_STATUS_DEVICE_RESET;
+        __sync_synchronize();
+    }
+
+    if (g_vq_pmt != ZX_HANDLE_INVALID) {
+        zx_pmt_unpin(g_vq_pmt);
+        g_vq_pmt = ZX_HANDLE_INVALID;
+    }
+
+    if (g_dma_pmt != ZX_HANDLE_INVALID) {
+        zx_pmt_unpin(g_dma_pmt);
+        g_dma_pmt = ZX_HANDLE_INVALID;
+    }
+
+    if (g_dma_vmo != ZX_HANDLE_INVALID) {
+        zx_handle_close(g_dma_vmo);
+        g_dma_vmo = ZX_HANDLE_INVALID;
+    }
+
+    if (g_bti != ZX_HANDLE_INVALID) {
+        zx_handle_close(g_bti);
+        g_bti = ZX_HANDLE_INVALID;
+    }
 }
 
 /**
  * @brief Primary IPC event loop serving block requests over raw Zircon channels.
  */
 static void run_ipc_server(void) {
-    printf("[virtio_blk] Entering IPC server loop on channel...\n");
+    blk_log("[  OK  ] virtio_blk: IPC server listening on control channel.\n");
 
     uint8_t req_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
     uint8_t rep_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
@@ -428,7 +487,6 @@ static void run_ipc_server(void) {
                                         ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
                                         ZX_TIME_INFINITE, &observed);
             if (status != ZX_OK || (observed & ZX_CHANNEL_PEER_CLOSED)) {
-                printf("[virtio_blk] Peer closed channel. Terminating driver server.\n");
                 break;
             }
             continue;
@@ -436,7 +494,6 @@ static void run_ipc_server(void) {
 
         if (status != ZX_OK) {
             if (status == ZX_ERR_PEER_CLOSED) {
-                printf("[virtio_blk] Channel peer closed.\n");
                 break;
             }
             continue;
@@ -528,35 +585,40 @@ int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
-    printf("[virtio_blk] irisOS VirtIO Block Driver Daemon starting...\n");
-
     /* Extract Root Resource capability handle */
     g_root_resource = iris_root_resource();
     if (g_root_resource == ZX_HANDLE_INVALID) {
         g_root_resource = zx_take_startup_handle(PA_HND(PA_RESOURCE, 0));
     }
     if (g_root_resource == ZX_HANDLE_INVALID) {
-        printf("[virtio_blk] FATAL: Missing Root Resource capability handle!\n");
+        blk_log("[FAILED] virtio_blk: Missing Root Resource capability handle.\n");
         return 1;
     }
 
     /* Extract Driver Server channel endpoint */
     g_server_channel = zx_take_startup_handle(PA_HND(PA_USER0, 0));
     if (g_server_channel == ZX_HANDLE_INVALID) {
-        printf("[virtio_blk] FATAL: Missing Driver IPC Server channel handle (PA_USER0)!\n");
+        blk_log("[FAILED] virtio_blk: Missing Driver IPC Server channel handle (PA_USER0).\n");
         return 1;
     }
 
     /* Initialize hardware */
     zx_status_t status = init_virtio_block_device();
     if (status != ZX_OK) {
-        printf("[virtio_blk] FATAL: Failed to initialize VirtIO block device: %d\n", status);
+        blk_log("[FAILED] virtio_blk: Failed to initialize VirtIO block device (%d).\n", status);
+        cleanup_virtio_block_device();
         return 1;
     }
 
     /* Run request processing loop */
     run_ipc_server();
 
-    printf("[virtio_blk] Driver daemon exiting.\n");
+    /* Unpin DMA memory tokens and release BTI resources cleanly */
+    cleanup_virtio_block_device();
+    if (g_server_channel != ZX_HANDLE_INVALID) {
+        zx_handle_close(g_server_channel);
+        g_server_channel = ZX_HANDLE_INVALID;
+    }
+    blk_log("[  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.\n");
     return 0;
 }

@@ -20,9 +20,8 @@ _start:
     push %rbp
     mov %rsp, %rbp
 
-    /* Align stack to 16-byte boundary before call */
+    /* Align stack to 16-byte boundary before call (System V AMD64 ABI) */
     and $~0xF, %rsp
-    sub $8, %rsp
 
     /*
      * Call __iris_start(start_arg, vdso_base, main):

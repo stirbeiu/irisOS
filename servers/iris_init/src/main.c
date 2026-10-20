@@ -31,8 +31,6 @@
  *  3. Capability Handle Extraction:
  *     - iris_init consumes the bootstrap channel using `zx_channel_read()` to receive
  *       the `zx_proc_args_t` message and all initial capability handles transferred by userboot.
- *     - The transferred capability handles are indexed by an array of uint32_t handle info
- *       identifiers packed at `handle_info_off` in the message payload.
  *     - The essential root capabilities required by Section 4.4 are extracted:
  *         * `PA_HND(PA_RESOURCE, 0)`    -> Root Resource handle (for MMIO, IRQs, ports)
  *         * `PA_HND(PA_VMO_BOOTFS, 0)`   -> BOOTFS VMO handle (early boot files/drivers)
@@ -40,24 +38,24 @@
  *         * `PA_HND(PA_VMO_VDSO, 0)`     -> vDSO VMO handle (libzircon.so system calls)
  *         * `PA_HND(PA_VMAR_ROOT, 0)`    -> Process Root VMAR handle
  *
- *  4. Early Serial Logging:
+ *  4. Single-Buffer Systemd-Style Serial Logging:
  *     - Creates an early kernel debug log handle using `zx_debuglog_create(root_resource, 0, &log)`
  *       to stream early bootstrap diagnostics to UART/console before `iris_pty` is initialized.
- *     - Outputs the official irisOS bootstrap banner:
- *       `"[irisOS] Welcome to irisOS (x86_64 / arm64) - iris_init bootstrap successful!\n"`.
+ *     - Formats every log message into a single line buffer via `snprintf` before calling
+ *       `zx_debuglog_write()` to eliminate split lines and fragmented timestamp prefixes.
+ *     - Displays the irisOS ASCII banner, node identity (`irisOS-dev`), and standardized
+ *       `[  OK  ]` status lines.
  *
- *  5. Child Process Spawning (Phase 3 Step 3.3):
- *     - Locates `bin/hello_c` in the mapped BOOTFS VMO.
- *     - Creates a child process and thread in `g_root_job`.
- *     - Maps `bin/hello_c` ELF segments and vDSO into the child address space.
- *     - Transmits `g_debuglog_handle` as `PA_HND(PA_FDIO_LOGGER, 0)` so standard C printf()
- *       routes directly to the console.
- *     - Starts child process and observes its execution output.
+ *  5. Child Process Spawning & Driver Verification:
+ *     - Locates and executes `bin/its_irisOS` (Interactive Test Suite) from BOOTFS.
+ *     - Discovers PCIe VirtIO Block hardware via ECAM, spawns `bin/virtio_blk`, and
+ *       verifies sector read/write over IPC (`iris_msg_hdr_t`).
  */
 
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 #include <zircon/types.h>
 #include <zircon/processargs.h>
@@ -78,6 +76,14 @@
 #define BOOTFS_MAGIC               (0xa56d3ff9u)
 #define PAGE_SIZE                  (4096ULL)
 #define PAGE_MASK                  (~(PAGE_SIZE - 1ULL))
+
+#if defined(__x86_64__)
+#define IRIS_ARCH_NAME "x86_64"
+#elif defined(__aarch64__)
+#define IRIS_ARCH_NAME "arm64"
+#else
+#define IRIS_ARCH_NAME "unknown"
+#endif
 
 /* Global capabilities extracted from userboot bootstrap channel */
 static zx_handle_t g_root_resource   = ZX_HANDLE_INVALID;
@@ -264,7 +270,7 @@ static void vdso_init(uintptr_t base) {
 }
 
 /* ==============================================================================
- * Minimal Freestanding Memory Helpers
+ * Minimal Freestanding Memory & Formatting Helpers (snprintf)
  * ============================================================================== */
 
 static void* iris_memcpy(void* dest, const void* src, size_t n) {
@@ -293,30 +299,176 @@ static int iris_memcmp(const void* s1, const void* s2, size_t n) {
     return 0;
 }
 
-/**
- * @brief Writes an ASCII string to the early serial debug log.
- */
-static void early_log_puts(zx_handle_t log_handle, const char* str) {
-    if (log_handle == ZX_HANDLE_INVALID || str == NULL || !g_zx_debuglog_write) {
-        return;
-    }
+static size_t iris_strlen(const char* s) {
     size_t len = 0;
-    while (str[len] != '\0') {
+    if (!s) return 0;
+    while (s[len] != '\0') {
         len++;
     }
-    g_zx_debuglog_write(log_handle, 0, str, len);
+    return len;
 }
 
-static void early_log_hex(zx_handle_t log_handle, uint64_t val) {
-    char buf[19];
-    buf[0] = '0';
-    buf[1] = 'x';
-    for (int i = 15; i >= 0; i--) {
-        int nibble = (val >> (i * 4)) & 0xF;
-        buf[2 + (15 - i)] = (nibble < 10) ? ('0' + nibble) : ('a' + (nibble - 10));
+static void buf_putc(char* buf, size_t size, size_t* idx, char c) {
+    if (size > 0 && *idx + 1 < size) {
+        buf[*idx] = c;
     }
-    buf[18] = '\0';
-    early_log_puts(log_handle, buf);
+    (*idx)++;
+}
+
+static int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap) {
+    size_t idx = 0;
+    if (!fmt) {
+        if (size > 0) buf[0] = '\0';
+        return 0;
+    }
+
+    while (*fmt) {
+        if (*fmt != '%') {
+            buf_putc(buf, size, &idx, *fmt++);
+            continue;
+        }
+        fmt++; /* skip '%' */
+
+        char pad_char = ' ';
+        if (*fmt == '0') {
+            pad_char = '0';
+            fmt++;
+        }
+
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = width * 10 + (*fmt - '0');
+            fmt++;
+        }
+
+        int is_long = 0;
+        if (*fmt == 'z') {
+            is_long = 2;
+            fmt++;
+        } else {
+            while (*fmt == 'l') {
+                is_long++;
+                fmt++;
+            }
+        }
+
+        char spec = *fmt ? *fmt++ : '\0';
+        switch (spec) {
+            case 's': {
+                const char* s = va_arg(ap, const char*);
+                if (!s) s = "(null)";
+                while (*s) {
+                    buf_putc(buf, size, &idx, *s++);
+                }
+                break;
+            }
+            case 'c': {
+                char c = (char)va_arg(ap, int);
+                buf_putc(buf, size, &idx, c);
+                break;
+            }
+            case 'd':
+            case 'i': {
+                int64_t val = (is_long >= 1) ? va_arg(ap, int64_t) : (int64_t)va_arg(ap, int);
+                uint64_t uval;
+                if (val < 0) {
+                    buf_putc(buf, size, &idx, '-');
+                    uval = (uint64_t)(-(val + 1)) + 1u;
+                    if (width > 0) width--;
+                } else {
+                    uval = (uint64_t)val;
+                }
+                char tmp[24];
+                int n = 0;
+                do {
+                    tmp[n++] = (char)('0' + (uval % 10u));
+                    uval /= 10u;
+                } while (uval > 0);
+                while (n < width) {
+                    buf_putc(buf, size, &idx, pad_char);
+                    width--;
+                }
+                while (n > 0) {
+                    buf_putc(buf, size, &idx, tmp[--n]);
+                }
+                break;
+            }
+            case 'u': {
+                uint64_t uval = (is_long >= 1) ? va_arg(ap, uint64_t) : (uint64_t)va_arg(ap, unsigned int);
+                char tmp[24];
+                int n = 0;
+                do {
+                    tmp[n++] = (char)('0' + (uval % 10u));
+                    uval /= 10u;
+                } while (uval > 0);
+                while (n < width) {
+                    buf_putc(buf, size, &idx, pad_char);
+                    width--;
+                }
+                while (n > 0) {
+                    buf_putc(buf, size, &idx, tmp[--n]);
+                }
+                break;
+            }
+            case 'x':
+            case 'X': {
+                uint64_t uval = (is_long >= 1) ? va_arg(ap, uint64_t) : (uint64_t)va_arg(ap, unsigned int);
+                const char* hex = (spec == 'X') ? "0123456789ABCDEF" : "0123456789abcdef";
+                char tmp[24];
+                int n = 0;
+                do {
+                    tmp[n++] = hex[uval & 0xFu];
+                    uval >>= 4;
+                } while (uval > 0);
+                while (n < width) {
+                    buf_putc(buf, size, &idx, pad_char);
+                    width--;
+                }
+                while (n > 0) {
+                    buf_putc(buf, size, &idx, tmp[--n]);
+                }
+                break;
+            }
+            case '%':
+                buf_putc(buf, size, &idx, '%');
+                break;
+            default:
+                buf_putc(buf, size, &idx, spec);
+                break;
+        }
+    }
+
+    if (size > 0) {
+        buf[idx < size ? idx : size - 1] = '\0';
+    }
+    return (int)idx;
+}
+
+static int snprintf(char* buf, size_t size, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
+/**
+ * @brief Formats a message into a single line buffer using snprintf and writes it
+ *        atomically to zx_debuglog_write() to eliminate split lines.
+ */
+static void log_printf(const char* fmt, ...) {
+    if (g_debuglog_handle == ZX_HANDLE_INVALID || !g_zx_debuglog_write) {
+        return;
+    }
+    char line_buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line_buf, sizeof(line_buf), fmt, ap);
+    va_end(ap);
+    if (n > 0) {
+        size_t len = (size_t)n < sizeof(line_buf) ? (size_t)n : sizeof(line_buf) - 1;
+        g_zx_debuglog_write(g_debuglog_handle, 0, line_buf, len);
+    }
 }
 
 /* ==============================================================================
@@ -349,9 +501,13 @@ static zx_status_t spawn_elf_binary(
     uint32_t extra_info2,
     zx_handle_t* out_proc
 ) {
+    char line_buf[256];
+
     if (g_bootfs_vmo == ZX_HANDLE_INVALID || g_root_job == ZX_HANDLE_INVALID ||
         g_vdso_vmo == ZX_HANDLE_INVALID || g_vmar_root_self == ZX_HANDLE_INVALID) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Error: Missing required handles to spawn process!\n");
+        int len = snprintf(line_buf, sizeof(line_buf),
+                           "[FAILED] iris_init: Missing required capabilities to spawn %s.", path);
+        g_zx_debuglog_write(g_debuglog_handle, 0, line_buf, (size_t)len);
         return ZX_ERR_BAD_STATE;
     }
 
@@ -359,7 +515,7 @@ static zx_status_t spawn_elf_binary(
     uint64_t bootfs_size = 0;
     zx_status_t status = g_zx_vmo_get_size(g_bootfs_vmo, &bootfs_size);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Failed to query BOOTFS size\n");
+        log_printf("[FAILED] iris_init: Failed to query BOOTFS size (%d).", status);
         return status;
     }
 
@@ -367,13 +523,13 @@ static zx_status_t spawn_elf_binary(
     status = g_zx_vmar_map(g_vmar_root_self, ZX_VM_PERM_READ, 0,
                            g_bootfs_vmo, 0, bootfs_size, &bootfs_addr);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Failed to map BOOTFS VMO\n");
+        log_printf("[FAILED] iris_init: Failed to map BOOTFS VMO (%d).", status);
         return status;
     }
 
     const bootfs_header_t* hdr = (const bootfs_header_t*)bootfs_addr;
     if (hdr->magic != BOOTFS_MAGIC) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Invalid BOOTFS magic\n");
+        log_printf("[FAILED] iris_init: Invalid BOOTFS magic (0x%08x).", hdr->magic);
         return ZX_ERR_IO;
     }
 
@@ -382,8 +538,7 @@ static zx_status_t spawn_elf_binary(
     const uint8_t* end = p + hdr->dirsize;
     uint32_t file_off = 0;
     uint32_t file_len = 0;
-    size_t path_len = 0;
-    while (path[path_len]) path_len++;
+    size_t path_len = iris_strlen(path);
     size_t target_len = path_len + 1; /* BOOTFS name_len includes null terminator */
 
     while (p < end) {
@@ -398,25 +553,20 @@ static zx_status_t spawn_elf_binary(
     }
 
     if (file_off == 0 || file_len == 0) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Notice: ");
-        early_log_puts(g_debuglog_handle, path);
-        early_log_puts(g_debuglog_handle, " not found in BOOTFS.\n");
+        log_printf("[FAILED] iris_init: %s not found in BOOTFS.", path);
         return ZX_ERR_NOT_FOUND;
     }
 
-    early_log_puts(g_debuglog_handle, "[iris_init] Located ");
-    early_log_puts(g_debuglog_handle, path);
-    early_log_puts(g_debuglog_handle, " in BOOTFS! Spawning process...\n");
+    log_printf("[  OK  ] Located %s in BOOTFS (%u bytes).", path, file_len);
 
     /* 3. Create Child Process & Root VMAR */
-    size_t name_len = 0;
-    while (name[name_len]) name_len++;
+    size_t name_len = iris_strlen(name);
 
     zx_handle_t child_proc = ZX_HANDLE_INVALID;
     zx_handle_t child_vmar = ZX_HANDLE_INVALID;
     status = g_zx_process_create(g_root_job, name, (uint32_t)name_len, 0, &child_proc, &child_vmar);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] zx_process_create failed\n");
+        log_printf("[FAILED] iris_init: zx_process_create failed for %s (%d).", name, status);
         return status;
     }
 
@@ -424,7 +574,7 @@ static zx_status_t spawn_elf_binary(
     zx_handle_t child_thread = ZX_HANDLE_INVALID;
     status = g_zx_thread_create(child_proc, name, (uint32_t)name_len, 0, &child_thread);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] zx_thread_create failed\n");
+        log_printf("[FAILED] iris_init: zx_thread_create failed for %s (%d).", name, status);
         g_zx_handle_close(child_vmar);
         g_zx_handle_close(child_proc);
         return status;
@@ -436,7 +586,7 @@ static zx_status_t spawn_elf_binary(
 
     if (ehdr->e_ident[0] != 0x7f || ehdr->e_ident[1] != 'E' ||
         ehdr->e_ident[2] != 'L'  || ehdr->e_ident[3] != 'F') {
-        early_log_puts(g_debuglog_handle, "[iris_init] Invalid ELF magic\n");
+        log_printf("[FAILED] iris_init: Invalid ELF magic in %s.", path);
         g_zx_handle_close(child_thread);
         g_zx_handle_close(child_vmar);
         g_zx_handle_close(child_proc);
@@ -466,7 +616,7 @@ static zx_status_t spawn_elf_binary(
                                     ZX_VM_CAN_MAP_EXECUTE | ZX_VM_CAN_MAP_SPECIFIC,
                                     0, span, &prog_vmar, &prog_base);
         if (status != ZX_OK) {
-            early_log_puts(g_debuglog_handle, "[iris_init] zx_vmar_allocate failed\n");
+            log_printf("[FAILED] iris_init: zx_vmar_allocate failed for %s (%d).", name, status);
             g_zx_handle_close(child_thread);
             g_zx_handle_close(child_vmar);
             g_zx_handle_close(child_proc);
@@ -490,7 +640,7 @@ static zx_status_t spawn_elf_binary(
         zx_handle_t seg_vmo = ZX_HANDLE_INVALID;
         status = g_zx_vmo_create(seg_mem_total, 0, &seg_vmo);
         if (status != ZX_OK) {
-            early_log_puts(g_debuglog_handle, "[iris_init] zx_vmo_create for segment failed\n");
+            log_printf("[FAILED] iris_init: zx_vmo_create for segment failed (%d).", status);
             return status;
         }
 
@@ -514,7 +664,7 @@ static zx_status_t spawn_elf_binary(
         g_zx_handle_close(seg_vmo);
 
         if (status != ZX_OK) {
-            early_log_puts(g_debuglog_handle, "[iris_init] zx_vmar_map for segment failed!\n");
+            log_printf("[FAILED] iris_init: zx_vmar_map for segment failed (%d).", status);
             return status;
         }
     }
@@ -544,7 +694,7 @@ static zx_status_t spawn_elf_binary(
                                 ZX_VM_CAN_MAP_READ | ZX_VM_CAN_MAP_EXECUTE | ZX_VM_CAN_MAP_SPECIFIC,
                                 0, v_span, &vdso_sub_vmar, &child_vdso_base);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Failed to allocate vDSO sub-VMAR\n");
+        log_printf("[FAILED] iris_init: Failed to allocate vDSO sub-VMAR (%d).", status);
         return status;
     }
 
@@ -558,9 +708,7 @@ static zx_status_t spawn_elf_binary(
         zx_vaddr_t a = 0;
         status = g_zx_vmar_map(vdso_sub_vmar, p, s_off - v_min, g_vdso_vmo, ph->p_offset & PAGE_MASK, s_len, &a);
         if (status != ZX_OK) {
-            early_log_puts(g_debuglog_handle, "[iris_init] Failed to map vDSO segment: ");
-            early_log_hex(g_debuglog_handle, (uint64_t)(int64_t)status);
-            early_log_puts(g_debuglog_handle, "\n");
+            log_printf("[FAILED] iris_init: Failed to map vDSO segment (%d).", status);
             return status;
         }
     }
@@ -575,7 +723,7 @@ static zx_status_t spawn_elf_binary(
     status = g_zx_vmar_map(child_vmar, ZX_VM_PERM_READ | ZX_VM_PERM_WRITE, 0,
                            stack_vmo, 0, stack_size, &stack_base);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Failed to map stack into child\n");
+        log_printf("[FAILED] iris_init: Failed to map stack into child (%d).", status);
         return status;
     }
 
@@ -653,20 +801,18 @@ static zx_status_t spawn_elf_binary(
     g_zx_handle_close(bstrap_tx);
 
     /* 9. Start Child Process */
-    early_log_puts(g_debuglog_handle, "[iris_init] Starting child process: ");
-    early_log_puts(g_debuglog_handle, name);
-    early_log_puts(g_debuglog_handle, "...\n");
-
     status = g_zx_process_start(child_proc, child_thread, entry_point, sp, bstrap_rx, child_vdso_base);
     g_zx_handle_close(stack_vmo);
     g_zx_handle_close(child_vmar);
     g_zx_handle_close(child_thread);
 
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] zx_process_start failed\n");
+        log_printf("[FAILED] iris_init: zx_process_start failed for %s (%d).", name, status);
         g_zx_handle_close(child_proc);
         return status;
     }
+
+    log_printf("[  OK  ] Started process %s (%s).", name, path);
 
     if (out_proc != NULL) {
         *out_proc = child_proc;
@@ -677,18 +823,18 @@ static zx_status_t spawn_elf_binary(
 }
 
 /**
- * @brief Locates and launches bin/hello_c from the BOOTFS VMO.
+ * @brief Locates and launches bin/its_irisOS (Interactive Test Suite) from BOOTFS.
  */
-static void spawn_hello_c(void) {
+static void spawn_its_irisOS(void) {
     zx_handle_t child_proc = ZX_HANDLE_INVALID;
-    zx_status_t status = spawn_elf_binary("hello_c", "bin/hello_c",
+    zx_status_t status = spawn_elf_binary("its_irisOS", "bin/its_irisOS",
                                           ZX_HANDLE_INVALID, 0,
                                           ZX_HANDLE_INVALID, 0,
                                           &child_proc);
     if (status == ZX_OK && child_proc != ZX_HANDLE_INVALID) {
         zx_signals_t observed = 0;
         g_zx_object_wait_one(child_proc, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &observed);
-        early_log_puts(g_debuglog_handle, "[iris_init] hello_c process execution finished.\n");
+        log_printf("[  OK  ] Process its_irisOS finished execution.");
         g_zx_handle_close(child_proc);
     }
 }
@@ -697,22 +843,13 @@ static void spawn_hello_c(void) {
  * @brief Phase 4 Step 4.1: Unified PCIe Discovery & Ring 3 VirtIO Block Driver Verification.
  */
 static void test_virtio_blk(void) {
-    early_log_puts(g_debuglog_handle, "\n[iris_init] ========================================================\n");
-    early_log_puts(g_debuglog_handle, "[iris_init] Phase 4 Step 4.1: Unified PCIe Discovery & Block Driver\n");
-    early_log_puts(g_debuglog_handle, "[iris_init] ========================================================\n");
-
     /* 1. Map PCIe ECAM configuration space */
     uint64_t ecam_phys = pci_get_default_ecam_base();
-    early_log_puts(g_debuglog_handle, "[iris_init] Mapping ECAM at phys 0x");
-    early_log_hex(g_debuglog_handle, ecam_phys);
-    early_log_puts(g_debuglog_handle, "...\n");
 
     zx_handle_t ecam_vmo = ZX_HANDLE_INVALID;
     zx_status_t status = g_zx_vmo_create_physical(g_root_resource, ecam_phys, PCI_ECAM_SIZE_16_BUSES, &ecam_vmo);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: zx_vmo_create_physical failed for ECAM: ");
-        early_log_hex(g_debuglog_handle, (uint64_t)(int64_t)status);
-        early_log_puts(g_debuglog_handle, "\n");
+        log_printf("[FAILED] iris_init: zx_vmo_create_physical failed for ECAM (%d).", status);
         return;
     }
 
@@ -722,39 +859,34 @@ static void test_virtio_blk(void) {
                            0, ecam_vmo, 0, PCI_ECAM_SIZE_16_BUSES, &ecam_vaddr);
     g_zx_handle_close(ecam_vmo);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: zx_vmar_map failed for ECAM\n");
+        log_printf("[FAILED] iris_init: zx_vmar_map failed for ECAM (%d).", status);
         return;
     }
+
+    log_printf("[  OK  ] Mapped PCIe ECAM configuration space at phys 0x%016llx.",
+               (unsigned long long)ecam_phys);
 
     /* 2. Scan PCIe for VirtIO Block Device */
     virtio_pci_dev_t blk_dev;
     iris_memset(&blk_dev, 0, sizeof(blk_dev));
     if (!pci_find_virtio_device(ecam_vaddr, 16, 0, &blk_dev)) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: No VirtIO Block device found on PCIe bus!\n");
+        log_printf("[FAILED] iris_init: No VirtIO Block device found on PCIe bus.");
         return;
     }
 
-    early_log_puts(g_debuglog_handle, "[iris_init] Discovered VirtIO Block Device at PCI ");
-    early_log_hex(g_debuglog_handle, blk_dev.bus);
-    early_log_puts(g_debuglog_handle, ":");
-    early_log_hex(g_debuglog_handle, blk_dev.dev);
-    early_log_puts(g_debuglog_handle, " (Vendor: 0x");
-    early_log_hex(g_debuglog_handle, blk_dev.vendor_id);
-    early_log_puts(g_debuglog_handle, ", Device: 0x");
-    early_log_hex(g_debuglog_handle, blk_dev.device_id);
-    early_log_puts(g_debuglog_handle, ")\n");
+    log_printf("[  OK  ] Discovered VirtIO Block Device at PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).",
+               blk_dev.bus, blk_dev.dev, blk_dev.func, blk_dev.vendor_id, blk_dev.device_id);
 
     /* 3. Create Driver Control Channel Pair */
     zx_handle_t client_ch = ZX_HANDLE_INVALID;
     zx_handle_t server_ch = ZX_HANDLE_INVALID;
     status = g_zx_channel_create(0, &client_ch, &server_ch);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: zx_channel_create failed\n");
+        log_printf("[FAILED] iris_init: zx_channel_create failed (%d).", status);
         return;
     }
 
     /* 4. Spawn bin/virtio_blk from BOOTFS */
-    early_log_puts(g_debuglog_handle, "[iris_init] Spawning bin/virtio_blk driver daemon...\n");
     zx_handle_t root_res_dup = ZX_HANDLE_INVALID;
     g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_dup);
 
@@ -765,27 +897,25 @@ static void test_virtio_blk(void) {
                               &blk_proc);
     g_zx_handle_close(server_ch);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Failed to spawn bin/virtio_blk!\n");
+        log_printf("[FAILED] iris_init: Failed to spawn bin/virtio_blk (%d).", status);
         g_zx_handle_close(client_ch);
         return;
     }
 
     /* 5. Query Block Device Info via IPC */
-    early_log_puts(g_debuglog_handle, "[iris_init] Sending BLK_GET_INFO query over IPC channel...\n");
     iris_msg_hdr_t req_hdr;
     iris_msg_hdr_init(&req_hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_GET_INFO, 1, 0);
 
     status = g_zx_channel_write(client_ch, 0, &req_hdr, sizeof(req_hdr), NULL, 0);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: zx_channel_write failed for BLK_GET_INFO\n");
+        log_printf("[FAILED] iris_init: zx_channel_write failed for BLK_GET_INFO (%d).", status);
         return;
     }
 
-    /* Wait for reply */
     zx_signals_t observed = 0;
     status = g_zx_object_wait_one(client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Wait for BLK_GET_INFO reply failed\n");
+        log_printf("[FAILED] iris_init: Wait for BLK_GET_INFO reply failed (%d).", status);
         return;
     }
 
@@ -793,25 +923,21 @@ static void test_virtio_blk(void) {
     uint32_t act_bytes = 0, act_handles = 0;
     status = g_zx_channel_read(client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
     if (status != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) + sizeof(iris_blk_info_t)) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Invalid BLK_GET_INFO reply\n");
+        log_printf("[FAILED] iris_init: Invalid BLK_GET_INFO reply.");
         return;
     }
 
     iris_msg_hdr_t* rep = (iris_msg_hdr_t*)rep_buf;
     iris_blk_info_t* info = (iris_blk_info_t*)(rep_buf + sizeof(iris_msg_hdr_t));
     if (rep->status != ZX_OK || info->sector_count == 0) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Driver returned error or 0 capacity\n");
+        log_printf("[FAILED] iris_init: Driver returned error or 0 capacity.");
         return;
     }
 
-    early_log_puts(g_debuglog_handle, "[iris_init] VirtIO Block query successful! Capacity: ");
-    early_log_hex(g_debuglog_handle, info->sector_count);
-    early_log_puts(g_debuglog_handle, " sectors, Sector Size: ");
-    early_log_hex(g_debuglog_handle, (uint64_t)info->sector_size);
-    early_log_puts(g_debuglog_handle, " bytes\n");
+    log_printf("[  OK  ] VirtIO Block IPC query (BLK_GET_INFO): %llu sectors (%u bytes/sector).",
+               (unsigned long long)info->sector_count, info->sector_size);
 
     /* 6. Test Write to Sector 100 */
-    early_log_puts(g_debuglog_handle, "[iris_init] Preparing 512-byte verification pattern for Sector 100...\n");
     uint8_t write_msg[sizeof(iris_msg_hdr_t) + sizeof(iris_blk_rw_req_t) + 512];
     iris_msg_hdr_t* wr_hdr = (iris_msg_hdr_t*)write_msg;
     iris_blk_rw_req_t* wr_req = (iris_blk_rw_req_t*)(write_msg + sizeof(iris_msg_hdr_t));
@@ -831,10 +957,9 @@ static void test_virtio_blk(void) {
         pattern[i] = (uint8_t)((i * 37 + 101) ^ 0x5A);
     }
 
-    early_log_puts(g_debuglog_handle, "[iris_init] Writing Sector 100 via IPC request...\n");
     status = g_zx_channel_write(client_ch, 0, write_msg, sizeof(write_msg), NULL, 0);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Failed to send write request\n");
+        log_printf("[FAILED] iris_init: Failed to send Sector 100 write request (%d).", status);
         return;
     }
 
@@ -843,10 +968,10 @@ static void test_virtio_blk(void) {
     status = g_zx_channel_read(client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
     rep = (iris_msg_hdr_t*)rep_buf;
     if (status != ZX_OK || rep->status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Sector 100 write failed!\n");
+        log_printf("[FAILED] iris_init: Sector 100 write failed.");
         return;
     }
-    early_log_puts(g_debuglog_handle, "[iris_init] Sector 100 write confirmed OK. Reading back over IPC...\n");
+    log_printf("[  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).");
 
     /* 7. Test Read from Sector 100 */
     uint8_t read_msg[sizeof(iris_msg_hdr_t) + sizeof(iris_blk_rw_req_t)];
@@ -860,7 +985,7 @@ static void test_virtio_blk(void) {
 
     status = g_zx_channel_write(client_ch, 0, read_msg, sizeof(read_msg), NULL, 0);
     if (status != ZX_OK) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Failed to send read request\n");
+        log_printf("[FAILED] iris_init: Failed to send Sector 100 read request (%d).", status);
         return;
     }
 
@@ -870,7 +995,7 @@ static void test_virtio_blk(void) {
     status = g_zx_channel_read(client_ch, 0, read_rep, NULL, sizeof(read_rep), 0, &act_bytes, &act_handles);
     rep = (iris_msg_hdr_t*)read_rep;
     if (status != ZX_OK || rep->status != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) + 512) {
-        early_log_puts(g_debuglog_handle, "[iris_init] ERROR: Sector 100 read failed!\n");
+        log_printf("[FAILED] iris_init: Sector 100 read failed.");
         return;
     }
 
@@ -880,25 +1005,26 @@ static void test_virtio_blk(void) {
     for (int i = 0; i < 512; i++) {
         if (read_data[i] != pattern[i]) {
             match = false;
-            early_log_puts(g_debuglog_handle, "[iris_init] Data mismatch at byte index: ");
-            early_log_hex(g_debuglog_handle, (uint64_t)i);
-            early_log_puts(g_debuglog_handle, "\n");
+            log_printf("[FAILED] iris_init: Sector 100 data mismatch at byte %d.", i);
             break;
         }
     }
 
     if (match) {
-        early_log_puts(g_debuglog_handle, "[iris_init] Sector 100 read/write data verification: MATCHED! (512/512 bytes OK)\n");
-        early_log_puts(g_debuglog_handle, "[iris_init] VirtIO Block read/write test on Sector 100: PASSED!\n");
-        early_log_puts(g_debuglog_handle, "[iris_init] Phase 4 Step 4.1 verification COMPLETE!\n");
+        log_printf("[  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).");
     } else {
-        early_log_puts(g_debuglog_handle, "[iris_init] Sector 100 verification: FAILED!\n");
+        log_printf("[FAILED] iris_init: Sector 100 verification failed.");
     }
 
+    /* Close control channel and wait for virtio_blk to unpin BTI PMTs and exit cleanly */
     g_zx_handle_close(client_ch);
     if (blk_proc != ZX_HANDLE_INVALID) {
+        observed = 0;
+        g_zx_object_wait_one(blk_proc, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &observed);
         g_zx_handle_close(blk_proc);
     }
+
+    log_printf("[  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.");
 }
 
 /**
@@ -966,37 +1092,35 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
     /* Initialize early debuglog using the Root Resource handle */
     status = g_zx_debuglog_create(g_root_resource, 0, &g_debuglog_handle);
     if (status == ZX_OK) {
-#if defined(__x86_64__)
-        early_log_puts(g_debuglog_handle,
-            "[irisOS] Welcome to irisOS (x86_64) - iris_init bootstrap successful!\n");
-#elif defined(__aarch64__)
-        early_log_puts(g_debuglog_handle,
-            "[irisOS] Welcome to irisOS (arm64) - iris_init bootstrap successful!\n");
-#else
-        early_log_puts(g_debuglog_handle,
-            "[irisOS] Welcome to irisOS (unknown) - iris_init bootstrap successful!\n");
-#endif
+        /* Display the irisOS ASCII banner on boot (buffered per line via snprintf) */
+        log_printf("  _      _      ____   _____ ");
+        log_printf(" (_)    (_)    / __ \\ / ____|");
+        log_printf("  _ _ __ _ ___| |  | | (___  ");
+        log_printf(" | | '__| / __| |  | |\\___ \\ ");
+        log_printf(" | | |  | \\__ \\ |__| |____) |");
+        log_printf(" |_|_|  |_|___/\\____/|_____/ ");
+        log_printf("System Node: irisOS-dev (%s)", IRIS_ARCH_NAME);
 
         if (g_root_resource != ZX_HANDLE_INVALID) {
-            early_log_puts(g_debuglog_handle, "[iris_init] Root Resource: OK\n");
+            log_printf("[  OK  ] Extracted Root Resource capability.");
         }
         if (g_bootfs_vmo != ZX_HANDLE_INVALID) {
-            early_log_puts(g_debuglog_handle, "[iris_init] BOOTFS VMO: OK\n");
+            log_printf("[  OK  ] Extracted BOOTFS VMO capability.");
         }
         if (g_root_job != ZX_HANDLE_INVALID) {
-            early_log_puts(g_debuglog_handle, "[iris_init] Root Job: OK\n");
+            log_printf("[  OK  ] Extracted Root Job capability.");
         }
         if (g_vdso_vmo != ZX_HANDLE_INVALID) {
-            early_log_puts(g_debuglog_handle, "[iris_init] vDSO VMO: OK\n");
+            log_printf("[  OK  ] Extracted vDSO VMO capability.");
         }
         if (g_vmar_root_self != ZX_HANDLE_INVALID) {
-            early_log_puts(g_debuglog_handle, "[iris_init] Root VMAR: OK\n");
+            log_printf("[  OK  ] Extracted Root VMAR capability.");
         }
 
-        /* Spawn and execute our first standard C user-space program (Step 3.3) */
-        spawn_hello_c();
+        /* Spawn and execute Interactive Test Suite (bin/its_irisOS) */
+        spawn_its_irisOS();
 
-        /* Discover PCIe VirtIO block device and test Ring 3 block driver (Step 4.1) */
+        /* Discover PCIe VirtIO block device and test Ring 3 block driver */
         test_virtio_blk();
     }
 

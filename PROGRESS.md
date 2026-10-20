@@ -5,9 +5,9 @@ This document tracks progress, completed milestones, verification proofs, and im
 ---
 
 ## Current Status Overview
-- **Active Phase:** Phase 3 Complete (100%) -> Transitioning to Phase 4 (PCIe Drivers, Storage Encryption & Filesystems)
-- **Current Milestone:** Phase 3 Steps 3.1–3.5 100% COMPLETED & VERIFIED (Safe SDK `libiris`, mlibc Integration, Sysdeps Layer, Client-Side FD Table, `posix_spawn`, FD Inheritance, and Dual-Arch Verification)
-- **Overall Status:** Phase 1, 2, and 3 Complete (100%). Ready for Phase 4.
+- **Active Phase:** Phase 4 (PCIe Drivers, Storage Encryption & Filesystems)
+- **Current Milestone:** Phase 4 Step 4.1 + System Polish, Visual Branding & Diagnostic Cleanup Pass 100% COMPLETED & VERIFIED
+- **Overall Status:** Phase 1, 2, 3, and Phase 4 Step 4.1 Complete (100%). Ready for Phase 4 Step 4.2 (`iris_crypt`).
 
 ---
 
@@ -607,6 +607,104 @@ welcome to Zircon
   echo "n" | make run all
   ./iris help
   ```
+
+---
+
+### System Polish, Visual Branding & Diagnostic Cleanup Pass
+- **Status:** COMPLETED & VERIFIED (100% Dual-Architecture)
+- **Features & Fixes Implemented:**
+  1. **Kernel Command Line & QEMU Hardware Entropy (`build/mkimage.sh`, `scripts/run_qemu.sh`):**
+     - Added `zircon.nodename=irisOS-dev` to the ZBI boot command line and Gigaboot default nodename.
+     - Added `-device virtio-rng-pci` and `-cpu max` to QEMU invocations for both `x86_64` and `arm64`.
+     - Eliminated x86_64 hypervisor microarchitecture false-positive warning (`Microarch: QEMU Virtual CPU`) and enabled ARMv8.5 `FEAT_RNG` (`RNDR`) hardware entropy collection in Zircon's `HwRngCollector`, eliminating early-boot randomness warnings across both architectures.
+  2. **ASCII Boot Banner & Single-Buffer Systemd Logging (`servers/iris_init/src/main.c`):**
+     - Implemented freestanding `vsnprintf` / `snprintf` in `iris_init` so every log message is formatted into a single 256-byte line buffer prior to calling `zx_debuglog_write()`, eliminating split lines and fragmented timestamp prefixes.
+     - Added the official 6-line `irisOS` ASCII boot banner followed immediately by `System Node: irisOS-dev (<arch>)`.
+     - Standardized all bootstrap, process, and driver status logs using `[  OK  ]` tags.
+  3. **Interactive Test Suite Rename (`apps/tests/its_irisOS`):**
+     - Renamed `apps/tests/hello_c` to `apps/tests/its_irisOS` (`bin/its_irisOS`).
+     - Updated [`build/Makefile`](build/Makefile), [`build/mkimage.sh`](build/mkimage.sh), and [`servers/iris_init/src/main.c`](servers/iris_init/src/main.c) to build, package, and execute `bin/its_irisOS`.
+     - Fixed 16-byte stack alignment (`and $~0xF, %rsp`) before `call __iris_start` in [`sdk/mlibc-sysdeps/iris/crt-x86_64/crt1.S`](sdk/mlibc-sysdeps/iris/crt-x86_64/crt1.S) for strict System V AMD64 ABI SSE/AVX compliance under `-cpu max`.
+  4. **VirtIO BTI Teardown Cleanliness (`servers/drivers/virtio_blk/src/main.c`):**
+     - Stored Pinned Memory Token handles (`g_vq_pmt` and `g_dma_pmt`) returned by `zx_bti_pin()`.
+     - Added `cleanup_virtio_block_device()` to reset the VirtIO device and explicitly call `zx_pmt_unpin()` on both tokens upon driver exit, ensuring zero leaked pages are flagged by the microkernel BTI.
+- **Dual-Architecture Verified Console Output:**
+  - **x86_64 Verified Boot Output (`./scripts/run_qemu.sh -a x86_64 --headless`):**
+    ```text
+    [00006.898] 01051.01054>   _      _      ____   _____ 
+    [00006.898] 01051.01054>  (_)    (_)    / __ \ / ____|
+    [00006.898] 01051.01054>   _ _ __ _ ___| |  | | (___  
+    [00006.898] 01051.01054>  | | '__| / __| |  | |\___ \ 
+    [00006.898] 01051.01054>  | | |  | \__ \ |__| |____) |
+    [00006.898] 01051.01054>  |_|_|  |_|___/\____/|_____/ 
+    [00006.899] 01051.01054> System Node: irisOS-dev (x86_64)
+    [00006.899] 01051.01054> [  OK  ] Extracted Root Resource capability.
+    [00006.899] 01051.01054> [  OK  ] Extracted BOOTFS VMO capability.
+    [00006.899] 01051.01054> [  OK  ] Extracted Root Job capability.
+    [00006.899] 01051.01054> [  OK  ] Extracted vDSO VMO capability.
+    [00006.899] 01051.01054> [  OK  ] Extracted Root VMAR capability.
+    [00006.899] 01051.01054> [  OK  ] Located bin/its_irisOS in BOOTFS (2266696 bytes).
+    [00006.903] 01051.01054> [  OK  ] Started process its_irisOS (bin/its_irisOS).
+    [00006.968] 01064.01066> [  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
+    [00006.973] 01064.01066> [  OK  ] its_irisOS: FD Table direct write(1) to stdout.
+    [00006.978] 01064.01066> [  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
+    [00006.983] 01064.01066> [  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
+    [00006.988] 01064.01066> [  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
+    [00006.992] 01064.01066> [  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
+    [00006.997] 01064.01066> [  OK  ] its_irisOS: Interactive Test Suite all checks passed.
+    [00007.004] 01051.01054> [  OK  ] Process its_irisOS finished execution.
+    [00007.014] 01051.01054> [  OK  ] Mapped PCIe ECAM configuration space at phys 0x00000000e0000000.
+    [00007.020] 01051.01054> [  OK  ] Discovered VirtIO Block Device at PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00007.025] 01051.01054> [  OK  ] Located bin/virtio_blk in BOOTFS (2240208 bytes).
+    [00007.043] 01051.01054> [  OK  ] Started process virtio_blk (bin/virtio_blk).
+    [00007.061] 01081.01083> [  OK  ] virtio_blk: Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00007.067] 01081.01083> [  OK  ] virtio_blk: Mapped BAR 4 (phys 0xc000000000 -> vaddr 0x1f35a230d000).
+    [00007.077] 01081.01083> [  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (131072 sectors, 64 MB).
+    [00007.077] 01081.01083> [  OK  ] virtio_blk: IPC server listening on control channel.
+    [00007.086] 01051.01054> [  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 131072 sectors (512 bytes/sector).
+    [00007.092] 01051.01054> [  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+    [00007.098] 01051.01054> [  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+    [00007.099] 01081.01083> [  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
+    [00007.107] 01051.01054> [  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
+    ```
+  - **arm64 Verified Boot Output (`./scripts/run_qemu.sh -a arm64 --headless`):**
+    ```text
+    [00009.124] 01044.01047>   _      _      ____   _____ 
+    [00009.124] 01044.01047>  (_)    (_)    / __ \ / ____|
+    [00009.124] 01044.01047>   _ _ __ _ ___| |  | | (___  
+    [00009.124] 01044.01047>  | | '__| / __| |  | |\___ \ 
+    [00009.124] 01044.01047>  | | |  | \__ \ |__| |____) |
+    [00009.124] 01044.01047>  |_|_|  |_|___/\____/|_____/ 
+    [00009.124] 01044.01047> System Node: irisOS-dev (arm64)
+    [00009.124] 01044.01047> [  OK  ] Extracted Root Resource capability.
+    [00009.124] 01044.01047> [  OK  ] Extracted BOOTFS VMO capability.
+    [00009.124] 01044.01047> [  OK  ] Extracted Root Job capability.
+    [00009.124] 01044.01047> [  OK  ] Extracted vDSO VMO capability.
+    [00009.124] 01044.01047> [  OK  ] Extracted Root VMAR capability.
+    [00009.124] 01044.01047> [  OK  ] Located bin/its_irisOS in BOOTFS (2385960 bytes).
+    [00009.129] 01044.01047> [  OK  ] Started process its_irisOS (bin/its_irisOS).
+    [00009.138] 01057.01059> [  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
+    [00009.138] 01057.01059> [  OK  ] its_irisOS: FD Table direct write(1) to stdout.
+    [00009.138] 01057.01059> [  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
+    [00009.139] 01057.01059> [  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
+    [00009.139] 01057.01059> [  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
+    [00009.139] 01057.01059> [  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
+    [00009.139] 01057.01059> [  OK  ] its_irisOS: Interactive Test Suite all checks passed.
+    [00009.144] 01044.01047> [  OK  ] Process its_irisOS finished execution.
+    [00009.146] 01044.01047> [  OK  ] Mapped PCIe ECAM configuration space at phys 0x0000004010000000.
+    [00009.146] 01044.01047> [  OK  ] Discovered VirtIO Block Device at PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00009.147] 01044.01047> [  OK  ] Located bin/virtio_blk in BOOTFS (2357520 bytes).
+    [00009.150] 01044.01047> [  OK  ] Started process virtio_blk (bin/virtio_blk).
+    [00009.169] 01074.01076> [  OK  ] virtio_blk: Bound to PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00009.170] 01074.01076> [  OK  ] virtio_blk: Mapped BAR 4 (phys 0x8000004000 -> vaddr 0x66545f962000).
+    [00009.174] 01074.01076> [  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (131072 sectors, 64 MB).
+    [00009.174] 01074.01076> [  OK  ] virtio_blk: IPC server listening on control channel.
+    [00009.176] 01044.01047> [  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 131072 sectors (512 bytes/sector).
+    [00009.178] 01044.01047> [  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+    [00009.179] 01044.01047> [  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+    [00009.180] 01074.01076> [  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
+    [00009.185] 01044.01047> [  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
+    ```
 
 ---
 

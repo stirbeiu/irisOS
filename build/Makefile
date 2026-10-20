@@ -224,10 +224,10 @@ mlibc-arm64: build-arm64 builtins-arm64 fetch-mlibc
 mlibc: mlibc-x86_64 mlibc-arm64
 
 # ------------------------------------------------------------------------------
-# User-Space Test Programs (hello_c)
+# User-Space Interactive Test Suite (its_irisOS)
 # ------------------------------------------------------------------------------
-hello-c-x86_64: mlibc-x86_64
-	@echo "==> Compiling hello_c (x86_64)..."
+its-irisOS-x86_64: mlibc-x86_64
+	@echo "==> Compiling its_irisOS (x86_64)..."
 	@mkdir -p $(OUT_DIR)/build-x86_64/bin
 	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
 	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
@@ -241,20 +241,20 @@ hello-c-x86_64: mlibc-x86_64
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/include \
-		-c $(ROOT_DIR)/apps/tests/hello_c/main.c -o $(OUT_DIR)/build-x86_64/hello_c.o
+		-c $(ROOT_DIR)/apps/tests/its_irisOS/main.c -o $(OUT_DIR)/build-x86_64/its_irisOS.o
 	@/opt/homebrew/bin/ld.lld -pie -z text \
 		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crt1.o \
 		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
-		$(OUT_DIR)/build-x86_64/hello_c.o \
+		$(OUT_DIR)/build-x86_64/its_irisOS.o \
 		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
 		$(OUT_DIR)/build-x86_64/lib/libiris.a \
 		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
 		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
-		-o $(OUT_DIR)/build-x86_64/bin/hello_c
-	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/hello_c"
+		-o $(OUT_DIR)/build-x86_64/bin/its_irisOS
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/its_irisOS"
 
-hello-c-arm64: mlibc-arm64
-	@echo "==> Compiling hello_c (arm64)..."
+its-irisOS-arm64: mlibc-arm64
+	@echo "==> Compiling its_irisOS (arm64)..."
 	@mkdir -p $(OUT_DIR)/build-arm64/bin
 	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
 	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
@@ -268,19 +268,19 @@ hello-c-arm64: mlibc-arm64
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/include \
-		-c $(ROOT_DIR)/apps/tests/hello_c/main.c -o $(OUT_DIR)/build-arm64/hello_c.o
+		-c $(ROOT_DIR)/apps/tests/its_irisOS/main.c -o $(OUT_DIR)/build-arm64/its_irisOS.o
 	@/opt/homebrew/bin/ld.lld -pie -z text \
 		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
 		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
-		$(OUT_DIR)/build-arm64/hello_c.o \
+		$(OUT_DIR)/build-arm64/its_irisOS.o \
 		$(OUT_DIR)/build-arm64/mlibc/libc.a \
 		$(OUT_DIR)/build-arm64/lib/libiris.a \
 		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
 		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
-		-o $(OUT_DIR)/build-arm64/bin/hello_c
-	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/hello_c"
+		-o $(OUT_DIR)/build-arm64/bin/its_irisOS
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/its_irisOS"
 
-hello-c: hello-c-x86_64 hello-c-arm64
+its-irisOS: its-irisOS-x86_64 its-irisOS-arm64
 
 # ------------------------------------------------------------------------------
 # Ring 3 VirtIO Block Driver Daemon (bin/virtio_blk)
@@ -352,10 +352,10 @@ virtio-blk: virtio-blk-x86_64 virtio-blk-arm64
 # ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64 hello-c-x86_64 virtio-blk-x86_64
+image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-arm64: build-arm64 hello-c-arm64 virtio-blk-arm64
+image-arm64: build-arm64 its-irisOS-arm64 virtio-blk-arm64
 	@$(BUILD_DIR)/mkimage.sh arm64
 
 run: run-x86
