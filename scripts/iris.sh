@@ -9,8 +9,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [[ -L "${SOURCE_PATH}" ]]; do
+    SOURCE_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+    SOURCE_PATH="$(readlink "${SOURCE_PATH}")"
+    [[ "${SOURCE_PATH}" != /* ]] && SOURCE_PATH="${SOURCE_DIR}/${SOURCE_PATH}"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+ROOT_DIR="$(cd -P "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
 IMAGES_DIR="${ROOT_DIR}/out/images"
 
@@ -145,12 +151,14 @@ EOF
             wait "${PID_X86}" "${PID_AARCH64}" 2>/dev/null || true
             ;;
         x86_64)
+            shift || true
             # Run existing image in QEMU window with serial console
-            exec "${SCRIPT_DIR}/run_qemu.sh" -a x86_64
+            exec "${SCRIPT_DIR}/run_qemu.sh" -a x86_64 "$@"
             ;;
         aarch64)
+            shift || true
             # Run existing image in QEMU window with serial console
-            exec "${SCRIPT_DIR}/run_qemu.sh" -a aarch64
+            exec "${SCRIPT_DIR}/run_qemu.sh" -a aarch64 "$@"
             ;;
         "")
             echo "Error: Missing architecture target for 'run'."
