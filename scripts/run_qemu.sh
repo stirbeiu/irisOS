@@ -14,7 +14,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGES_DIR="${ROOT_DIR}/out/images"
 
 ARCH="x86_64"
-GUI="${GUI:-0}"
+GUI="${GUI:-1}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -26,13 +26,18 @@ while [[ $# -gt 0 ]]; do
             GUI=1
             shift
             ;;
+        --headless)
+            GUI=0
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [-a x86_64|arm64] [-g|--gui]"
+            echo "Usage: $0 [-a x86_64|aarch64|arm64] [--headless]"
+            echo "Defaults to opening a QEMU window with serial console output in stdio."
             exit 0
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [-a x86_64|arm64] [-g|--gui]"
+            echo "Usage: $0 [-a x86_64|aarch64|arm64] [--headless]"
             exit 1
             ;;
     esac
@@ -50,11 +55,12 @@ case "${ARCH}" in
         QEMU_BIN="qemu-system-aarch64"
         UEFI_CODE="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
         UEFI_VARS_SRC="/opt/homebrew/share/qemu/edk2-arm-vars.fd"
-        UEFI_VARS_TMP="/tmp/edk2-arm-vars.fd"
+        UEFI_VARS_TMP="/tmp/edk2-arm-vars-$$.fd"
+        trap 'rm -f "${UEFI_VARS_TMP}" 2>/dev/null || true' EXIT
         ESP_IMAGE="${IMAGES_DIR}/esp_arm64.img"
         ;;
     *)
-        echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'arm64'."
+        echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'aarch64'."
         exit 1
         ;;
 esac
@@ -80,7 +86,7 @@ if [[ ! -f "${UEFI_CODE}" ]]; then
 fi
 
 if [[ "${GUI}" == "1" ]]; then
-    DISPLAY_MODE="Cocoa GUI Window (-display cocoa)"
+    DISPLAY_MODE="QEMU Cocoa Window (-display cocoa) + Serial Console (-serial stdio)"
     DISPLAY_ARGS=("-display" "cocoa")
 else
     DISPLAY_MODE="Headless Serial Console Only (-display none)"

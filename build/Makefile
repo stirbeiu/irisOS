@@ -13,9 +13,29 @@ HOST_CXX := $(LLVM_PREFIX)/bin/clang++
 
 ZIRCON_DIR := $(ROOT_DIR)/kernel/zircon
 
-.PHONY: all tools zbi abigen build-x86_64 build-arm64 clean fetch-compiler-rt fetch-mlibc builtins-x86_64 builtins-arm64 mlibc-x86_64 mlibc-arm64 mlibc virtio-blk virtio-blk-x86_64 virtio-blk-arm64
+CMD := $(firstword $(MAKECMDGOALS))
 
-all: tools
+ifeq ($(CMD),build)
+  BUILD_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  %::
+	@:
+.PHONY: build
+build:
+	@$(ROOT_DIR)/scripts/iris.sh build $(BUILD_ARGS)
+else ifeq ($(CMD),run)
+  RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  ifneq ($(RUN_ARGS),)
+    %::
+	@:
+.PHONY: run
+run:
+	@$(ROOT_DIR)/scripts/iris.sh run $(RUN_ARGS)
+  endif
+endif
+
+all: image-x86_64
+all-x86_64: image-x86_64
+all-arm64: image-arm64
 
 # ------------------------------------------------------------------------------
 # Host Tools (Darwin Apple Silicon)
@@ -338,6 +358,9 @@ image-x86_64: build-x86_64 hello-c-x86_64 virtio-blk-x86_64
 image-arm64: build-arm64 hello-c-arm64 virtio-blk-arm64
 	@$(BUILD_DIR)/mkimage.sh arm64
 
+run: run-x86
+run-gui: run-x86-gui
+
 run-x86: image-x86_64
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 $(if $(filter 1,$(GUI)),--gui,)
 
@@ -349,6 +372,24 @@ run-x86-gui: image-x86_64
 
 run-arm-gui: image-arm64
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 --gui
+
+# ------------------------------------------------------------------------------
+# Direct QEMU Execution (Fast launch without rebuilding or repacking images)
+# ------------------------------------------------------------------------------
+qemu-x86:
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 $(if $(filter 1,$(GUI)),--gui,)
+
+qemu-arm:
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 $(if $(filter 1,$(GUI)),--gui,)
+
+qemu-x86-gui:
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 --gui
+
+qemu-arm-gui:
+	@$(ROOT_DIR)/scripts/run_qemu.sh -a arm64 --gui
+
+qemu: qemu-x86
+qemu-gui: qemu-x86-gui
 
 clean-kernel:
 	@rm -rf $(ZIRCON_DIR)/build-x64-clang $(ZIRCON_DIR)/build-arm64-clang

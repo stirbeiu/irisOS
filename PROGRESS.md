@@ -589,5 +589,26 @@ welcome to Zircon
 
 ---
 
+### Developer Ergonomics & Build Orchestrator: Unified `build` & `run` Commands
+- **Status:** COMPLETED & VERIFIED
+- **Features Implemented:**
+  - Added root [`Makefile`](Makefile) and [`scripts/iris.sh`](scripts/iris.sh) (`./iris` CLI) providing 3 build targets:
+    - `make build all` (or `./iris build all`): Builds full images for both x86_64 and aarch64.
+    - `make build x86_64` (or `./iris build x86_64`): Builds only for x86_64.
+    - `make build aarch64` (or `./iris build aarch64`): Builds only for aarch64.
+  - Implemented unified QEMU run commands with default graphical Cocoa window + simultaneous serial console in stdio:
+    - `make run x86_64`: Boots the x86_64 VM directly in a QEMU Cocoa window with serial console in terminal, bypassing rebuilds if the image is already present.
+    - `make run aarch64`: Boots the aarch64 VM directly with ramfb Cocoa window + serial console in terminal without rebuilding.
+    - `make run all`: Prompts the user with a warning about launching 2 concurrent VMs across both architectures, and upon `y` confirmation, concurrently launches both VMs with Cocoa windows and tagged `[x86_64]` / `[aarch64]` multiplexed serial consoles.
+- **Verification Commands:**
+  ```bash
+  make build x86_64
+  make build aarch64
+  echo "n" | make run all
+  ./iris help
+  ```
+
+---
+
 ## Phase 4 Active Next Step
 - **Immediate Next Step:** Phase 4, Step 4.2: Block-Level Encryption Proxy (`iris_crypt`) using `mbedtls` (AES-256-XTS + Argon2, 4 KB Sector 0 header, test key fallback).

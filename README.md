@@ -18,11 +18,14 @@ irisOS is a modern, 64-bit, microkernel-based operating system designed for `x86
 
 ```text
 irisOS/
+├── Makefile                  # Root Makefile orchestrating build and run commands
+├── iris                      # Standalone CLI build & run manager (scripts/iris.sh)
 ├── build/                    # Build orchestrator & toolchain configs
+│   ├── Makefile              # Subsystem build orchestrator
 │   ├── toolchains/           # Homebrew LLVM toolchains (x86_64, arm64)
 │   └── mkimage.sh            # Dual-ZBI and GPT disk image packager
-├── docs/                     # Subsystem guides (IPC, VFS, build system)
-├── scripts/                  # Fetch and QEMU run scripts
+├── docs/                     # Subsystem guides (IPC, VFS, build system, drivers)
+├── scripts/                  # Fetch, build, and QEMU run scripts
 ├── kernel/                   # [Kernel Zone - MIT] Pinned Zircon microkernel
 ├── sdk/                      # [SDK Zone - MIT/BSD] Native APIs & mlibc sysdeps
 ├── servers/                  # [Server Zone - MIT/BSD] Ring 3 daemons & PCIe drivers
@@ -39,6 +42,59 @@ brew install llvm cmake ninja meson qemu xorriso mtools
 ```
 
 Cross-compilation is configured via `/opt/homebrew/opt/llvm` binaries in `build/toolchains/`.
+
+## Building & Running
+
+irisOS provides high-level commands via `make` or the `./iris` CLI helper.
+
+### 1. Building System Images
+
+Choose from 3 target commands depending on your architecture target:
+
+```bash
+# Build for BOTH x86_64 and aarch64
+make build all
+
+# Build ONLY for x86_64 (creates out/images/esp_x86_64.img)
+make build x86_64
+
+# Build ONLY for aarch64 (creates out/images/esp_arm64.img)
+make build aarch64
+```
+
+### 2. Running in QEMU (Window + Serial Console)
+
+All VM runs launch in a **native QEMU Cocoa window** with the **serial console concurrently streamed to your terminal** for instant debugging. Existing disk images are reused directly without rebuilding:
+
+```bash
+# Boot x86_64 in QEMU
+make run x86_64
+
+# Boot aarch64 in QEMU
+make run aarch64
+
+# Boot BOTH architectures concurrently (prompts with confirmation warning)
+make run all
+```
+
+*(Press `Ctrl+A` then `X` in the terminal to exit QEMU, or close the Cocoa window)*.
+
+### 3. Alternative CLI: `./iris`
+
+All build and run operations can also be executed directly via the `./iris` CLI:
+
+```bash
+./iris build all
+./iris build x86_64
+./iris build aarch64
+
+./iris run x86_64
+./iris run aarch64
+./iris run all
+
+./iris clean
+./iris help
+```
 
 ## Documentation & Roadmap
 

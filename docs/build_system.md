@@ -123,15 +123,35 @@ Both `ld-iris.so` and `libc.so` are fully compiled and verified in the build tre
 
 ---
 
-## 6. Build Targets & Verification
+## 6. Build Targets & Execution Commands
+
+irisOS provides a unified CLI and Makefile interface at the repository root supporting 3 target categories: all architectures (`all`), x86_64 (`x86_64`), and ARM64 (`aarch64`).
+
+### 6.1 System Build Commands
+
+| Command | Description |
+| :--- | :--- |
+| `make build all` (or `./iris build all`) | Compiles microkernel, libc, SDK, drivers, and packages ESP images for **both** x86_64 and aarch64 |
+| `make build x86_64` (or `./iris build x86_64`) | Builds system and packages UEFI ESP image (`esp_x86_64.img`) for **x86_64** |
+| `make build aarch64` (or `./iris build aarch64`) | Builds system and packages UEFI ESP image (`esp_arm64.img`) for **aarch64** |
+
+### 6.2 Virtual Machine Run Commands
+
+When running the virtual machine, irisOS defaults to launching in a **QEMU Cocoa graphical window alongside standard serial console output in stdio** (for simultaneous debugging if graphics are initializing). VM runs use the existing disk images without rebuilding.
+
+| Command | Description |
+| :--- | :--- |
+| `make run all` (or `./iris run all`) | Displays a confirmation warning and boots **both** x86_64 and aarch64 VMs concurrently with multiplexed serial logging |
+| `make run x86_64` (or `./iris run x86_64`) | Boots the x86_64 VM in a QEMU window with serial console connected to stdio |
+| `make run aarch64` (or `./iris run aarch64`) | Boots the aarch64 VM in a QEMU window with serial console connected to stdio |
+
+### 6.3 Low-Level Subsystem Targets (`build/Makefile`)
+
+For granular rebuilds of individual components, the orchestrator in [`build/Makefile`](../build/Makefile) provides:
 
 | Target Command | Description |
 | :--- | :--- |
-| `make -C build all` | Builds complete kernel, SDK, mlibc, user binaries, and disk images for x86_64 |
-| `make -C build all-arm64` | Builds complete system and disk images for ARM64 |
-| `make -C build mlibc-x86_64` | Rebuilds only mlibc (libc.a, libc.so, ld-iris.so) for x86_64 |
-| `make -C build mlibc-arm64` | Rebuilds only mlibc for ARM64 |
-| `make -C build image-x86_64` | Packages ZBI and FAT32 ESP disk image for x86_64 |
-| `make -C build image-arm64` | Packages ZBI and FAT32 ESP disk image for ARM64 |
-| `make -C build run` | Boots x86_64 QEMU with UEFI (q35) |
-| `make -C build run-arm` | Boots ARM64 QEMU with UEFI (virt) |
+| `make -C build mlibc-x86_64` | Rebuilds only mlibc (`libc.a`, `libc.so`, `ld-iris.so`) for x86_64 |
+| `make -C build mlibc-arm64` | Rebuilds only mlibc for aarch64 |
+| `make -C build virtio-blk-x86_64` | Rebuilds only the Ring 3 PCIe VirtIO block driver daemon |
+| `make -C build clean` | Cleans build outputs and compiled images |
