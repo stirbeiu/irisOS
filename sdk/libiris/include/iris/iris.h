@@ -2,7 +2,7 @@
  * irisOS - Modern 64-bit Microkernel Operating System
  *
  * File: sdk/libiris/include/iris/iris.h
- * Purpose: Master umbrella header for the Safe SDK (libiris).
+ * Purpose: Master umbrella header for the SDK (libiris).
  *
  * Licensing: MIT License. Permissive Zone 1 SDK header.
  *
@@ -30,7 +30,7 @@
 
 /**
  * @file iris.h
- * @brief Master include header for the irisOS Safe SDK (libiris).
+ * @brief Master include header for the irisOS SDK (libiris).
  */
 
 #include <iris/ipc.h>

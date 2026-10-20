@@ -191,7 +191,7 @@ set_target_properties(iris_init PROPERTIES
 )
 
 # ==============================================================================
-# Target: libiris (irisOS Safe SDK - Zone 1 Permissive MIT)
+# Target: libiris (irisOS Native SDK - Zone 1 Permissive MIT)
 # ==============================================================================
 set(LIBIRIS_SRCS
     "${IRIS_ROOT}/sdk/libiris/src/channel.c"

@@ -1,4 +1,4 @@
-# irisOS IPC Wire Protocol & Safe SDK Specification
+# irisOS IPC Wire Protocol & Native SDK Specification
 
 ## 1. Overview
 In **irisOS**, all Ring 3 user-space servers (`iris_fshost`, `iris_crypt`, `iris_compositor`, `iris_pty`), device drivers, system utilities, and user applications communicate across process boundaries using raw **Zircon channels** (`zx_channel_*`) governed by a standardized **24-byte C-ABI header** (`iris_msg_hdr_t`).
@@ -132,7 +132,7 @@ When `iris_spawn()` executes, it writes these tags into the bootstrap message, e
 
 ---
 
-## 5. Safe SDK (`libiris`) API Reference
+## 5. Native SDK (`libiris`) API Reference
 
 The C API is exposed via [`sdk/libiris/include/iris/iris.h`](../sdk/libiris/include/iris/iris.h):
 

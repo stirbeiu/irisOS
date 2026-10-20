@@ -129,7 +129,7 @@ Detailed architectural and developer guides are maintained in [`docs/`](docs/):
 | Phase | Milestone | Status |
 | :--- | :--- | :--- |
 | **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
-| **Phase 3** | Safe SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
+| **Phase 3** | Native SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
 | **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
 | **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **NEXT UP** |
 | **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |

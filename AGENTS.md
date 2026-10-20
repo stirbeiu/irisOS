@@ -200,7 +200,7 @@ irisOS/
 * Pack `iris_a.zbi` using `zbi` and boot in QEMU via Gigaboot on both `x86_64` (q35) and `aarch64` (virt).
 * **Milestone:** `iris_init` boots from BOOTFS in QEMU on both architectures and prints "Hello from irisOS" to the debug serial log.
 
-### Phase 3: The Safe SDK (`libiris`) & `mlibc` Integration
+### Phase 3: Native SDK (`libiris`) & `mlibc` Integration
 
 * Build `sdk/libiris` (MIT) providing:
   * C wrappers for Zircon handles, channels, VMOs, and ports.

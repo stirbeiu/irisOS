@@ -9,7 +9,7 @@ This document tracks implementation status, completed milestones, verification c
 | Phase | Milestone | Status |
 | :--- | :--- | :--- |
 | **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
-| **Phase 3** | Safe SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
+| **Phase 3** | Native SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
 | **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
 | **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **NEXT UP** |
 | **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |
@@ -37,7 +37,7 @@ This document tracks implementation status, completed milestones, verification c
 
 ---
 
-## Phase 3: The Safe SDK (`libiris`) & `mlibc` Integration (COMPLETED)
+## Phase 3: Native SDK (`libiris`) & `mlibc` Integration (COMPLETED)
 
 * **Native SDK (`sdk/libiris/` — MIT):**
   * [`sdk/libiris/include/iris/ipc.h`](sdk/libiris/include/iris/ipc.h): Standard 24-byte packed `iris_msg_hdr_t` wire protocol (`IRIS_IPC_MAGIC = 0x49524953`) with protocol IDs (`SYSTEM`, `FS`, `CRYPT`, `COMPOSITOR`, `PTY`, `DRIVER`).
