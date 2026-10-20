@@ -62,30 +62,10 @@ if [[ ! -x "${HOST_TOOLS}/mkufs2" ]]; then
     make -C "${ROOT_DIR}/build" mkufs2
 fi
 
-# 2. Ensure iris_init, its_irisOS, virtio_blk, iris_crypt, and iris_fshost binaries exist
-if [[ ! -f "${BUILD_DIR}/bin/iris_init" ]]; then
-    echo "==> Building iris_init for ${ARCH_NAME}..."
+# 2. Ensure iris_init, its_irisOS, virtio_blk, iris_crypt, iris_fshost, and iris_pty binaries exist
+if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
+    echo "==> Building server binaries for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
-fi
-if [[ ! -f "${BUILD_DIR}/bin/its_irisOS" ]]; then
-    echo "==> Building its_irisOS for ${ARCH_NAME}..."
-    make -C "${ROOT_DIR}/build" "its-irisOS-${ARCH_NAME}"
-fi
-if [[ ! -f "${BUILD_DIR}/bin/virtio_blk" ]]; then
-    echo "==> Building virtio_blk for ${ARCH_NAME}..."
-    make -C "${ROOT_DIR}/build" "virtio-blk-${ARCH_NAME}"
-fi
-if [[ ! -f "${BUILD_DIR}/bin/iris_crypt" ]]; then
-    echo "==> Building iris_crypt for ${ARCH_NAME}..."
-    make -C "${ROOT_DIR}/build" "iris-crypt-${ARCH_NAME}"
-fi
-if [[ ! -f "${BUILD_DIR}/bin/iris_fshost" ]]; then
-    echo "==> Building iris_fshost for ${ARCH_NAME}..."
-    make -C "${ROOT_DIR}/build" "iris-fshost-${ARCH_NAME}"
-fi
-if [[ ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
-    echo "==> Building iris_pty for ${ARCH_NAME}..."
-    make -C "${ROOT_DIR}/build" "iris-pty-${ARCH_NAME}"
 fi
 
 # 3. Ensure Zircon kernel ZBI exists

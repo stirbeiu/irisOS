@@ -7,7 +7,81 @@ project(irisOS_Kernel LANGUAGES C CXX ASM)
 set(IRIS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(ZIRCON_ROOT "${IRIS_ROOT}/kernel/zircon")
 set(HOST_TOOLS_DIR "${IRIS_ROOT}/out/host")
+set(BUILD_DIR "${IRIS_ROOT}/build")
 set(GEN_DIR "${CMAKE_BINARY_DIR}/gen")
+
+# ==============================================================================
+# Host Formatter: mkufs2 (UFS2 + AES-256-XTS Formatter)
+# ==============================================================================
+if (NOT CMAKE_CROSSCOMPILING)
+    message(STATUS "Configuring irisOS Host Formatter (mkufs2)...")
+
+    set(LIBUFS_ROOT "${IRIS_ROOT}/vendor/libufs")
+    if (NOT EXISTS "${LIBUFS_ROOT}/libufs/sblock.c")
+        execute_process(COMMAND bash "${IRIS_ROOT}/scripts/fetch_ufs.sh")
+    endif()
+
+    set(MBEDTLS_ROOT "${IRIS_ROOT}/vendor/mbedtls")
+    if (NOT EXISTS "${MBEDTLS_ROOT}/library/aes.c")
+        execute_process(COMMAND bash "${IRIS_ROOT}/scripts/fetch_mbedtls.sh")
+    endif()
+
+    set(MKUFS2_SRCS
+        "${BUILD_DIR}/mkufs2_host.c"
+        "${LIBUFS_ROOT}/libufs/block.c"
+        "${LIBUFS_ROOT}/libufs/sblock.c"
+        "${LIBUFS_ROOT}/libufs/cgroup.c"
+        "${LIBUFS_ROOT}/libufs/inode.c"
+        "${LIBUFS_ROOT}/sys/ufs/ffs/ffs_subr.c"
+        "${LIBUFS_ROOT}/sys/ufs/ffs/ffs_tables.c"
+        "${MBEDTLS_ROOT}/library/aes.c"
+        "${MBEDTLS_ROOT}/library/sha256.c"
+        "${MBEDTLS_ROOT}/library/sha512.c"
+        "${MBEDTLS_ROOT}/library/platform_util.c"
+        "${MBEDTLS_ROOT}/library/constant_time.c"
+        "${IRIS_ROOT}/servers/iris_crypt/src/argon2.c"
+    )
+
+    add_executable(mkufs2 ${MKUFS2_SRCS})
+
+    target_include_directories(mkufs2 PRIVATE
+        "${IRIS_ROOT}/servers/iris_fshost/include/compat"
+        "${LIBUFS_ROOT}/libufs"
+        "${LIBUFS_ROOT}/sys"
+        "${MBEDTLS_ROOT}/include"
+        "${MBEDTLS_ROOT}/library"
+        "${BUILD_DIR}"
+        "${IRIS_ROOT}/servers/iris_crypt/src"
+        "${IRIS_ROOT}"
+    )
+
+    target_compile_definitions(mkufs2 PRIVATE
+        _LIBUFS
+        MBEDTLS_CONFIG_FILE="mbedtls_iris_config.h"
+    )
+
+    target_compile_options(mkufs2 PRIVATE
+        -O2
+        -Wno-sign-compare
+        -Wno-pointer-sign
+        -Wno-unused-parameter
+        -Wno-unused-function
+        -Wno-format
+    )
+
+    set_target_properties(mkufs2 PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${HOST_TOOLS_DIR}"
+    )
+
+    return()
+endif()
+
+# When cross-compiling, provide a custom target to build host mkufs2 via host CMake
+add_custom_target(mkufs2
+    COMMAND ${CMAKE_COMMAND} -B "${HOST_TOOLS_DIR}" -S "${CMAKE_CURRENT_SOURCE_DIR}" -G Ninja
+    COMMAND ${CMAKE_COMMAND} --build "${HOST_TOOLS_DIR}" --target mkufs2
+    COMMENT "Building host mkufs2 via host CMake"
+)
 
 # Detect architecture
 if (NOT CMAKE_SYSTEM_PROCESSOR)
@@ -299,6 +373,48 @@ set_target_properties(test_libiris PROPERTIES
 )
 
 # ==============================================================================
+# Target: compiler-rt Builtins
+# ==============================================================================
+set(COMPILER_RT_DIR "${IRIS_ROOT}/vendor/compiler-rt/lib/builtins")
+set(BUILTINS_LIB "${CMAKE_BINARY_DIR}/lib/libclang_rt.builtins-${CMAKE_SYSTEM_PROCESSOR}.a")
+
+add_custom_command(
+    OUTPUT "${BUILTINS_LIB}"
+    COMMAND bash "${IRIS_ROOT}/scripts/build_builtins.sh" "${CMAKE_SYSTEM_PROCESSOR}" "${CMAKE_BINARY_DIR}" "${CMAKE_C_COMPILER}" "${CMAKE_AR}"
+    COMMENT "Building compiler-rt builtins (${CMAKE_SYSTEM_PROCESSOR})"
+    VERBATIM
+)
+
+add_custom_target(compiler_rt_target DEPENDS "${BUILTINS_LIB}")
+
+add_library(compiler_rt_builtins STATIC IMPORTED GLOBAL)
+set_target_properties(compiler_rt_builtins PROPERTIES IMPORTED_LOCATION "${BUILTINS_LIB}")
+add_dependencies(compiler_rt_builtins compiler_rt_target)
+
+# ==============================================================================
+# Target: mlibc C Library & CRT Objects
+# ==============================================================================
+set(MLIBC_DIR "${CMAKE_BINARY_DIR}/mlibc")
+set(MLIBC_LIBC "${MLIBC_DIR}/libc.a")
+set(CRT1_OBJ "${MLIBC_DIR}/sysdeps/iris/crt1.o")
+set(CRTI_OBJ "${MLIBC_DIR}/sysdeps/iris/crti.o")
+set(CRTN_OBJ "${MLIBC_DIR}/sysdeps/iris/crtn.o")
+
+add_custom_command(
+    OUTPUT "${MLIBC_LIBC}" "${CRT1_OBJ}" "${CRTI_OBJ}" "${CRTN_OBJ}"
+    COMMAND bash "${IRIS_ROOT}/scripts/build_mlibc.sh" "${CMAKE_SYSTEM_PROCESSOR}" "${CMAKE_BINARY_DIR}"
+    DEPENDS zircon_static iris_static compiler_rt_target
+    COMMENT "Building mlibc C library and CRT objects (${CMAKE_SYSTEM_PROCESSOR})"
+    VERBATIM
+)
+
+add_custom_target(mlibc_target DEPENDS "${MLIBC_LIBC}" "${CRT1_OBJ}" "${CRTI_OBJ}" "${CRTN_OBJ}")
+
+add_library(mlibc STATIC IMPORTED GLOBAL)
+set_target_properties(mlibc PROPERTIES IMPORTED_LOCATION "${MLIBC_LIBC}")
+add_dependencies(mlibc mlibc_target)
+
+# ==============================================================================
 # Target: mbedcrypto (Minimal Freestanding Mbed-TLS 3.6 + Argon2id - Apache 2.0)
 # ==============================================================================
 set(MBEDTLS_ROOT "${IRIS_ROOT}/vendor/mbedtls")
@@ -319,7 +435,8 @@ if (EXISTS "${MBEDTLS_ROOT}/library/aes.c")
         "${IRIS_ROOT}/servers/iris_crypt/src/argon2.c"
     )
 
-    add_library(mbedcrypto STATIC EXCLUDE_FROM_ALL ${MBEDCRYPTO_SRCS})
+    add_library(mbedcrypto STATIC ${MBEDCRYPTO_SRCS})
+    add_dependencies(mbedcrypto mlibc_target)
 
     target_include_directories(mbedcrypto PUBLIC
         "${MBEDTLS_ROOT}/include"
@@ -369,8 +486,8 @@ if (EXISTS "${LIBUFS_ROOT}/libufs/sblock.c")
         "${IRIS_ROOT}/servers/iris_fshost/src/ufs_io.c"
     )
 
-    add_library(ufs STATIC EXCLUDE_FROM_ALL ${LIBUFS_SRCS})
-    add_dependencies(ufs zircon_syscall_headers)
+    add_library(ufs STATIC ${LIBUFS_SRCS})
+    add_dependencies(ufs zircon_syscall_headers mlibc_target)
 
     target_include_directories(ufs PUBLIC
         "${IRIS_ROOT}/servers/iris_fshost/include/compat"
@@ -413,6 +530,133 @@ if (EXISTS "${LIBUFS_ROOT}/libufs/sblock.c")
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     )
 endif()
+
+# ==============================================================================
+# Shared Userland Interface & Function
+# ==============================================================================
+execute_process(
+    COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
+    OUTPUT_VARIABLE CLANG_RESOURCE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+add_library(iris_userland_common INTERFACE)
+target_include_directories(iris_userland_common SYSTEM INTERFACE
+    "${CMAKE_BINARY_DIR}/mlibc"
+    "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/include"
+    "${IRIS_ROOT}/sdk/libiris/include"
+    "${IRIS_ROOT}"
+    "${IRIS_ROOT}/kernel/zircon/system/public"
+    "${GEN_DIR}"
+    "${GEN_DIR}/zircon"
+    "${IRIS_ROOT}/vendor/mlibc/options/ansi/include"
+    "${IRIS_ROOT}/vendor/mlibc/options/posix/include"
+    "${IRIS_ROOT}/vendor/mlibc/options/bsd/include"
+    "${IRIS_ROOT}/vendor/mlibc/options/glibc/include"
+    "${IRIS_ROOT}/vendor/mlibc/options/internal/include"
+    "${IRIS_ROOT}/vendor/mlibc/include"
+)
+
+target_compile_options(iris_userland_common INTERFACE
+    -O2
+    -fPIE
+    -nostdinc
+    -isystem "${CLANG_RESOURCE_DIR}/include"
+)
+
+function(iris_add_userland_executable TARGET_NAME)
+    cmake_parse_arguments(USERLAND "" "" "SOURCES;LIBRARIES;INCLUDES;DEFINITIONS;OPTIONS" ${ARGN})
+
+    add_executable(${TARGET_NAME} ${USERLAND_SOURCES})
+    add_dependencies(${TARGET_NAME} mlibc_target)
+
+    target_link_libraries(${TARGET_NAME} PRIVATE iris_userland_common)
+
+    target_link_options(${TARGET_NAME} PRIVATE
+        -nostdlib
+        -fuse-ld=${CMAKE_LINKER}
+        -Wl,-pie
+        -Wl,-z,text
+        "${CRT1_OBJ}"
+        "${CRTI_OBJ}"
+    )
+
+    target_link_libraries(${TARGET_NAME} PRIVATE
+        ${USERLAND_LIBRARIES}
+        mlibc
+        iris_static
+        compiler_rt_builtins
+        "${CRTN_OBJ}"
+    )
+
+    if (USERLAND_INCLUDES)
+        target_include_directories(${TARGET_NAME} SYSTEM PRIVATE ${USERLAND_INCLUDES})
+    endif()
+
+    if (USERLAND_DEFINITIONS)
+        target_compile_definitions(${TARGET_NAME} PRIVATE ${USERLAND_DEFINITIONS})
+    endif()
+
+    if (USERLAND_OPTIONS)
+        target_compile_options(${TARGET_NAME} PRIVATE ${USERLAND_OPTIONS})
+    endif()
+
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+endfunction()
+
+# ==============================================================================
+# Userland Targets (Test Suite, Drivers & Servers)
+# ==============================================================================
+
+# 1. Interactive Test Suite
+iris_add_userland_executable(its_irisOS
+    SOURCES "${IRIS_ROOT}/apps/tests/its_irisOS/main.c"
+)
+
+# 2. VirtIO Block Driver Daemon
+iris_add_userland_executable(virtio_blk
+    SOURCES "${IRIS_ROOT}/servers/drivers/virtio_blk/src/main.c"
+)
+
+# 3. Block Encryption Proxy Daemon
+iris_add_userland_executable(iris_crypt
+    SOURCES "${IRIS_ROOT}/servers/iris_crypt/src/main.c"
+    LIBRARIES mbedcrypto
+    INCLUDES
+        "${IRIS_ROOT}/vendor/mbedtls/include"
+        "${IRIS_ROOT}/build"
+    DEFINITIONS
+        MBEDTLS_CONFIG_FILE="mbedtls_iris_config.h"
+)
+
+# 4. Central VFS Router & UFS2 Filesystem Daemon
+iris_add_userland_executable(iris_fshost
+    SOURCES "${IRIS_ROOT}/servers/iris_fshost/src/main.c"
+    LIBRARIES ufs
+    INCLUDES
+        "${IRIS_ROOT}/servers/iris_fshost/include/compat"
+        "${IRIS_ROOT}/servers/iris_fshost/include"
+        "${IRIS_ROOT}/vendor/libufs/libufs"
+        "${IRIS_ROOT}/vendor/libufs/sys"
+    DEFINITIONS
+        _LIBUFS
+    OPTIONS
+        -Wno-sign-compare
+        -Wno-pointer-sign
+        -Wno-unused-parameter
+)
+
+# 5. Pseudo-Terminal Server Daemon
+iris_add_userland_executable(iris_pty
+    SOURCES
+        "${IRIS_ROOT}/servers/iris_pty/src/main.c"
+        "${IRIS_ROOT}/servers/drivers/virtio_input/src/virtio_input.c"
+    INCLUDES
+        "${IRIS_ROOT}/servers/iris_pty/include"
+        "${IRIS_ROOT}/servers/drivers/virtio_input/include"
+)
 
 # ==============================================================================
 # Target: Zircon Microkernel Core

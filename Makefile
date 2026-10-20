@@ -40,9 +40,18 @@ else ifeq ($(CMD),test)
 test:
 	@$(IRIS_CLI) test $(TEST_ARGS)
 
+else ifeq ($(CMD),image)
+  IMAGE_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  # Suppress errors for subsequent words treated as goals
+  %::
+	@:
+.PHONY: image
+image:
+	@$(MAKE) -C $(ROOT_DIR)/build image$(if $(IMAGE_ARGS),-$(IMAGE_ARGS),)
+
 else
 
-.PHONY: default help all clean x86_64 aarch64
+.PHONY: default help all clean x86_64 aarch64 image
 
 default: help
 

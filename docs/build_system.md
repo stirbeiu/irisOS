@@ -6,14 +6,17 @@
 
 ```mermaid
 flowchart TD
-    Master[build/Makefile Orchestrator] --> Zircon[Zircon Microkernel + vDSO\nCMake / Ninja]
-    Master --> CompilerRT[compiler-rt Builtins\nFreestanding Archive]
-    Master --> LibIris[sdk/libiris\nCMake / Ninja]
-    Master --> MLibc[vendor/mlibc + iris sysdeps\nMeson / Ninja]
-    Master --> MbedTLS[vendor/mbedtls\nFreestanding libmbedcrypto.a]
-    Master --> LibUFS[vendor/libufs\nFreestanding libufs.a]
-    Master --> Servers[Ring 3 Daemons\nvirtio_blk, iris_crypt, iris_fshost]
-    Master --> Tests[apps/tests/its_irisOS\nTest Suite]
+    Master[build/Makefile Orchestrator] --> Zircon[Zircon Microkernel\nMake / Clang]
+    Master --> CMake[build/CMakeLists.txt\nCMake / Ninja]
+    CMake --> HostTools[Host Formatter\nmkufs2]
+    CMake --> ZirconVDSO[libzircon vDSO\nStatic & Shared]
+    CMake --> LibIris[sdk/libiris\nStatic & Shared]
+    CMake --> CompilerRT[compiler-rt Builtins\nStatic Library]
+    CMake --> MLibc[vendor/mlibc + iris sysdeps\nMeson / Ninja]
+    CMake --> MbedTLS[vendor/mbedtls\nlibmbedcrypto.a]
+    CMake --> LibUFS[vendor/libufs\nlibufs.a]
+    CMake --> Servers[Ring 3 Daemons\nvirtio_blk, iris_crypt, iris_fshost, iris_pty]
+    CMake --> Tests[apps/tests/its_irisOS\nTest Suite]
     Master --> MkImage[build/mkimage.sh\nDual ZBIs + 128MB 4-Partition GPT Disk]
 ```
 
@@ -100,10 +103,23 @@ irisOS targets 64-bit architectures only with zero legacy 16-bit or 32-bit suppo
   * `ld-iris.so`: Dynamic linker/loader for irisOS.
 
 ### 4.5 Cryptographic & Filesystem Libraries (`vendor/mbedtls` & `vendor/libufs`)
-* **Mbed-TLS 3.6 (`libmbedcrypto.a`)**: Built freestanding with AES-256-XTS and Argon2id for `iris_crypt`.
-* **FreeBSD UFS2 (`libufs.a`)**: Built freestanding with Homebrew LLVM using `-D_LIBUFS -Dpread=iris_ufs_pread -Dpwrite=iris_ufs_pwrite` to route block I/O through `servers/iris_fshost/src/ufs_io.c`.
+* **Mbed-TLS 3.6 (`libmbedcrypto.a`)**: Built freestanding with AES-256-XTS and Argon2id for `iris_crypt` via CMake target `mbedcrypto`.
+* **FreeBSD UFS2 (`libufs.a`)**: Built freestanding with Homebrew LLVM using `-D_LIBUFS -Dpread=iris_ufs_pread -Dpwrite=iris_ufs_pwrite` to route block I/O through `servers/iris_fshost/src/ufs_io.c` via CMake target `ufs`.
 
-### 4.6 Bootable Image & GPT Disk Generation (`build/mkimage.sh`)
+### 4.6 Ring 3 Userland Daemons & Test Suite (`build/CMakeLists.txt`)
+* All Ring 3 system servers, device drivers, and test suites are first-class CMake executable targets:
+  * `its_irisOS` (`apps/tests/its_irisOS/main.c`)
+  * `virtio_blk` (`servers/drivers/virtio_blk/src/main.c`)
+  * `iris_crypt` (`servers/iris_crypt/src/main.c`)
+  * `iris_fshost` (`servers/iris_fshost/src/main.c`)
+  * `iris_pty` (`servers/iris_pty/src/main.c`, `servers/drivers/virtio_input/src/virtio_input.c`)
+* Managed by shared `iris_userland_common` interface and `iris_add_userland_executable` helper function, linking standard CRT objects (`crt1.o`, `crti.o`, `crtn.o`) and dependency targets (`mlibc`, `iris_static`, `compiler_rt_builtins`).
+
+### 4.7 Host Formatter (`mkufs2`)
+* Formatter utility for UFS2 filesystem creation and AES-256-XTS Sector 0 encryption header initialization.
+* Built as a standard host executable target (`mkufs2`) via CMake under host toolchain rules.
+
+### 4.8 Bootable Image & GPT Disk Generation (`build/mkimage.sh`)
 * Packs system binaries (`iris_init`, `virtio_blk`, `iris_crypt`, `iris_fshost`, `its_irisOS`) and vDSO (`libzircon.so`) into dual bootable ZBIs (`iris_a.zbi` and `iris_b.zbi`).
 * Generates a 64 MB FAT32 UEFI ESP disk image (`esp_<arch>.img`) containing:
   * `/EFI/BOOT/BOOTX64.EFI` (or `BOOTAA64.EFI`) — Gigaboot UEFI bootloader stub.

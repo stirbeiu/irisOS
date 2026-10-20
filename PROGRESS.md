@@ -120,6 +120,27 @@ This document tracks implementation status, completed milestones, verification c
   * Verified full execution and clean exit with zero leaks across both `x86_64` and `aarch64`.
 * **Documentation:** [`docs/ipc_protocol.md`](docs/ipc_protocol.md).
 
+### Build System Infrastructure: Userland & Host Tools CMake Migration (COMPLETED)
+* **Userland Executables in CMake (`build/CMakeLists.txt`):**
+  * Added shared `iris_userland_common` interface library providing common include search paths (mlibc, sysdeps, Native SDK, Zircon public headers, clang builtin resource headers) and uniform freestanding compile flags (`-O2 -fPIE -nostdinc`).
+  * Defined `iris_add_userland_executable` CMake function automating entry point ordering, CRT object positioning (`crt1.o`, `crti.o` via link options, and `crtn.o` at the trailing boundary), PIE flag management (`-Wl,-pie -Wl,-z,text`), and dependency wiring.
+  * Migrated all userland executable targets into CMake:
+    * `its_irisOS` (`apps/tests/its_irisOS/main.c`)
+    * `virtio_blk` (`servers/drivers/virtio_blk/src/main.c`)
+    * `iris_crypt` (`servers/iris_crypt/src/main.c` linked against `mbedcrypto`)
+    * `iris_fshost` (`servers/iris_fshost/src/main.c` linked against `ufs`)
+    * `iris_pty` (`servers/iris_pty/src/main.c`, `servers/drivers/virtio_input/src/virtio_input.c`)
+  * Integrated `mlibc`, `libiris`, and `compiler-rt` builtins as standard CMake dependency targets (`mlibc_target`, `iris_static`, `compiler_rt_target`), allowing Ninja to manage the complete DAG in a single invocation.
+* **Host Formatter in CMake (`mkufs2`):**
+  * Configured `mkufs2` as a standard CMake host executable target (`add_executable(mkufs2 ...)`) when `NOT CMAKE_CROSSCOMPILING`, building via AppleClang/host toolchain into `out/host/mkufs2`.
+  * Added a custom target bridge for cross-compilation configurations to trigger host CMake transparently on demand.
+* **Stripped Top-Level Orchestrator (`build/Makefile`):**
+  * Removed all legacy manual `clang` and `ld.lld` shell recipe blocks (~400 lines of manual rules eliminated).
+  * High-level targets (`all`, `build`, `image`) directly invoke `cmake -B ... -G Ninja` and `ninja -C ...`.
+* **Verification:**
+  * Clean build across both architectures via `./iris build all`.
+  * Automated headless QEMU verification passed 100% on both architectures via `./iris test all`.
+
 * **Immediate Next Steps for Phase 5:**
   1. **Step 5.2:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
   2. **Step 5.3:** Compile and package `vendor/toybox` against `mlibc` (providing `sh`, `ls`, `cat`, `echo`, `cp`, `mkdir`, etc. without `fork()`, utilizing `posix_spawn()`).
