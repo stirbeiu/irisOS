@@ -298,6 +298,62 @@ set_target_properties(test_libiris PROPERTIES
 )
 
 # ==============================================================================
+# Target: mbedcrypto (Minimal Freestanding Mbed-TLS 3.6 + Argon2id - Apache 2.0)
+# ==============================================================================
+set(MBEDTLS_ROOT "${IRIS_ROOT}/vendor/mbedtls")
+if (EXISTS "${MBEDTLS_ROOT}/library/aes.c")
+    set(MBEDCRYPTO_SRCS
+        "${MBEDTLS_ROOT}/library/aes.c"
+        "${MBEDTLS_ROOT}/library/cipher.c"
+        "${MBEDTLS_ROOT}/library/cipher_wrap.c"
+        "${MBEDTLS_ROOT}/library/constant_time.c"
+        "${MBEDTLS_ROOT}/library/error.c"
+        "${MBEDTLS_ROOT}/library/hkdf.c"
+        "${MBEDTLS_ROOT}/library/md.c"
+        "${MBEDTLS_ROOT}/library/pkcs5.c"
+        "${MBEDTLS_ROOT}/library/platform.c"
+        "${MBEDTLS_ROOT}/library/platform_util.c"
+        "${MBEDTLS_ROOT}/library/sha256.c"
+        "${MBEDTLS_ROOT}/library/sha512.c"
+        "${IRIS_ROOT}/servers/iris_crypt/src/argon2.c"
+    )
+
+    add_library(mbedcrypto STATIC EXCLUDE_FROM_ALL ${MBEDCRYPTO_SRCS})
+
+    target_include_directories(mbedcrypto PUBLIC
+        "${MBEDTLS_ROOT}/include"
+        "${MBEDTLS_ROOT}/library"
+        "${IRIS_ROOT}/build"
+        "${IRIS_ROOT}"
+        "${CMAKE_BINARY_DIR}/mlibc"
+        "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/ansi/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/posix/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/bsd/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/glibc/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/internal/include"
+        "${IRIS_ROOT}/vendor/mlibc/include"
+    )
+
+    target_compile_definitions(mbedcrypto PUBLIC
+        MBEDTLS_CONFIG_FILE="mbedtls_iris_config.h"
+    )
+
+    target_compile_options(mbedcrypto PRIVATE
+        -ffreestanding
+        -fPIC
+        -O2
+        -Wno-unused-parameter
+        -Wno-unused-function
+    )
+
+    set_target_properties(mbedcrypto PROPERTIES
+        OUTPUT_NAME "mbedcrypto"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    )
+endif()
+
+# ==============================================================================
 # Target: Zircon Microkernel Core
 # ==============================================================================
 set(KERNEL_ROOT "${ZIRCON_ROOT}/kernel")

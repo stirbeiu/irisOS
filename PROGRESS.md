@@ -6,8 +6,8 @@ This document tracks progress, completed milestones, verification proofs, and im
 
 ## Current Status Overview
 - **Active Phase:** Phase 4 (PCIe Drivers, Storage Encryption & Filesystems)
-- **Current Milestone:** Phase 4 Step 4.1 + System Polish, Visual Branding & Diagnostic Cleanup Pass 100% COMPLETED & VERIFIED
-- **Overall Status:** Phase 1, 2, 3, and Phase 4 Step 4.1 Complete (100%). Ready for Phase 4 Step 4.2 (`iris_crypt`).
+- **Current Milestone:** Phase 4 Step 4.2 (`iris_crypt` Block-Level AES-256-XTS Encryption Proxy) 100% COMPLETED & VERIFIED
+- **Overall Status:** Phase 1, 2, 3, and Phase 4 Steps 4.1 & 4.2 Complete (100%). Ready for Phase 4 Step 4.3 (`iris_fshost`: GPT parser, FatFs, UFS2/libufs VFS router).
 
 ---
 
@@ -708,5 +708,128 @@ welcome to Zircon
 
 ---
 
+### Step 4.2: Block-Level Encryption Proxy (`iris_crypt`) with Mbed-TLS (AES-256-XTS + Argon2id)
+- **Status:** COMPLETED & VERIFIED (100% Dual-Architecture)
+- **Licensing:** STRICTLY Apache 2.0 / MIT (Zone 1 Permissive).
+- **Components Implemented:**
+  1. **Mbed-TLS 3.6 Fetch & Freestanding Build (`scripts/fetch_mbedtls.sh`, `build/mbedtls_iris_config.h`, `build/CMakeLists.txt`, `build/Makefile`):**
+     - Created [`scripts/fetch_mbedtls.sh`](scripts/fetch_mbedtls.sh) fetching pinned Mbed-TLS `v3.6.2` from primary mirror `https://github.com/stirbeiu/mbedtls.git` with automatic fallback to `https://github.com/Mbed-TLS/mbedtls.git`, shallow clone (`--depth 1`), and `--clean` support.
+     - Configured minimal freestanding [`build/mbedtls_iris_config.h`](build/mbedtls_iris_config.h) enabling AES (`MBEDTLS_AES_C`), XTS mode (`MBEDTLS_CIPHER_MODE_XTS`), SHA-256 (`MBEDTLS_SHA256_C`), SHA-512 (`MBEDTLS_SHA512_C`), PKCS5, HKDF, and platform zeroization.
+     - Implemented freestanding memory-hard Argon2id key derivation (`iris_argon2id_derive`) in [`servers/iris_crypt/src/argon2.c`](servers/iris_crypt/src/argon2.c) using 1 KiB BlaMka G-round blocks and Mbed-TLS SHA-512 variable-length hashing ($H'$).
+     - Built `out/build-x86_64/lib/libmbedcrypto.a` and `out/build-arm64/lib/libmbedcrypto.a` via Homebrew LLVM.
+  2. **Sector 0 Metadata Header & Ring 3 Block Proxy (`servers/iris_crypt/include/iris_crypt.h`, `servers/iris_crypt/src/main.c` -> `bin/iris_crypt`):**
+     - Defined 4096-byte (8-sector) on-disk `iris_crypt_header_t` with magic `0x5450595243534952ULL` (`"IRISCRYPT"`), format version `1`, 32-byte Argon2 salt, `argon2_t_cost`/`argon2_m_cost`/`argon2_lanes` parameters, 64-byte AES-256-XTS wrapped master key, and SHA-256 verification/integrity digests.
+     - Implemented Phase 4 deterministic development key fallback (`IRIS_CRYPT_DEV_PASSPHRASE`) so automated QEMU boots initialize/unlock Sector 0 and mount without blocking on interactive input.
+     - Implemented `IRIS_PROTO_DRIVER` block proxy service translating logical sector $L$ to physical sector $P = L + 8$ on downstream `virtio_blk`:
+       * `IRIS_BLK_OP_GET_INFO`: Adjusts reported capacity by subtracting the 8 metadata sectors (`131,072` physical sectors $\rightarrow$ `131,064` usable logical sectors).
+       * `IRIS_BLK_OP_WRITE`: Encrypts each 512-byte sector using Mbed-TLS `mbedtls_aes_crypt_xts(MBEDTLS_AES_ENCRYPT)` with 64-bit little-endian logical sector LBA as the 16-byte XTS `data_unit` tweak, then writes ciphertext to physical Sector $L + 8$ on `virtio_blk`.
+       * `IRIS_BLK_OP_READ`: Reads ciphertext from physical Sector $L + 8$ on `virtio_blk`, decrypts via `mbedtls_aes_crypt_xts(MBEDTLS_AES_DECRYPT)`, and returns plaintext to the caller.
+       * `IRIS_BLK_OP_FLUSH`: Forwards cache flush transparently to `virtio_blk`.
+     - Enhanced [`servers/drivers/virtio_blk/src/main.c`](servers/drivers/virtio_blk/src/main.c) to support multiple concurrent client channels transferred via Zircon capability handle passing.
+  3. **End-to-End Verification & Subsystem Documentation (`servers/iris_init/src/main.c`, `docs/storage_and_vfs.md`):**
+     - Updated `iris_init` to spawn `virtio_blk` and `iris_crypt`, write 512-byte plaintext to logical Sector 0 via `iris_crypt`, read physical Sector 8 directly from `virtio_blk` to prove on-disk data is AES-256-XTS ciphertext (`plain[0..3]=49524953 != cipher[0..3]=5ba520ff`), and read back logical Sector 0 via `iris_crypt` to verify 512/512 bytes match original plaintext.
+     - Authored [`docs/storage_and_vfs.md`](docs/storage_and_vfs.md) documenting the Ring 3 storage pipeline, 4 KB Sector 0 metadata header, Argon2id + AES-256-XTS key hierarchy, GPT layout, and VFS routing.
+- **Dual-Architecture Verified Console Output:**
+  - **x86_64 Verified Boot Output (`./scripts/run_qemu.sh -a x86_64 --headless`):**
+    ```text
+    [00007.314] 01051.01054>   _      _      ____   _____ 
+    [00007.314] 01051.01054>  (_)    (_)    / __ \ / ____|
+    [00007.314] 01051.01054>   _ _ __ _ ___| |  | | (___  
+    [00007.314] 01051.01054>  | | '__| / __| |  | |\___ \ 
+    [00007.314] 01051.01054>  | | |  | \__ \ |__| |____) |
+    [00007.314] 01051.01054>  |_|_|  |_|___/\____/|_____/ 
+    [00007.314] 01051.01054> System Node: irisOS-dev (x86_64)
+    [00007.314] 01051.01054> [  OK  ] Extracted Root Resource capability.
+    [00007.314] 01051.01054> [  OK  ] Extracted BOOTFS VMO capability.
+    [00007.314] 01051.01054> [  OK  ] Extracted Root Job capability.
+    [00007.314] 01051.01054> [  OK  ] Extracted vDSO VMO capability.
+    [00007.314] 01051.01054> [  OK  ] Extracted Root VMAR capability.
+    [00007.314] 01051.01054> [  OK  ] Located bin/its_irisOS in BOOTFS (2266696 bytes).
+    [00007.318] 01051.01054> [  OK  ] Started process its_irisOS (bin/its_irisOS).
+    [00007.383] 01064.01066> [  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
+    [00007.388] 01064.01066> [  OK  ] its_irisOS: FD Table direct write(1) to stdout.
+    [00007.393] 01064.01066> [  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
+    [00007.398] 01064.01066> [  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
+    [00007.402] 01064.01066> [  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
+    [00007.406] 01064.01066> [  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
+    [00007.406] 01064.01066> [  OK  ] its_irisOS: Interactive Test Suite all checks passed.
+    [00007.420] 01051.01054> [  OK  ] Process its_irisOS finished execution.
+    [00007.432] 01051.01054> [  OK  ] Mapped PCIe ECAM configuration space at phys 0x00000000e0000000.
+    [00007.437] 01051.01054> [  OK  ] Discovered VirtIO Block Device at PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00007.445] 01051.01054> [  OK  ] Located bin/virtio_blk in BOOTFS (2240656 bytes).
+    [00007.456] 01051.01054> [  OK  ] Started process virtio_blk (bin/virtio_blk).
+    [00007.486] 01081.01083> [  OK  ] virtio_blk: Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00007.498] 01081.01083> [  OK  ] virtio_blk: Mapped BAR 4 (phys 0xc000000000 -> vaddr 0x27ac6507000).
+    [00007.508] 01081.01083> [  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (131072 sectors, 64 MB).
+    [00007.508] 01081.01083> [  OK  ] virtio_blk: IPC server listening on control channel.
+    [00007.517] 01051.01054> [  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 131072 sectors (512 bytes/sector).
+    [00007.523] 01051.01054> [  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+    [00007.529] 01051.01054> [  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+    [00007.529] 01051.01054> [  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
+    [00007.537] 01051.01054> [  OK  ] Located bin/iris_crypt in BOOTFS (2268848 bytes).
+    [00007.560] 01051.01054> [  OK  ] Started process iris_crypt (bin/iris_crypt).
+    [00007.582] 01107.01109> [  OK  ] iris_crypt: Initialized 4 KB Sector 0 header (magic 0x5450595243534952, Argon2id + AES-256-XTS).
+    [00007.587] 01107.01109> [  OK  ] iris_crypt: Unlocked AES-256-XTS master key via Argon2id dev key fallback.
+    [00007.593] 01107.01109> [  OK  ] iris_crypt: Block proxy listening (logical Sector 0 -> physical Sector 8, 131064 sectors).
+    [00007.597] 01051.01054> [  OK  ] iris_crypt IPC query (BLK_GET_INFO): 131064 usable sectors (8 sectors / 4 KB reserved for Sector 0 header).
+    [00007.603] 01051.01054> [  OK  ] Wrote 512-byte plaintext to logical Sector 0 via iris_crypt.
+    [00007.608] 01051.01054> [  OK  ] Verified physical Sector 8 on virtio_blk is AES-256-XTS ciphertext (plain[0..3]=49524953 != cipher[0..3]=5ba520ff).
+    [00007.617] 01051.01054> [  OK  ] Verified logical Sector 0 read via iris_crypt matches original plaintext (512/512 bytes matched).
+    [00007.621] 01107.01109> [  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.
+    [00007.628] 01081.01083> [  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
+    [00007.633] 01051.01054> [  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.
+    ```
+  - **arm64 Verified Boot Output (`./scripts/run_qemu.sh -a arm64 --headless`):**
+    ```text
+    [00009.176] 01044.01047>   _      _      ____   _____ 
+    [00009.176] 01044.01047>  (_)    (_)    / __ \ / ____|
+    [00009.176] 01044.01047>   _ _ __ _ ___| |  | | (___  
+    [00009.176] 01044.01047>  | | '__| / __| |  | |\___ \ 
+    [00009.176] 01044.01047>  | | |  | \__ \ |__| |____) |
+    [00009.176] 01044.01047>  |_|_|  |_|___/\____/|_____/ 
+    [00009.176] 01044.01047> System Node: irisOS-dev (arm64)
+    [00009.176] 01044.01047> [  OK  ] Extracted Root Resource capability.
+    [00009.176] 01044.01047> [  OK  ] Extracted BOOTFS VMO capability.
+    [00009.176] 01044.01047> [  OK  ] Extracted Root Job capability.
+    [00009.176] 01044.01047> [  OK  ] Extracted vDSO VMO capability.
+    [00009.176] 01044.01047> [  OK  ] Extracted Root VMAR capability.
+    [00009.176] 01044.01047> [  OK  ] Located bin/its_irisOS in BOOTFS (2385960 bytes).
+    [00009.179] 01044.01047> [  OK  ] Started process its_irisOS (bin/its_irisOS).
+    [00009.188] 01057.01059> [  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
+    [00009.188] 01057.01059> [  OK  ] its_irisOS: FD Table direct write(1) to stdout.
+    [00009.189] 01057.01059> [  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
+    [00009.189] 01057.01059> [  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
+    [00009.189] 01057.01059> [  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
+    [00009.190] 01057.01059> [  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
+    [00009.190] 01057.01059> [  OK  ] its_irisOS: Interactive Test Suite all checks passed.
+    [00009.194] 01044.01047> [  OK  ] Process its_irisOS finished execution.
+    [00009.196] 01044.01047> [  OK  ] Mapped PCIe ECAM configuration space at phys 0x0000004010000000.
+    [00009.197] 01044.01047> [  OK  ] Discovered VirtIO Block Device at PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00009.197] 01044.01047> [  OK  ] Located bin/virtio_blk in BOOTFS (2357912 bytes).
+    [00009.204] 01044.01047> [  OK  ] Started process virtio_blk (bin/virtio_blk).
+    [00009.219] 01074.01076> [  OK  ] virtio_blk: Bound to PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+    [00009.220] 01074.01076> [  OK  ] virtio_blk: Mapped BAR 4 (phys 0x8000004000 -> vaddr 0x851880892000).
+    [00009.225] 01074.01076> [  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (131072 sectors, 64 MB).
+    [00009.225] 01074.01076> [  OK  ] virtio_blk: IPC server listening on control channel.
+    [00009.226] 01044.01047> [  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 131072 sectors (512 bytes/sector).
+    [00009.229] 01044.01047> [  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+    [00009.230] 01044.01047> [  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+    [00009.230] 01044.01047> [  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
+    [00009.231] 01044.01047> [  OK  ] Located bin/iris_crypt in BOOTFS (2383520 bytes).
+    [00009.232] 01044.01047> [  OK  ] Started process iris_crypt (bin/iris_crypt).
+    [00009.247] 01100.01102> [  OK  ] iris_crypt: Initialized 4 KB Sector 0 header (magic 0x5450595243534952, Argon2id + AES-256-XTS).
+    [00009.248] 01100.01102> [  OK  ] iris_crypt: Unlocked AES-256-XTS master key via Argon2id dev key fallback.
+    [00009.248] 01100.01102> [  OK  ] iris_crypt: Block proxy listening (logical Sector 0 -> physical Sector 8, 131064 sectors).
+    [00009.249] 01044.01047> [  OK  ] iris_crypt IPC query (BLK_GET_INFO): 131064 usable sectors (8 sectors / 4 KB reserved for Sector 0 header).
+    [00009.251] 01044.01047> [  OK  ] Wrote 512-byte plaintext to logical Sector 0 via iris_crypt.
+    [00009.251] 01044.01047> [  OK  ] Verified physical Sector 8 on virtio_blk is AES-256-XTS ciphertext (plain[0..3]=49524953 != cipher[0..3]=5ba520ff).
+    [00009.252] 01044.01047> [  OK  ] Verified logical Sector 0 read via iris_crypt matches original plaintext (512/512 bytes matched).
+    [00009.253] 01100.01102> [  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.
+    [00009.256] 01074.01076> [  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
+    [00009.264] 01044.01047> [  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.
+    ```
+
+---
+
 ## Phase 4 Active Next Step
-- **Immediate Next Step:** Phase 4, Step 4.2: Block-Level Encryption Proxy (`iris_crypt`) using `mbedtls` (AES-256-XTS + Argon2, 4 KB Sector 0 header, test key fallback).
+- **Immediate Next Step:** Phase 4, Step 4.3: Monolithic VFS Router & Filesystem Server (`iris_fshost`) with GPT partition parser, FatFs (`ESP`), and `libufs` UFS2 mounting (`/System` read-only from `System_A` and `/Users` read-write from decrypted `Data`).

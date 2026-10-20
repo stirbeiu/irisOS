@@ -457,9 +457,21 @@ static void cleanup_virtio_block_device(void) {
 
 /**
  * @brief Primary IPC event loop serving block requests over raw Zircon channels.
+ *        Supports multiple concurrent client channels (e.g. iris_init / iris_fshost
+ *        and iris_crypt) transferred via capability handle passing.
  */
+#define MAX_BLK_CLIENTS 8
+
 static void run_ipc_server(void) {
     blk_log("[  OK  ] virtio_blk: IPC server listening on control channel.\n");
+
+    zx_handle_t clients[MAX_BLK_CLIENTS];
+    for (int i = 0; i < MAX_BLK_CLIENTS; ++i) {
+        clients[i] = ZX_HANDLE_INVALID;
+    }
+    clients[0] = g_server_channel;
+    g_server_channel = ZX_HANDLE_INVALID;
+    int active_clients = 1;
 
     uint8_t req_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
     uint8_t rep_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
@@ -467,117 +479,165 @@ static void run_ipc_server(void) {
     uint32_t act_bytes = 0;
     uint32_t act_handles = 0;
 
-    for (;;) {
-        act_bytes = 0;
-        act_handles = 0;
-        zx_status_t status = zx_channel_read(
-            g_server_channel,
-            0,
-            req_buf,
-            handles,
-            sizeof(req_buf),
-            IRIS_IPC_MAX_HANDLES,
-            &act_bytes,
-            &act_handles
-        );
+    while (active_clients > 0) {
+        bool did_work = false;
 
-        if (status == ZX_ERR_SHOULD_WAIT) {
-            zx_signals_t observed = 0;
-            status = zx_object_wait_one(g_server_channel,
-                                        ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
-                                        ZX_TIME_INFINITE, &observed);
-            if (status != ZX_OK || (observed & ZX_CHANNEL_PEER_CLOSED)) {
-                break;
-            }
-            continue;
-        }
-
-        if (status != ZX_OK) {
-            if (status == ZX_ERR_PEER_CLOSED) {
-                break;
-            }
-            continue;
-        }
-
-        if (act_bytes < sizeof(iris_msg_hdr_t)) {
-            continue;
-        }
-
-        const iris_msg_hdr_t* req_hdr = (const iris_msg_hdr_t*)req_buf;
-        if (!iris_msg_hdr_is_valid(req_hdr, IRIS_PROTO_DRIVER)) {
-            continue;
-        }
-
-        iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
-        uint32_t rep_total_len = sizeof(iris_msg_hdr_t);
-
-        switch (req_hdr->opcode) {
-            case IRIS_BLK_OP_GET_INFO: {
-                iris_blk_info_t* info = (iris_blk_info_t*)(rep_buf + sizeof(iris_msg_hdr_t));
-                info->sector_count = g_disk_capacity;
-                info->sector_size = 512u;
-                info->max_transfer = 120u;
-
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_blk_info_t));
-                rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_blk_info_t);
-                break;
+        for (int c = 0; c < MAX_BLK_CLIENTS; ++c) {
+            zx_handle_t ch = clients[c];
+            if (ch == ZX_HANDLE_INVALID) {
+                continue;
             }
 
-            case IRIS_BLK_OP_WRITE: {
-                if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+            act_bytes = 0;
+            act_handles = 0;
+            zx_status_t status = zx_channel_read(
+                ch,
+                0,
+                req_buf,
+                handles,
+                sizeof(req_buf),
+                IRIS_IPC_MAX_HANDLES,
+                &act_bytes,
+                &act_handles
+            );
+
+            if (status == ZX_ERR_SHOULD_WAIT) {
+                continue;
+            }
+
+            if (status != ZX_OK) {
+                if (status == ZX_ERR_PEER_CLOSED) {
+                    zx_handle_close(ch);
+                    clients[c] = ZX_HANDLE_INVALID;
+                    active_clients--;
+                }
+                continue;
+            }
+
+            did_work = true;
+
+            /* Register any newly transferred client channel endpoints */
+            for (uint32_t h = 0; h < act_handles; ++h) {
+                if (handles[h] != ZX_HANDLE_INVALID) {
+                    bool added = false;
+                    for (int slot = 0; slot < MAX_BLK_CLIENTS; ++slot) {
+                        if (clients[slot] == ZX_HANDLE_INVALID) {
+                            clients[slot] = handles[h];
+                            active_clients++;
+                            added = true;
+                            break;
+                        }
+                    }
+                    if (!added) {
+                        zx_handle_close(handles[h]);
+                    }
+                }
+            }
+
+            if (act_bytes < sizeof(iris_msg_hdr_t)) {
+                continue;
+            }
+
+            const iris_msg_hdr_t* req_hdr = (const iris_msg_hdr_t*)req_buf;
+            if (!iris_msg_hdr_is_valid(req_hdr, IRIS_PROTO_DRIVER)) {
+                continue;
+            }
+
+            iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
+            uint32_t rep_total_len = sizeof(iris_msg_hdr_t);
+
+            switch (req_hdr->opcode) {
+                case IRIS_BLK_OP_GET_INFO: {
+                    iris_blk_info_t* info = (iris_blk_info_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+                    info->sector_count = g_disk_capacity;
+                    info->sector_size = 512u;
+                    info->max_transfer = 120u;
+
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_blk_info_t));
+                    rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_blk_info_t);
                     break;
                 }
-                const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
-                uint32_t data_bytes = rw->num_sectors * 512u;
-                if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t) + data_bytes) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BUFFER_TOO_SMALL, 0);
-                    break;
-                }
 
-                /* Copy write data into DMA buffer */
-                const uint8_t* src_data = (const uint8_t*)(rw + 1);
-                memcpy((void*)(g_dma_vaddr + 512), src_data, data_bytes);
+                case IRIS_BLK_OP_WRITE: {
+                    if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                        break;
+                    }
+                    const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                    uint32_t data_bytes = rw->num_sectors * 512u;
+                    if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t) + data_bytes) {
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BUFFER_TOO_SMALL, 0);
+                        break;
+                    }
 
-                /* Perform disk write */
-                zx_status_t io_st = virtio_blk_do_io(VIRTIO_BLK_T_OUT, rw->start_sector, rw->num_sectors);
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
-                break;
-            }
+                    /* Copy write data into DMA buffer */
+                    const uint8_t* src_data = (const uint8_t*)(rw + 1);
+                    memcpy((void*)(g_dma_vaddr + 512), src_data, data_bytes);
 
-            case IRIS_BLK_OP_READ: {
-                if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
-                    break;
-                }
-                const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
-                uint32_t data_bytes = rw->num_sectors * 512u;
-
-                /* Perform disk read */
-                zx_status_t io_st = virtio_blk_do_io(VIRTIO_BLK_T_IN, rw->start_sector, rw->num_sectors);
-                if (io_st == ZX_OK) {
-                    /* Copy read data from DMA buffer to reply payload */
-                    memcpy(rep_buf + sizeof(iris_msg_hdr_t), (const void*)(g_dma_vaddr + 512), data_bytes);
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, data_bytes);
-                    rep_total_len = sizeof(iris_msg_hdr_t) + data_bytes;
-                } else {
+                    /* Perform disk write */
+                    zx_status_t io_st = virtio_blk_do_io(VIRTIO_BLK_T_OUT, rw->start_sector, rw->num_sectors);
                     iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
+                    break;
                 }
-                break;
+
+                case IRIS_BLK_OP_READ: {
+                    if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                        break;
+                    }
+                    const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                    uint32_t data_bytes = rw->num_sectors * 512u;
+
+                    /* Perform disk read */
+                    zx_status_t io_st = virtio_blk_do_io(VIRTIO_BLK_T_IN, rw->start_sector, rw->num_sectors);
+                    if (io_st == ZX_OK) {
+                        /* Copy read data from DMA buffer to reply payload */
+                        memcpy(rep_buf + sizeof(iris_msg_hdr_t), (const void*)(g_dma_vaddr + 512), data_bytes);
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, data_bytes);
+                        rep_total_len = sizeof(iris_msg_hdr_t) + data_bytes;
+                    } else {
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
+                    }
+                    break;
+                }
+
+                case IRIS_BLK_OP_FLUSH: {
+                    zx_status_t io_st = virtio_blk_do_io(VIRTIO_BLK_T_FLUSH, 0, 0);
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
+                    break;
+                }
+
+                default:
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
+                    break;
             }
 
-            case IRIS_BLK_OP_FLUSH: {
-                zx_status_t io_st = virtio_blk_do_io(VIRTIO_BLK_T_FLUSH, 0, 0);
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
-                break;
-            }
-
-            default:
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
-                break;
+            zx_channel_write(ch, 0, rep_buf, rep_total_len, NULL, 0);
         }
 
-        zx_channel_write(g_server_channel, 0, rep_buf, rep_total_len, NULL, 0);
+        if (!did_work && active_clients > 0) {
+            if (active_clients == 1) {
+                for (int c = 0; c < MAX_BLK_CLIENTS; ++c) {
+                    if (clients[c] != ZX_HANDLE_INVALID) {
+                        zx_signals_t observed = 0;
+                        zx_status_t st = zx_object_wait_one(
+                            clients[c],
+                            ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE,
+                            &observed
+                        );
+                        if (st != ZX_OK || ((observed & ZX_CHANNEL_PEER_CLOSED) && !(observed & ZX_CHANNEL_READABLE))) {
+                            zx_handle_close(clients[c]);
+                            clients[c] = ZX_HANDLE_INVALID;
+                            active_clients--;
+                        }
+                        break;
+                    }
+                }
+            } else {
+                zx_nanosleep(zx_deadline_after(100000ULL)); /* 100 us poll interval across multi-channels */
+            }
+        }
     }
 }
 

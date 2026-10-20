@@ -1016,7 +1016,179 @@ static void test_virtio_blk(void) {
         log_printf("[FAILED] iris_init: Sector 100 verification failed.");
     }
 
-    /* Close control channel and wait for virtio_blk to unpin BTI PMTs and exit cleanly */
+    log_printf("[  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.");
+
+    /* ==========================================================================
+     * Phase 4 Step 4.2: iris_crypt AES-256-XTS Block Encryption Proxy Verification
+     * ========================================================================== */
+
+    /* 9. Create Upstream Channel Pair for iris_crypt and Dedicated Downstream virtio_blk Channel */
+    zx_handle_t crypt_client_ch = ZX_HANDLE_INVALID;
+    zx_handle_t crypt_server_ch = ZX_HANDLE_INVALID;
+    status = g_zx_channel_create(0, &crypt_client_ch, &crypt_server_ch);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to create iris_crypt channel (%d).", status);
+        g_zx_handle_close(client_ch);
+        return;
+    }
+
+    zx_handle_t blk_client_for_crypt = ZX_HANDLE_INVALID;
+    zx_handle_t blk_server_for_crypt = ZX_HANDLE_INVALID;
+    status = g_zx_channel_create(0, &blk_client_for_crypt, &blk_server_for_crypt);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to create downstream virtio_blk channel (%d).", status);
+        g_zx_handle_close(crypt_client_ch);
+        g_zx_handle_close(crypt_server_ch);
+        g_zx_handle_close(client_ch);
+        return;
+    }
+
+    /* Register blk_server_for_crypt with virtio_blk via capability handle transfer */
+    iris_msg_hdr_init(&req_hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_GET_INFO, 9, 0);
+    status = g_zx_channel_write(client_ch, 0, &req_hdr, sizeof(req_hdr), &blk_server_for_crypt, 1);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to attach downstream channel to virtio_blk (%d).", status);
+        return;
+    }
+    observed = 0;
+    g_zx_object_wait_one(client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    g_zx_channel_read(client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+
+    /* 10. Spawn bin/iris_crypt from BOOTFS (PA_USER0 = server_ch, PA_USER1 = downstream virtio_blk) */
+    zx_handle_t crypt_proc = ZX_HANDLE_INVALID;
+    status = spawn_elf_binary("iris_crypt", "bin/iris_crypt",
+                              crypt_server_ch, PA_HND(PA_USER0, 0),
+                              blk_client_for_crypt, PA_HND(PA_USER1, 0),
+                              &crypt_proc);
+    g_zx_handle_close(crypt_server_ch);
+    g_zx_handle_close(blk_client_for_crypt);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to spawn bin/iris_crypt (%d).", status);
+        g_zx_handle_close(crypt_client_ch);
+        g_zx_handle_close(client_ch);
+        return;
+    }
+
+    /* 11. Query Encrypted Volume Capacity via iris_crypt (IRIS_BLK_OP_GET_INFO) */
+    iris_msg_hdr_init(&req_hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_GET_INFO, 10, 0);
+    status = g_zx_channel_write(crypt_client_ch, 0, &req_hdr, sizeof(req_hdr), NULL, 0);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to query iris_crypt BLK_GET_INFO (%d).", status);
+        return;
+    }
+
+    observed = 0;
+    g_zx_object_wait_one(crypt_client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    status = g_zx_channel_read(crypt_client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+    rep = (iris_msg_hdr_t*)rep_buf;
+    info = (iris_blk_info_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+    if (status != ZX_OK || rep->status != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) + sizeof(iris_blk_info_t)) {
+        log_printf("[FAILED] iris_init: Invalid BLK_GET_INFO reply from iris_crypt.");
+        return;
+    }
+
+    log_printf("[  OK  ] iris_crypt IPC query (BLK_GET_INFO): %llu usable sectors (8 sectors / 4 KB reserved for Sector 0 header).",
+               (unsigned long long)info->sector_count);
+
+    /* 12. Write Known Plaintext Data to Logical Sector 0 via iris_crypt */
+    uint8_t plain_sector[512];
+    const char* banner_str = "IRISOS_CRYPT_AES256_XTS_PLAINTEXT_LOGICAL_SECTOR_0_VERIFICATION!";
+    size_t b_len = iris_strlen(banner_str);
+    iris_memcpy(plain_sector, banner_str, b_len);
+    for (size_t i = b_len; i < 512; ++i) {
+        plain_sector[i] = (uint8_t)((i * 73u + 19u) ^ 0xA5u);
+    }
+
+    iris_msg_hdr_init(wr_hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_WRITE, 11, sizeof(iris_blk_rw_req_t) + 512);
+    wr_req->start_sector = 0; /* Logical Sector 0 -> maps to Physical Sector 8 on virtio_blk */
+    wr_req->num_sectors  = 1;
+    wr_req->flags        = 0;
+    iris_memcpy(pattern, plain_sector, 512);
+
+    status = g_zx_channel_write(crypt_client_ch, 0, write_msg, sizeof(write_msg), NULL, 0);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to send logical Sector 0 write to iris_crypt (%d).", status);
+        return;
+    }
+
+    observed = 0;
+    g_zx_object_wait_one(crypt_client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    status = g_zx_channel_read(crypt_client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+    rep = (iris_msg_hdr_t*)rep_buf;
+    if (status != ZX_OK || rep->status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Logical Sector 0 write via iris_crypt failed (%d).", rep->status);
+        return;
+    }
+    log_printf("[  OK  ] Wrote 512-byte plaintext to logical Sector 0 via iris_crypt.");
+
+    /* 13. Read Physical Sector 8 Directly from virtio_blk & Verify On-Disk Ciphertext */
+    iris_msg_hdr_init(rd_hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_READ, 12, sizeof(iris_blk_rw_req_t));
+    rd_req->start_sector = 8; /* Physical Sector 8 backs Logical Sector 0 past the 4 KB header */
+    rd_req->num_sectors  = 1;
+    rd_req->flags        = 0;
+
+    status = g_zx_channel_write(client_ch, 0, read_msg, sizeof(read_msg), NULL, 0);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to read physical Sector 8 from virtio_blk (%d).", status);
+        return;
+    }
+
+    observed = 0;
+    g_zx_object_wait_one(client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    status = g_zx_channel_read(client_ch, 0, read_rep, NULL, sizeof(read_rep), 0, &act_bytes, &act_handles);
+    rep = (iris_msg_hdr_t*)read_rep;
+    if (status != ZX_OK || rep->status != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) + 512) {
+        log_printf("[FAILED] iris_init: Physical Sector 8 read from virtio_blk failed.");
+        return;
+    }
+
+    const uint8_t* raw_disk_cipher = read_rep + sizeof(iris_msg_hdr_t);
+    if (iris_memcmp(raw_disk_cipher, plain_sector, 512) == 0) {
+        log_printf("[FAILED] iris_init: Physical Sector 8 matches plaintext! Encryption did not occur!");
+        return;
+    }
+    log_printf("[  OK  ] Verified physical Sector 8 on virtio_blk is AES-256-XTS ciphertext (plain[0..3]=%02x%02x%02x%02x != cipher[0..3]=%02x%02x%02x%02x).",
+               plain_sector[0], plain_sector[1], plain_sector[2], plain_sector[3],
+               raw_disk_cipher[0], raw_disk_cipher[1], raw_disk_cipher[2], raw_disk_cipher[3]);
+
+    /* 14. Read Back Logical Sector 0 via iris_crypt & Verify Decrypted Plaintext Matches Byte-for-Byte */
+    iris_msg_hdr_init(rd_hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_READ, 13, sizeof(iris_blk_rw_req_t));
+    rd_req->start_sector = 0; /* Logical Sector 0 */
+    rd_req->num_sectors  = 1;
+    rd_req->flags        = 0;
+
+    status = g_zx_channel_write(crypt_client_ch, 0, read_msg, sizeof(read_msg), NULL, 0);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to send logical Sector 0 read to iris_crypt (%d).", status);
+        return;
+    }
+
+    observed = 0;
+    g_zx_object_wait_one(crypt_client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    status = g_zx_channel_read(crypt_client_ch, 0, read_rep, NULL, sizeof(read_rep), 0, &act_bytes, &act_handles);
+    rep = (iris_msg_hdr_t*)read_rep;
+    if (status != ZX_OK || rep->status != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) + 512) {
+        log_printf("[FAILED] iris_init: Logical Sector 0 read from iris_crypt failed.");
+        return;
+    }
+
+    const uint8_t* decrypted_data = read_rep + sizeof(iris_msg_hdr_t);
+    if (iris_memcmp(decrypted_data, plain_sector, 512) == 0) {
+        log_printf("[  OK  ] Verified logical Sector 0 read via iris_crypt matches original plaintext (512/512 bytes matched).");
+    } else {
+        log_printf("[FAILED] iris_init: Decrypted logical Sector 0 mismatch!");
+        return;
+    }
+
+    /* 15. Close iris_crypt channel and wait for clean key zeroization teardown */
+    g_zx_handle_close(crypt_client_ch);
+    if (crypt_proc != ZX_HANDLE_INVALID) {
+        observed = 0;
+        g_zx_object_wait_one(crypt_proc, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &observed);
+        g_zx_handle_close(crypt_proc);
+    }
+
+    /* 16. Close virtio_blk control channel and wait for BTI PMT unpinning and clean exit */
     g_zx_handle_close(client_ch);
     if (blk_proc != ZX_HANDLE_INVALID) {
         observed = 0;
@@ -1024,7 +1196,7 @@ static void test_virtio_blk(void) {
         g_zx_handle_close(blk_proc);
     }
 
-    log_printf("[  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.");
+    log_printf("[  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.");
 }
 
 /**

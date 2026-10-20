@@ -152,14 +152,14 @@ kernel-arm64: tools
 	@cp -f $(ZIRCON_DIR)/build-arm64-clang/kernel.zbi $(OUT_DIR)/build-arm64/kernel/kernel.zbi
 	@echo "    [DONE] $(OUT_DIR)/build-arm64/kernel/zircon.elf"
 
-build-x86_64: tools kernel-x86_64
+build-x86_64: tools kernel-x86_64 fetch-mlibc fetch-mbedtls
 	@mkdir -p $(OUT_DIR)/build-x86_64
 	@cmake -B $(OUT_DIR)/build-x86_64 -S $(BUILD_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/x86_64-iris.cmake \
 		-G Ninja
 	@ninja -C $(OUT_DIR)/build-x86_64
 
-build-arm64: tools kernel-arm64
+build-arm64: tools kernel-arm64 fetch-mlibc fetch-mbedtls
 	@mkdir -p $(OUT_DIR)/build-arm64
 	@cmake -B $(OUT_DIR)/build-arm64 -S $(BUILD_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/arm64-iris.cmake \
@@ -167,13 +167,28 @@ build-arm64: tools kernel-arm64
 	@ninja -C $(OUT_DIR)/build-arm64
 
 # ------------------------------------------------------------------------------
-# compiler-rt Builtins & mlibc C Library
+# compiler-rt Builtins, mlibc C Library & Mbed-TLS Crypto
 # ------------------------------------------------------------------------------
 fetch-compiler-rt:
 	@$(ROOT_DIR)/scripts/fetch_compiler_rt.sh
 
 fetch-mlibc:
 	@$(ROOT_DIR)/scripts/fetch_mlibc.sh
+
+fetch-mbedtls:
+	@$(ROOT_DIR)/scripts/fetch_mbedtls.sh
+
+mbedtls-x86_64: mlibc-x86_64 fetch-mbedtls
+	@echo "==> Building libmbedcrypto.a (x86_64)..."
+	@ninja -C $(OUT_DIR)/build-x86_64 mbedcrypto
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/lib/libmbedcrypto.a"
+
+mbedtls-arm64: mlibc-arm64 fetch-mbedtls
+	@echo "==> Building libmbedcrypto.a (arm64)..."
+	@ninja -C $(OUT_DIR)/build-arm64 mbedcrypto
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/lib/libmbedcrypto.a"
+
+mbedtls: mbedtls-x86_64 mbedtls-arm64
 
 builtins-x86_64: fetch-compiler-rt
 	@mkdir -p $(OUT_DIR)/build-x86_64/lib $(OUT_DIR)/build-x86_64/builtins
@@ -350,12 +365,87 @@ virtio-blk-arm64: mlibc-arm64
 virtio-blk: virtio-blk-x86_64 virtio-blk-arm64
 
 # ------------------------------------------------------------------------------
+# Ring 3 Block Encryption Proxy Daemon (bin/iris_crypt)
+# ------------------------------------------------------------------------------
+iris-crypt-x86_64: mlibc-x86_64 mbedtls-x86_64
+	@echo "==> Compiling iris_crypt (x86_64)..."
+	@mkdir -p $(OUT_DIR)/build-x86_64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-DMBEDTLS_CONFIG_FILE='"mbedtls_iris_config.h"' \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-x86_64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR)/vendor/mbedtls/include \
+		-isystem $(ROOT_DIR)/build \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-x86_64/gen \
+		-isystem $(OUT_DIR)/build-x86_64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-c $(ROOT_DIR)/servers/iris_crypt/src/main.c -o $(OUT_DIR)/build-x86_64/iris_crypt.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-x86_64/iris_crypt.o \
+		$(OUT_DIR)/build-x86_64/lib/libmbedcrypto.a \
+		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
+		$(OUT_DIR)/build-x86_64/lib/libiris.a \
+		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-x86_64/bin/iris_crypt
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/iris_crypt"
+
+iris-crypt-arm64: mlibc-arm64 mbedtls-arm64
+	@echo "==> Compiling iris_crypt (arm64)..."
+	@mkdir -p $(OUT_DIR)/build-arm64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-DMBEDTLS_CONFIG_FILE='"mbedtls_iris_config.h"' \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-arm64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR)/vendor/mbedtls/include \
+		-isystem $(ROOT_DIR)/build \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-arm64/gen \
+		-isystem $(OUT_DIR)/build-arm64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-c $(ROOT_DIR)/servers/iris_crypt/src/main.c -o $(OUT_DIR)/build-arm64/iris_crypt.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-arm64/iris_crypt.o \
+		$(OUT_DIR)/build-arm64/lib/libmbedcrypto.a \
+		$(OUT_DIR)/build-arm64/mlibc/libc.a \
+		$(OUT_DIR)/build-arm64/lib/libiris.a \
+		$(OUT_DIR)/build-arm64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-arm64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-arm64/bin/iris_crypt
+	@echo "    [DONE] $(OUT_DIR)/build-arm64/bin/iris_crypt"
+
+iris-crypt: iris-crypt-x86_64 iris-crypt-arm64
+
+# ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64
+image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64 iris-crypt-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-arm64: build-arm64 its-irisOS-arm64 virtio-blk-arm64
+image-arm64: build-arm64 its-irisOS-arm64 virtio-blk-arm64 iris-crypt-arm64
 	@$(BUILD_DIR)/mkimage.sh arm64
 
 run: run-x86

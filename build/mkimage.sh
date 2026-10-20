@@ -50,7 +50,7 @@ if [[ ! -x "${HOST_TOOLS}/zbi" ]]; then
     make -C "${ROOT_DIR}/build" zbi
 fi
 
-# 2. Ensure iris_init, its_irisOS, and virtio_blk binaries exist
+# 2. Ensure iris_init, its_irisOS, virtio_blk, and iris_crypt binaries exist
 if [[ ! -f "${BUILD_DIR}/bin/iris_init" ]]; then
     echo "==> Building iris_init for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
@@ -62,6 +62,10 @@ fi
 if [[ ! -f "${BUILD_DIR}/bin/virtio_blk" ]]; then
     echo "==> Building virtio_blk for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "virtio-blk-${ARCH_NAME}"
+fi
+if [[ ! -f "${BUILD_DIR}/bin/iris_crypt" ]]; then
+    echo "==> Building iris_crypt for ${ARCH_NAME}..."
+    make -C "${ROOT_DIR}/build" "iris-crypt-${ARCH_NAME}"
 fi
 
 # 3. Ensure Zircon kernel ZBI exists
@@ -103,7 +107,8 @@ fi
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
             -e "bin/its_irisOS=${BUILD_DIR}/bin/its_irisOS" \
-            -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk"
+            -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk" \
+            -e "bin/iris_crypt=${BUILD_DIR}/bin/iris_crypt"
 
 # 6. Construct FAT32 UEFI ESP disk image
 IMAGES_DIR="${OUT_DIR}/images"
