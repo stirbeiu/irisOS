@@ -195,3 +195,12 @@ For granular rebuilds of individual components, the orchestrator in [`build/Make
 | `make -C build iris-crypt-x86_64` | Rebuilds only the block-level encryption proxy daemon for x86_64 |
 | `make -C build iris-fshost-x86_64` | Rebuilds only the central VFS router daemon for x86_64 |
 | `make -C build clean` | Cleans build outputs and compiled images |
+
+### 6.5 Build Options & Release Configuration
+
+Build options can be customized when configuring CMake or passing arguments:
+
+* **`IRIS_SYSTEM_NODE`**: The hostname / system node name displayed during early boot under the irisOS banner (`System Node: <node> (<arch>)`). Defaults to `irisOS-dev` for development builds. When preparing an official full release, override via:
+  ```bash
+  cmake -B out/build-x86_64 -DIRIS_SYSTEM_NODE="irisOS"
+  ```

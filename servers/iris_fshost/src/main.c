@@ -69,6 +69,7 @@
 
 #include <iris/ipc.h>
 #include <iris/init.h>
+#include <iris/log.h>
 
 #include <libufs.h>
 #include "ufs_io.h"
@@ -170,20 +171,8 @@ static bool            g_data_mounted   = false;
 static vfs_open_file_t g_open_files[MAX_OPEN_FILES];
 
 /* ==============================================================================
- * Logging & Downstream Block Helpers
+ * Downstream Block Helpers
  * ============================================================================== */
-
-static void fshost_log(const char* fmt, ...) {
-    char line_buf[256];
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(line_buf, sizeof(line_buf), fmt, args);
-    va_end(args);
-    if (n > 0) {
-        size_t len = (size_t)n < sizeof(line_buf) ? (size_t)n : sizeof(line_buf) - 1;
-        write(1, line_buf, len);
-    }
-}
 
 static zx_status_t blk_get_info(zx_handle_t ch, iris_blk_info_t* out_info) {
     static uint32_t txid = 500;
@@ -260,20 +249,20 @@ static zx_status_t parse_gpt_partitions(void) {
     uint8_t sec_buf[512 * 6] __attribute__((aligned(8)));
     zx_status_t st = blk_read_sectors(g_blk_channel, 0, 6, sec_buf);
     if (st != ZX_OK) {
-        fshost_log("[FAILED] iris_fshost: Failed to read LBA 0..5 from virtio_blk (%d).\n", st);
+        log_status(STATUS_FAIL, "iris_fshost", "Failed to read LBA 0..5 from virtio_blk (%d).", st);
         return st;
     }
 
     /* 1. Verify Protective MBR at LBA 0 */
     if (sec_buf[510] != 0x55 || sec_buf[511] != 0xAA || sec_buf[446 + 4] != 0xEE) {
-        fshost_log("[FAILED] iris_fshost: Invalid Protective MBR at LBA 0.\n");
+        log_status(STATUS_FAIL, "iris_fshost", "Invalid Protective MBR at LBA 0.");
         return ZX_ERR_IO_DATA_INTEGRITY;
     }
 
     /* 2. Verify Primary GPT Header at LBA 1 */
     const gpt_header_t* gpt = (const gpt_header_t*)(sec_buf + 512);
     if (memcmp(gpt->signature, "EFI PART", 8) != 0 || gpt->revision != 0x00010000u) {
-        fshost_log("[FAILED] iris_fshost: Invalid GPT Header signature at LBA 1.\n");
+        log_status(STATUS_FAIL, "iris_fshost", "Invalid GPT Header signature at LBA 1.");
         return ZX_ERR_IO_DATA_INTEGRITY;
     }
 
@@ -312,14 +301,14 @@ static zx_status_t parse_gpt_partitions(void) {
     }
 
     if (!g_part_esp.present || !g_part_sys_a.present || !g_part_sys_b.present || !g_part_data.present) {
-        fshost_log("[FAILED] iris_fshost: Missing required GPT partitions (found %u/4).\n", found);
+        log_status(STATUS_FAIL, "iris_fshost", "Missing required GPT partitions (found %u/4).", found);
         return ZX_ERR_NOT_FOUND;
     }
 
     uint32_t slot_a_prio = (uint32_t)((g_part_sys_a.attributes >> 48) & 0x0Fu);
     uint32_t slot_a_ok   = (uint32_t)((g_part_sys_a.attributes >> 55) & 0x01u);
 
-    fshost_log("[  OK  ] iris_fshost: Parsed GPT (ESP=%llu..%llu, System_A=%llu..%llu [prio=%u,ok=%u], System_B=%llu..%llu, Data=%llu..%llu).\n",
+    log_status(STATUS_OKAY, "iris_fshost", "Parsed GPT (ESP=%llu..%llu, System_A=%llu..%llu [prio=%u,ok=%u], System_B=%llu..%llu, Data=%llu..%llu).",
                (unsigned long long)g_part_esp.first_lba,   (unsigned long long)g_part_esp.last_lba,
                (unsigned long long)g_part_sys_a.first_lba, (unsigned long long)g_part_sys_a.last_lba,
                slot_a_prio, slot_a_ok,
@@ -356,19 +345,19 @@ static zx_status_t mount_filesystems(void) {
 
     init_uufsd_struct(&g_ufs_system, DEV_ID_SYSTEM_A, false);
     if (sbread(&g_ufs_system) == -1 || g_ufs_system.d_fs.fs_magic != FS_UFS2_MAGIC) {
-        fshost_log("[FAILED] iris_fshost: sbread() failed on System_A (%s).\n",
+        log_status(STATUS_FAIL, "iris_fshost", "sbread() failed on System_A (%s).",
                    g_ufs_system.d_error ? g_ufs_system.d_error : "invalid magic");
         return ZX_ERR_IO_DATA_INTEGRITY;
     }
     g_system_mounted = true;
-    fshost_log("[  OK  ] iris_fshost: Mounted System_A (UFS2 magic 0x%08x) at /System [Read-Only].\n",
+    log_status(STATUS_OKAY, "iris_fshost", "Mounted System_A (UFS2 magic 0x%08x) at /System [Read-Only].",
                (unsigned int)g_ufs_system.d_fs.fs_magic);
 
     /* 2. Query iris_crypt & mount decrypted Data (Read-Write UFS2) at /Users and /Applications */
     iris_blk_info_t crypt_info;
     st = blk_get_info(g_crypt_channel, &crypt_info);
     if (st != ZX_OK) {
-        fshost_log("[FAILED] iris_fshost: Failed to query iris_crypt block geometry (%d).\n", st);
+        log_status(STATUS_FAIL, "iris_fshost", "Failed to query iris_crypt block geometry (%d).", st);
         return st;
     }
 
@@ -383,15 +372,15 @@ static zx_status_t mount_filesystems(void) {
 
     init_uufsd_struct(&g_ufs_data, DEV_ID_DATA_CRYPT, true);
     if (sbread(&g_ufs_data) == -1 || g_ufs_data.d_fs.fs_magic != FS_UFS2_MAGIC) {
-        fshost_log("[FAILED] iris_fshost: sbread() failed on decrypted Data (%s).\n",
+        log_status(STATUS_FAIL, "iris_fshost", "sbread() failed on decrypted Data (%s).",
                    g_ufs_data.d_error ? g_ufs_data.d_error : "invalid magic");
         return ZX_ERR_IO_DATA_INTEGRITY;
     }
     g_data_mounted = true;
-    fshost_log("[  OK  ] iris_fshost: Mounted encrypted Data (UFS2 magic 0x%08x) at /Users & /Applications [Read-Write].\n",
+    log_status(STATUS_OKAY, "iris_fshost", "Mounted encrypted Data (UFS2 magic 0x%08x) at /Users & /Applications [Read-Write].",
                (unsigned int)g_ufs_data.d_fs.fs_magic);
 
-    fshost_log("[  OK  ] iris_fshost: Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.\n");
+    log_status(STATUS_OKAY, "iris_fshost", "Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.");
     return ZX_OK;
 }
 
@@ -1196,7 +1185,7 @@ int main(int argc, char* argv[]) {
     g_crypt_channel = zx_take_startup_handle(PA_HND(PA_USER2, 0));
 
     if (g_num_clients == 0 || g_blk_channel == ZX_HANDLE_INVALID || g_crypt_channel == ZX_HANDLE_INVALID) {
-        fshost_log("[FAILED] iris_fshost: Missing required IPC channels (PA_USER0 / PA_USER1 / PA_USER2).\n");
+        log_status(STATUS_FAIL, "iris_fshost", "Missing required IPC channels (PA_USER0 / PA_USER1 / PA_USER2).");
         return 1;
     }
 

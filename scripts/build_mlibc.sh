@@ -25,7 +25,7 @@ if [[ ! -f "${MLIBC_SRC}/meson.build" ]]; then
     "${ROOT_DIR}/scripts/fetch_mlibc.sh"
 fi
 
-if [[ ! -d "${MLIBC_OUT}" ]]; then
+if [[ ! -f "${MLIBC_OUT}/build.ninja" ]]; then
     echo "==> Configuring mlibc with Meson (${ARCH})..."
     meson setup "${MLIBC_OUT}" "${MLIBC_SRC}" \
         --cross-file "${ROOT_DIR}/build/toolchains/meson-${ARCH}.txt" \

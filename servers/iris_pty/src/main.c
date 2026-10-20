@@ -23,6 +23,7 @@
 #include <iris/ipc.h>
 #include <iris/init.h>
 #include <iris/pci.h>
+#include <iris/log.h>
 #include <servers/drivers/pci/pci.h>
 #include <servers/drivers/virtio_input/include/virtio_input.h>
 #include <servers/iris_pty/include/pty.h>
@@ -58,25 +59,6 @@ static void pty_lock(pty_discipline_t* p) {
 
 static void pty_unlock(pty_discipline_t* p) {
     __atomic_clear(&p->lock, __ATOMIC_RELEASE);
-}
-
-/**
- * @brief Write log message atomically to debuglog or stdout.
- */
-static void pty_log(const char* fmt, ...) {
-    char line_buf[256];
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(line_buf, sizeof(line_buf), fmt, args);
-    va_end(args);
-    if (n > 0) {
-        size_t len = (size_t)n < sizeof(line_buf) ? (size_t)n : sizeof(line_buf) - 1;
-        if (g_debuglog_handle != ZX_HANDLE_INVALID) {
-            zx_debuglog_write(g_debuglog_handle, 0, line_buf, len);
-        } else {
-            write(1, line_buf, len);
-        }
-    }
 }
 
 void pty_raw_output(const char* buf, size_t len) {
@@ -217,14 +199,14 @@ static void init_uart_fallback(void) {
         proc = zx_take_startup_handle(PA_HND(PA_PROC_SELF, 0));
     }
     if (proc == ZX_HANDLE_INVALID) {
-        pty_log("[FAILED] iris_pty: Missing process handle for UART worker.\n");
+        log_status(STATUS_FAIL, "iris_pty", "Missing process handle for UART worker.");
         return;
     }
 
     zx_handle_t thrd = ZX_HANDLE_INVALID;
     zx_status_t st = zx_thread_create(proc, "uart_rx", 7, 0, &thrd);
     if (st != ZX_OK) {
-        pty_log("[FAILED] iris_pty: zx_thread_create for UART worker failed (%d).\n", st);
+        log_status(STATUS_FAIL, "iris_pty", "zx_thread_create for UART worker failed (%d).", st);
         return;
     }
 
@@ -251,7 +233,7 @@ static void init_uart_fallback(void) {
     zx_handle_close(thrd);
 
     if (st == ZX_OK) {
-        pty_log("[  OK  ] iris_pty: UART serial console worker initialized.\n");
+        log_status(STATUS_OKAY, "iris_pty", "UART serial console worker initialized.");
     }
 }
 
@@ -511,7 +493,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    pty_log("[  OK  ] iris_pty: Starting Pseudo-Terminal Server.\n");
+    log_status(STATUS_OKAY, "iris_pty", "Starting Pseudo-Terminal Server.");
 
     /* 2. Initialize line discipline */
     memset(&g_pty, 0, sizeof(g_pty));
@@ -534,11 +516,11 @@ int main(int argc, char** argv) {
             st = virtio_input_init(ecam_vaddr, g_root_resource, &g_input_dev);
             if (st == ZX_OK) {
                 g_has_virtio_input = true;
-                pty_log("[  OK  ] iris_pty: Bound to PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).\n",
-                        g_input_dev.pci_dev.bus, g_input_dev.pci_dev.dev, g_input_dev.pci_dev.func,
-                        g_input_dev.pci_dev.vendor_id, g_input_dev.pci_dev.device_id);
+                log_status(STATUS_OKAY, "iris_pty", "Bound to PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).",
+                           g_input_dev.pci_dev.bus, g_input_dev.pci_dev.dev, g_input_dev.pci_dev.func,
+                           g_input_dev.pci_dev.vendor_id, g_input_dev.pci_dev.device_id);
             } else {
-                pty_log("[  OK  ] iris_pty: virtio-input-pci not present; fallback to UART serial console.\n");
+                log_status(STATUS_OKAY, "iris_pty", "virtio-input-pci not present; fallback to UART serial console.");
             }
         }
     }
@@ -546,13 +528,13 @@ int main(int argc, char** argv) {
     /* 4. Start UART serial console input worker only as fallback when VirtIO input is absent */
     if (!g_has_virtio_input) {
         init_uart_fallback();
-        pty_log("[  OK  ] iris_pty: UART serial console worker initialized.\n");
+        log_status(STATUS_OKAY, "iris_pty", "UART serial console worker initialized.");
     } else {
-        pty_log("[  OK  ] iris_pty: Primary input active via virtio-input-pci.\n");
+        log_status(STATUS_OKAY, "iris_pty", "Primary input active via virtio-input-pci.");
     }
 
-    pty_log("[  OK  ] iris_pty: Line discipline initialized (canonical cooked mode, echoing enabled).\n");
-    pty_log("[  OK  ] iris_pty: IPC server listening on control channel.\n");
+    log_status(STATUS_OKAY, "iris_pty", "Line discipline initialized (canonical cooked mode, echoing enabled).");
+    log_status(STATUS_OKAY, "iris_pty", "IPC server listening on control channel.");
 
     /* 5. Main Server Event Loop */
     while (!g_shutdown && g_num_clients > 0) {
@@ -612,7 +594,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    pty_log("[  OK  ] iris_pty: Daemon exited cleanly.\n");
+    log_status(STATUS_OKAY, "iris_pty", "Daemon exited cleanly.");
     zx_process_exit(0);
     return 0;
 }

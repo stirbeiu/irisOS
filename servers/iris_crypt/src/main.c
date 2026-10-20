@@ -72,6 +72,7 @@
 
 #include <iris/ipc.h>
 #include <iris/init.h>
+#include <iris/log.h>
 
 #include "mbedtls/aes.h"
 #include "mbedtls/sha256.h"
@@ -97,21 +98,6 @@ static bool                    g_unlocked = false;
 static uint8_t                 g_master_key[IRIS_CRYPT_MASTER_KEY_LEN];
 static mbedtls_aes_xts_context g_xts_enc;
 static mbedtls_aes_xts_context g_xts_dec;
-
-/**
- * @brief Formats a single-line log message using snprintf and writes it atomically.
- */
-static void crypt_log(const char* fmt, ...) {
-    char line_buf[256];
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(line_buf, sizeof(line_buf), fmt, args);
-    va_end(args);
-    if (n > 0) {
-        size_t len = (size_t)n < sizeof(line_buf) ? (size_t)n : sizeof(line_buf) - 1;
-        write(1, line_buf, len);
-    }
-}
 
 /* ==============================================================================
  * Downstream VirtIO Block IPC Helpers
@@ -359,7 +345,7 @@ static zx_status_t init_or_unlock_metadata_header(void) {
     /* 1. Read physical Sectors 0..7 (4096 bytes) of the target partition from virtio_blk */
     zx_status_t st = downstream_read_sectors(g_part_start_sector, IRIS_CRYPT_HEADER_SECTORS, &hdr);
     if (st != ZX_OK) {
-        crypt_log("[FAILED] iris_crypt: Failed to read Sector 0 metadata header (%d).\n", st);
+        log_status(STATUS_FAIL, "iris_crypt", "Failed to read Sector 0 metadata header (%d).", st);
         return st;
     }
 
@@ -404,7 +390,7 @@ static zx_status_t init_or_unlock_metadata_header(void) {
                                  hdr.argon2_salt, IRIS_CRYPT_SALT_LEN,
                                  hdr.argon2_t_cost, hdr.argon2_m_cost, hdr.argon2_lanes,
                                  kek, sizeof(kek)) != 0) {
-            crypt_log("[FAILED] iris_crypt: Argon2id KEK derivation failed.\n");
+            log_status(STATUS_FAIL, "iris_crypt", "Argon2id KEK derivation failed.");
             return ZX_ERR_INTERNAL;
         }
 
@@ -437,12 +423,12 @@ static zx_status_t init_or_unlock_metadata_header(void) {
         /* Write 4 KB header to physical Sectors 0..7 on virtio_blk */
         st = downstream_write_sectors(g_part_start_sector, IRIS_CRYPT_HEADER_SECTORS, &hdr);
         if (st != ZX_OK) {
-            crypt_log("[FAILED] iris_crypt: Failed to write Sector 0 metadata header (%d).\n", st);
+            log_status(STATUS_FAIL, "iris_crypt", "Failed to write Sector 0 metadata header (%d).", st);
             return st;
         }
 
-        crypt_log("[  OK  ] iris_crypt: Initialized 4 KB Sector 0 header (magic 0x%016llx, Argon2id + AES-256-XTS).\n",
-                  (unsigned long long)hdr.magic);
+        log_status(STATUS_OKAY, "iris_crypt", "Initialized 4 KB Sector 0 header (magic 0x%016llx, Argon2id + AES-256-XTS).",
+                   (unsigned long long)hdr.magic);
     } else {
         /* Header already present on disk: derive KEK via Argon2id and unwrap Master Key */
         uint8_t kek[IRIS_CRYPT_MASTER_KEY_LEN];
@@ -450,7 +436,7 @@ static zx_status_t init_or_unlock_metadata_header(void) {
                                  hdr.argon2_salt, IRIS_CRYPT_SALT_LEN,
                                  hdr.argon2_t_cost, hdr.argon2_m_cost, hdr.argon2_lanes,
                                  kek, sizeof(kek)) != 0) {
-            crypt_log("[FAILED] iris_crypt: Argon2id KEK derivation failed on existing header.\n");
+            log_status(STATUS_FAIL, "iris_crypt", "Argon2id KEK derivation failed on existing header.");
             return ZX_ERR_INTERNAL;
         }
 
@@ -470,12 +456,12 @@ static zx_status_t init_or_unlock_metadata_header(void) {
         uint8_t verify_tag[IRIS_CRYPT_SHA256_LEN];
         mbedtls_sha256(g_master_key, IRIS_CRYPT_MASTER_KEY_LEN, verify_tag, 0);
         if (memcmp(verify_tag, hdr.key_verification_tag, IRIS_CRYPT_SHA256_LEN) != 0) {
-            crypt_log("[FAILED] iris_crypt: Master key verification tag mismatch.\n");
+            log_status(STATUS_FAIL, "iris_crypt", "Master key verification tag mismatch.");
             return ZX_ERR_ACCESS_DENIED;
         }
 
-        crypt_log("[  OK  ] iris_crypt: Verified existing 4 KB Sector 0 header (magic 0x%016llx).\n",
-                  (unsigned long long)hdr.magic);
+        log_status(STATUS_OKAY, "iris_crypt", "Verified existing 4 KB Sector 0 header (magic 0x%016llx).",
+                   (unsigned long long)hdr.magic);
     }
 
     /* Program active AES-256-XTS (512-bit key = 2 x 256-bit keys) contexts */
@@ -484,12 +470,12 @@ static zx_status_t init_or_unlock_metadata_header(void) {
 
     if (mbedtls_aes_xts_setkey_enc(&g_xts_enc, g_master_key, 512) != 0 ||
         mbedtls_aes_xts_setkey_dec(&g_xts_dec, g_master_key, 512) != 0) {
-        crypt_log("[FAILED] iris_crypt: Failed to configure Mbed-TLS AES-256-XTS contexts.\n");
+        log_status(STATUS_FAIL, "iris_crypt", "Failed to configure Mbed-TLS AES-256-XTS contexts.");
         return ZX_ERR_INTERNAL;
     }
 
     g_unlocked = true;
-    crypt_log("[  OK  ] iris_crypt: Unlocked AES-256-XTS master key via Argon2id dev key fallback.\n");
+    log_status(STATUS_OKAY, "iris_crypt", "Unlocked AES-256-XTS master key via Argon2id dev key fallback.");
     return ZX_OK;
 }
 
@@ -655,10 +641,10 @@ static void handle_client_request(zx_handle_t ch, const uint8_t* req_buf, uint32
 }
 
 static void run_proxy_server(void) {
-    crypt_log("[  OK  ] iris_crypt: Block proxy listening (LBA %llu+%u, %llu logical sectors).\n",
-              (unsigned long long)g_part_start_sector,
-              IRIS_CRYPT_HEADER_SECTORS,
-              (unsigned long long)g_logical_sector_count);
+    log_status(STATUS_OKAY, "iris_crypt", "Block proxy listening (LBA %llu+%u, %llu logical sectors).",
+               (unsigned long long)g_part_start_sector,
+               IRIS_CRYPT_HEADER_SECTORS,
+               (unsigned long long)g_logical_sector_count);
 
     static uint8_t req_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
     zx_handle_t handles[IRIS_IPC_MAX_HANDLES];
@@ -724,7 +710,7 @@ int main(int argc, char* argv[]) {
     g_blk_channel = zx_take_startup_handle(PA_HND(PA_USER1, 0));
 
     if (g_num_clients == 0 || g_blk_channel == ZX_HANDLE_INVALID) {
-        crypt_log("[FAILED] iris_crypt: Missing required IPC channel handles (PA_USER0 / PA_USER1).\n");
+        log_status(STATUS_FAIL, "iris_crypt", "Missing required IPC channel handles (PA_USER0 / PA_USER1).");
         return 1;
     }
 
@@ -733,7 +719,7 @@ int main(int argc, char* argv[]) {
     memset(&blk_info, 0, sizeof(blk_info));
     zx_status_t st = downstream_get_info(&blk_info);
     if (st != ZX_OK || blk_info.sector_count <= IRIS_CRYPT_HEADER_SECTORS) {
-        crypt_log("[FAILED] iris_crypt: Downstream block device query failed (%d).\n", st);
+        log_status(STATUS_FAIL, "iris_crypt", "Downstream block device query failed (%d).", st);
         return 1;
     }
 
@@ -749,7 +735,7 @@ int main(int argc, char* argv[]) {
     /* 3. Initialize or verify 4 KB Sector 0 metadata header and unlock AES-256-XTS contexts */
     st = init_or_unlock_metadata_header();
     if (st != ZX_OK) {
-        crypt_log("[FAILED] iris_crypt: Metadata header unlock failed (%d).\n", st);
+        log_status(STATUS_FAIL, "iris_crypt", "Metadata header unlock failed (%d).", st);
         return 1;
     }
 
@@ -772,6 +758,6 @@ int main(int argc, char* argv[]) {
         g_blk_channel = ZX_HANDLE_INVALID;
     }
 
-    crypt_log("[  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.\n");
+    log_status(STATUS_OKAY, "iris_crypt", "Zeroized AES-256-XTS keys and exited cleanly.");
     return 0;
 }

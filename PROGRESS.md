@@ -141,10 +141,39 @@ This document tracks implementation status, completed milestones, verification c
   * Clean build across both architectures via `./iris build all`.
   * Automated headless QEMU verification passed 100% on both architectures via `./iris test all`.
 
+### Infrastructure Refactor: Supervisor Slim-Down & Standardized Systemd-Style Logging (COMPLETED)
+* **Standardized Colored Uniform-Width Systemd-Style Logging:**
+  * Defined 4-character ANSI status tags for perfect 6-character bracket alignment:
+    * `STATUS_OKAY`: `\033[32m OKAY \033[0m` (green)
+    * `STATUS_WARN`: `\033[33m WARN \033[0m` (yellow)
+    * `STATUS_FAIL`: `\033[31m FAIL \033[0m` (red)
+  * Implemented standardized `log_status(tag, unit, fmt, ...)` helper producing atomic lines formatted strictly as `[<status>] <unit> - <single short sentence description>` (e.g. `[ OKAY ] iris_init - Extracted Root Resource capability.`), buffered via `snprintf` before calling `zx_debuglog_write()`.
+* **Slimmed-Down `iris_init` (~280 lines, down from 1477 lines):**
+  * Removed `test_virtio_blk()` and all inlined test routines from [`servers/iris_init/src/main.c`](servers/iris_init/src/main.c).
+  * Restructured `iris_init` strictly as a bootstrap supervisor:
+    1. Extracts root capabilities (`PA_RESOURCE`, `PA_VMO_BOOTFS`, `PA_JOB_DEFAULT`, `PA_VMO_VDSO`, `PA_VMAR_ROOT`) from userboot.
+    2. Maps PCIe ECAM and scans for VirtIO Block and VirtIO Input devices.
+    3. Spawns core system daemons in dependency order: `virtio_blk` -> `iris_crypt` -> `iris_fshost` -> `iris_pty`.
+    4. Spawns `bin/its_irisOS` and passes required client channels (`PA_NS_DIR`, `PA_FD:0`, `PA_USER0`, `PA_USER1`, `PA_USER2`).
+    5. Enters supervisor sleep via `zx_nanosleep(ZX_TIME_INFINITE)`.
+* **Verification Suites Relocation to `apps/tests/its_irisOS`:**
+  * Relocated all Phase 4 hardware and storage verification suites into [`apps/tests/its_irisOS/main.c`](apps/tests/its_irisOS/main.c):
+    * VirtIO Block write/read verification on Sector 100 via direct IPC.
+    * Encrypted partition raw ciphertext check on physical LBA 258664 directly from `virtio_blk`.
+    * Decrypted plaintext readback via `iris_crypt` on logical sector 60000.
+    * VFS file write on `/Users` and `EROFS` check on `/System`.
+  * Standardized all test results to output with colored `[<status>] its_irisOS - <description>` formatting.
+* **Verification:**
+  * Clean build across both architectures via `./iris build all`.
+  * Automated headless QEMU verification passed 100% on both architectures via `./iris test all`:
+    * x86_64: `[PASS] irisOS x86_64 verification succeeded!`
+    * aarch64: `[PASS] irisOS aarch64 verification succeeded!`
+
 * **Immediate Next Steps for Phase 5:**
   1. **Step 5.2:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
   2. **Step 5.3:** Compile and package `vendor/toybox` against `mlibc` (providing `sh`, `ls`, `cat`, `echo`, `cp`, `mkdir`, etc. without `fork()`, utilizing `posix_spawn()`).
   3. **Step 5.4:** Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
+  4. **Release Hostname Configuration:** Switch System Node name from dev default (`irisOS-dev`) to official release name via `IRIS_SYSTEM_NODE` build configuration or runtime configuration when preparing the first full production release.
 
 ---
 
@@ -177,141 +206,121 @@ This document tracks implementation status, completed milestones, verification c
 ### 1. `x86_64` Confirmed Boot (`./iris test x86_64`)
 ```text
 System Node: irisOS-dev (x86_64)
-[  OK  ] Extracted Root Resource capability.
-[  OK  ] Extracted BOOTFS VMO capability.
-[  OK  ] Extracted Root Job capability.
-[  OK  ] Extracted vDSO VMO capability.
-[  OK  ] Extracted Root VMAR capability.
-[  OK  ] Mapped PCIe ECAM configuration space at phys 0x00000000e0000000.
-[  OK  ] Discovered VirtIO Block Device at PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
-[  OK  ] Located bin/virtio_blk in BOOTFS (2249888 bytes).
-[  OK  ] Started process virtio_blk (bin/virtio_blk).
-[  OK  ] virtio_blk: Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
-[  OK  ] virtio_blk: Mapped BAR 4 (phys 0xc000000000 -> vaddr 0x16dc74918000).
-[  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (262144 sectors, 128 MB).
-[  OK  ] virtio_blk: IPC server listening on control channel.
-[  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 262144 sectors (512 bytes/sector).
-[  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
-[  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
-[  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
-[  OK  ] Located bin/iris_crypt in BOOTFS (2278968 bytes).
-[  OK  ] Started process iris_crypt (bin/iris_crypt).
-[  OK  ] iris_crypt: Verified existing 4 KB Sector 0 header (magic 0x5450595243534952).
-[  OK  ] iris_crypt: Unlocked AES-256-XTS master key via Argon2id dev key fallback.
-[  OK  ] iris_crypt: Block proxy listening (LBA 198656+8, 61432 logical sectors).
-[  OK  ] iris_crypt IPC query (BLK_GET_INFO): 61432 usable sectors (8 sectors / 4 KB reserved for Sector 0 header).
-[  OK  ] Wrote 512-byte plaintext to logical Sector 60000 via iris_crypt.
-[  OK  ] Verified physical LBA 258664 on virtio_blk is AES-256-XTS ciphertext (plain[0..3]=49524953 != cipher[0..3]=51d8d685).
-[  OK  ] Verified logical Sector 60000 read via iris_crypt matches original plaintext (512/512 bytes matched).
-[  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.
-[  OK  ] Located bin/iris_fshost in BOOTFS (2415640 bytes).
-[  OK  ] Started process iris_fshost (bin/iris_fshost).
-[  OK  ] Discovered VirtIO Input Device at PCI 00:04.0 (Vendor: 0x1af4, Device: 0x1052).
-[  OK  ] Located bin/iris_pty in BOOTFS (2261864 bytes).
-[  OK  ] Started process iris_pty (bin/iris_pty).
-[  OK  ] iris_pty: Starting Pseudo-Terminal Server.
-[  OK  ] iris_pty: Bound to PCI 00:04.0 (Vendor: 0x1af4, Device: 0x1052).
-[  OK  ] iris_pty: Primary input active via virtio-input-pci.
-[  OK  ] iris_pty: Line discipline initialized (canonical cooked mode, echoing enabled).
-[  OK  ] iris_pty: IPC server listening on control channel.
-[  OK  ] iris_pty IPC control channel verified (PING/PONG response).
-[  OK  ] Located bin/its_irisOS in BOOTFS (2294312 bytes).
-[  OK  ] Started process its_irisOS (bin/its_irisOS).
-[  OK  ] iris_fshost: Parsed GPT (ESP=2048..67583, System_A=67584..133119 [prio=15,ok=1], System_B=133120..198655, Data=198656..260095).
-[  OK  ] iris_fshost: Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
-[  OK  ] iris_fshost: Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
-[  OK  ] iris_fshost: Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.
-[  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
-[  OK  ] its_irisOS: FD Table direct write(1) to stdout.
-[  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
-[  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
-[  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
-[  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
-[  OK  ] its_irisOS: Read /System/Resources/release.txt ("irisOS release 0.1.0").
-[  OK  ] its_irisOS: Write to /System/readonly_test.txt rejected with EROFS (errno=30).
-[  OK  ] its_irisOS: Wrote & verified /Users/verify.txt (59 bytes, ino=10, "irisOS Phase 4 UFS2 + AES-256-XTS VFS Persistence Verified!").
-[  OK  ] its_irisOS: PTY file descriptors 0 and 1 verified (isatty(0)=1, isatty(1)=1).
-[  OK  ] its_irisOS: PTY window size query verified (24 rows x 80 cols).
-[  OK  ] its_irisOS: PTY character echoing to console output verified.
-[  OK  ] its_irisOS: PTY raw mode immediate pass-through verified ("RAW_INPUT").
-[  OK  ] its_irisOS: PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
-[  OK  ] its_irisOS: PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
-[  OK  ] its_irisOS: Interactive Test Suite all checks passed.
-[  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.
-[  OK  ] Process its_irisOS finished execution.
-[  OK  ] iris_pty: Daemon exited cleanly.
-[  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
-[  OK  ] Phase 4 Step 4.3 GPT, UFS2 (libufs) & iris_fshost VFS verification complete.
-[  OK  ] Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete.
+[ OKAY ] iris_init - Extracted Root Resource capability.
+[ OKAY ] iris_init - Extracted BOOTFS VMO capability.
+[ OKAY ] iris_init - Extracted Root Job capability.
+[ OKAY ] iris_init - Extracted vDSO VMO capability.
+[ OKAY ] iris_init - Extracted Root VMAR capability.
+[ OKAY ] iris_init - Mapped PCIe ECAM at phys 0x00000000e0000000.
+[ OKAY ] iris_init - Discovered VirtIO Block Device at PCI 00:03.0.
+[ OKAY ] iris_init - Discovered VirtIO Input Device at PCI 00:04.0.
+[ OKAY ] iris_init - Spawned virtio_blk daemon.
+[ OKAY ] iris_init - Spawned iris_crypt daemon.
+[ OKAY ] iris_init - Spawned iris_fshost daemon.
+[ OKAY ] iris_init - Spawned iris_pty daemon.
+[ OKAY ] iris_init - Spawned its_irisOS test suite.
+[ OKAY ] iris_init - Supervisor entering sleep state.
+[ OKAY ] virtio_blk - Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1001).
+[ OKAY ] virtio_blk - Mapped BAR 4 (phys 0xc000000000 -> vaddr 0x...).
+[ OKAY ] virtio_blk - Virtqueue 0 (256 descriptors) & BTI DMA initialized (262144 sectors, 128 MB).
+[ OKAY ] virtio_blk - IPC server listening on control channel.
+[ OKAY ] iris_pty - Starting Pseudo-Terminal Server.
+[ OKAY ] iris_pty - Bound to PCI 00:04.0 (Vendor: 0x1af4, Device: 0x1052).
+[ OKAY ] iris_pty - Primary input active via virtio-input-pci.
+[ OKAY ] iris_pty - Line discipline initialized (canonical cooked mode, echoing enabled).
+[ OKAY ] iris_pty - IPC server listening on control channel.
+[ OKAY ] iris_crypt - Verified existing 4 KB Sector 0 header (magic 0x5450595243534952).
+[ OKAY ] iris_crypt - Unlocked AES-256-XTS master key via Argon2id dev key fallback.
+[ OKAY ] iris_crypt - Block proxy listening (LBA 198656+8, 61432 logical sectors).
+[ OKAY ] iris_fshost - Parsed GPT (ESP=2048..67583, System_A=67584..133119 [prio=15,ok=1], System_B=133120..198655, Data=198656..260095).
+[ OKAY ] iris_fshost - Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
+[ OKAY ] iris_fshost - Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
+[ OKAY ] iris_fshost - Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.
+[ OKAY ] its_irisOS - malloc/free & snprintf heap memory.
+[ OKAY ] its_irisOS - FD Table direct write(1) to stdout.
+[ OKAY ] its_irisOS - FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
+[ OKAY ] its_irisOS - Console device open("/dev/console") -> fd 3, write & close.
+[ OKAY ] its_irisOS - FD Table invalid descriptor rejection (EBADF).
+[ OKAY ] its_irisOS - POSIX spawn file actions (init/adddup2/destroy).
+[ OKAY ] its_irisOS - VirtIO Block IPC query (BLK_GET_INFO): 262144 sectors (512 bytes/sector).
+[ OKAY ] its_irisOS - VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+[ OKAY ] its_irisOS - VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+[ OKAY ] its_irisOS - iris_crypt IPC query (BLK_GET_INFO): 61432 usable sectors.
+[ OKAY ] its_irisOS - Wrote 512-byte plaintext to logical Sector 60000 via iris_crypt.
+[ OKAY ] its_irisOS - Verified physical LBA 258664 on virtio_blk is AES-256-XTS ciphertext.
+[ OKAY ] its_irisOS - Verified logical Sector 60000 read via iris_crypt matches decrypted plaintext.
+[ OKAY ] its_irisOS - Read /System/Resources/release.txt ("irisOS release 0.1.0").
+[ OKAY ] its_irisOS - Write to /System/readonly_test.txt rejected with EROFS (errno=30).
+[ OKAY ] its_irisOS - Wrote & verified /Users/verify.txt (59 bytes, ino=10, "irisOS Phase 4 UFS2 + AES-256-XTS VFS Persistence Verified!").
+[ OKAY ] its_irisOS - PTY file descriptors 0 and 1 verified (isatty(0)=1, isatty(1)=1).
+[ OKAY ] its_irisOS - PTY window size query verified (24 rows x 80 cols).
+[ OKAY ] its_irisOS - PTY character echoing to console output verified.
+[ OKAY ] its_irisOS - PTY raw mode immediate pass-through verified ("RAW_INPUT").
+[ OKAY ] its_irisOS - PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
+[ OKAY ] its_irisOS - PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
+[ OKAY ] its_irisOS - Interactive Test Suite all checks passed.
+[ OKAY ] iris_pty - Daemon exited cleanly.
+[ OKAY ] iris_crypt - Zeroized AES-256-XTS keys and exited cleanly.
+[ OKAY ] virtio_blk - Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
 ```
 
 ### 2. `AArch64` (`aarch64`) Confirmed Boot (`./iris test aarch64`)
 ```text
 System Node: irisOS-dev (aarch64)
-[  OK  ] Extracted Root Resource capability.
-[  OK  ] Extracted BOOTFS VMO capability.
-[  OK  ] Extracted Root Job capability.
-[  OK  ] Extracted vDSO VMO capability.
-[  OK  ] Extracted Root VMAR capability.
-[  OK  ] Mapped PCIe ECAM configuration space at phys 0x0000004010000000.
-[  OK  ] Discovered VirtIO Block Device at PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
-[  OK  ] Located bin/virtio_blk in BOOTFS (2367736 bytes).
-[  OK  ] Started process virtio_blk (bin/virtio_blk).
-[  OK  ] virtio_blk: Bound to PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
-[  OK  ] virtio_blk: Mapped BAR 4 (phys 0x8000000000 -> vaddr 0x7e654227b000).
-[  OK  ] virtio_blk: Virtqueue 0 (256 descriptors) & BTI DMA initialized (262144 sectors, 128 MB).
-[  OK  ] virtio_blk: IPC server listening on control channel.
-[  OK  ] VirtIO Block IPC query (BLK_GET_INFO): 262144 sectors (512 bytes/sector).
-[  OK  ] VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
-[  OK  ] VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
-[  OK  ] Phase 4 Step 4.1 PCIe & VirtIO Block verification complete.
-[  OK  ] Located bin/iris_crypt in BOOTFS (2393976 bytes).
-[  OK  ] Started process iris_crypt (bin/iris_crypt).
-[  OK  ] iris_crypt: Verified existing 4 KB Sector 0 header (magic 0x5450595243534952).
-[  OK  ] iris_crypt: Unlocked AES-256-XTS master key via Argon2id dev key fallback.
-[  OK  ] iris_crypt: Block proxy listening (LBA 198656+8, 61432 logical sectors).
-[  OK  ] iris_crypt IPC query (BLK_GET_INFO): 61432 usable sectors (8 sectors / 4 KB reserved for Sector 0 header).
-[  OK  ] Wrote 512-byte plaintext to logical Sector 60000 via iris_crypt.
-[  OK  ] Verified physical LBA 258664 on virtio_blk is AES-256-XTS ciphertext (plain[0..3]=49524953 != cipher[0..3]=51d8d685).
-[  OK  ] Verified logical Sector 60000 read via iris_crypt matches original plaintext (512/512 bytes matched).
-[  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.
-[  OK  ] Located bin/iris_fshost in BOOTFS (2537896 bytes).
-[  OK  ] Started process iris_fshost (bin/iris_fshost).
-[  OK  ] Discovered VirtIO Input Device at PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1052).
-[  OK  ] Located bin/iris_pty in BOOTFS (2382408 bytes).
-[  OK  ] Started process iris_pty (bin/iris_pty).
-[  OK  ] iris_pty: Starting Pseudo-Terminal Server.
-[  OK  ] iris_pty: Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1052).
-[  OK  ] iris_pty: Primary input active via virtio-input-pci.
-[  OK  ] iris_pty: Line discipline initialized (canonical cooked mode, echoing enabled).
-[  OK  ] iris_pty: IPC server listening on control channel.
-[  OK  ] iris_pty IPC control channel verified (PING/PONG response).
-[  OK  ] Located bin/its_irisOS in BOOTFS (2414400 bytes).
-[  OK  ] Started process its_irisOS (bin/its_irisOS).
-[  OK  ] iris_fshost: Parsed GPT (ESP=2048..67583, System_A=67584..133119 [prio=15,ok=1], System_B=133120..198655, Data=198656..260095).
-[  OK  ] iris_fshost: Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
-[  OK  ] iris_fshost: Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
-[  OK  ] iris_fshost: Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.
-[  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
-[  OK  ] its_irisOS: FD Table direct write(1) to stdout.
-[  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
-[  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
-[  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
-[  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
-[  OK  ] its_irisOS: Read /System/Resources/release.txt ("irisOS release 0.1.0").
-[  OK  ] its_irisOS: Write to /System/readonly_test.txt rejected with EROFS (errno=30).
-[  OK  ] its_irisOS: Wrote & verified /Users/verify.txt (59 bytes, ino=10, "irisOS Phase 4 UFS2 + AES-256-XTS VFS Persistence Verified!").
-[  OK  ] its_irisOS: PTY file descriptors 0 and 1 verified (isatty(0)=1, isatty(1)=1).
-[  OK  ] its_irisOS: PTY window size query verified (24 rows x 80 cols).
-[  OK  ] its_irisOS: PTY character echoing to console output verified.
-[  OK  ] its_irisOS: PTY raw mode immediate pass-through verified ("RAW_INPUT").
-[  OK  ] its_irisOS: PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
-[  OK  ] its_irisOS: PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
-[  OK  ] its_irisOS: Interactive Test Suite all checks passed.
-[  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.
-[  OK  ] Process its_irisOS finished execution.
-[  OK  ] iris_pty: Daemon exited cleanly.
-[  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
-[  OK  ] Phase 4 Step 4.3 GPT, UFS2 (libufs) & iris_fshost VFS verification complete.
-[  OK  ] Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete.
+[ OKAY ] iris_init - Extracted Root Resource capability.
+[ OKAY ] iris_init - Extracted BOOTFS VMO capability.
+[ OKAY ] iris_init - Extracted Root Job capability.
+[ OKAY ] iris_init - Extracted vDSO VMO capability.
+[ OKAY ] iris_init - Extracted Root VMAR capability.
+[ OKAY ] iris_init - Mapped PCIe ECAM at phys 0x0000004010000000.
+[ OKAY ] iris_init - Discovered VirtIO Block Device at PCI 00:02.0.
+[ OKAY ] iris_init - Discovered VirtIO Input Device at PCI 00:03.0.
+[ OKAY ] iris_init - Spawned virtio_blk daemon.
+[ OKAY ] iris_init - Spawned iris_crypt daemon.
+[ OKAY ] iris_init - Spawned iris_fshost daemon.
+[ OKAY ] iris_init - Spawned iris_pty daemon.
+[ OKAY ] iris_init - Spawned its_irisOS test suite.
+[ OKAY ] iris_init - Supervisor entering sleep state.
+[ OKAY ] virtio_blk - Bound to PCI 00:02.0 (Vendor: 0x1af4, Device: 0x1001).
+[ OKAY ] virtio_blk - Mapped BAR 4 (phys 0x8000000000 -> vaddr 0x...).
+[ OKAY ] virtio_blk - Virtqueue 0 (256 descriptors) & BTI DMA initialized (262144 sectors, 128 MB).
+[ OKAY ] virtio_blk - IPC server listening on control channel.
+[ OKAY ] iris_pty - Starting Pseudo-Terminal Server.
+[ OKAY ] iris_pty - Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1052).
+[ OKAY ] iris_pty - Primary input active via virtio-input-pci.
+[ OKAY ] iris_pty - Line discipline initialized (canonical cooked mode, echoing enabled).
+[ OKAY ] iris_pty - IPC server listening on control channel.
+[ OKAY ] iris_crypt - Verified existing 4 KB Sector 0 header (magic 0x5450595243534952).
+[ OKAY ] iris_crypt - Unlocked AES-256-XTS master key via Argon2id dev key fallback.
+[ OKAY ] iris_crypt - Block proxy listening (LBA 198656+8, 61432 logical sectors).
+[ OKAY ] iris_fshost - Parsed GPT (ESP=2048..67583, System_A=67584..133119 [prio=15,ok=1], System_B=133120..198655, Data=198656..260095).
+[ OKAY ] iris_fshost - Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
+[ OKAY ] iris_fshost - Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
+[ OKAY ] iris_fshost - Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.
+[ OKAY ] its_irisOS - malloc/free & snprintf heap memory.
+[ OKAY ] its_irisOS - FD Table direct write(1) to stdout.
+[ OKAY ] its_irisOS - FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
+[ OKAY ] its_irisOS - Console device open("/dev/console") -> fd 3, write & close.
+[ OKAY ] its_irisOS - FD Table invalid descriptor rejection (EBADF).
+[ OKAY ] its_irisOS - POSIX spawn file actions (init/adddup2/destroy).
+[ OKAY ] its_irisOS - VirtIO Block IPC query (BLK_GET_INFO): 262144 sectors (512 bytes/sector).
+[ OKAY ] its_irisOS - VirtIO Block IPC write to Sector 100 confirmed (512 bytes).
+[ OKAY ] its_irisOS - VirtIO Block IPC read from Sector 100 verified (512/512 bytes matched).
+[ OKAY ] its_irisOS - iris_crypt IPC query (BLK_GET_INFO): 61432 usable sectors.
+[ OKAY ] its_irisOS - Wrote 512-byte plaintext to logical Sector 60000 via iris_crypt.
+[ OKAY ] its_irisOS - Verified physical LBA 258664 on virtio_blk is AES-256-XTS ciphertext.
+[ OKAY ] its_irisOS - Verified logical Sector 60000 read via iris_crypt matches decrypted plaintext.
+[ OKAY ] its_irisOS - Read /System/Resources/release.txt ("irisOS release 0.1.0").
+[ OKAY ] its_irisOS - Write to /System/readonly_test.txt rejected with EROFS (errno=30).
+[ OKAY ] its_irisOS - Wrote & verified /Users/verify.txt (59 bytes, ino=10, "irisOS Phase 4 UFS2 + AES-256-XTS VFS Persistence Verified!").
+[ OKAY ] its_irisOS - PTY file descriptors 0 and 1 verified (isatty(0)=1, isatty(1)=1).
+[ OKAY ] its_irisOS - PTY window size query verified (24 rows x 80 cols).
+[ OKAY ] its_irisOS - PTY character echoing to console output verified.
+[ OKAY ] its_irisOS - PTY raw mode immediate pass-through verified ("RAW_INPUT").
+[ OKAY ] its_irisOS - PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
+[ OKAY ] its_irisOS - PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
+[ OKAY ] its_irisOS - Interactive Test Suite all checks passed.
+[ OKAY ] iris_pty - Daemon exited cleanly.
+[ OKAY ] iris_crypt - Zeroized AES-256-XTS keys and exited cleanly.
+[ OKAY ] virtio_blk - Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
 ```

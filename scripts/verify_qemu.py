@@ -129,7 +129,7 @@ def run_verification(arch: str, timeout: float = 20.0) -> int:
                     break
 
                 # 3. Detect verification completion
-                if "Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete." in accumulated_output:
+                if "Interactive Test Suite all checks passed." in accumulated_output:
                     time.sleep(0.3)
                     # Read any remaining output
                     try:
@@ -141,8 +141,8 @@ def run_verification(arch: str, timeout: float = 20.0) -> int:
                     except Exception:
                         pass
 
-                    if "[FAILED]" in accumulated_output:
-                        failure_reason = "Test suite reported a failure ([FAILED])."
+                    if "[ FAIL ]" in accumulated_output or "[FAILED]" in accumulated_output:
+                        failure_reason = "Test suite reported a failure ([ FAIL ] or [FAILED])."
                     else:
                         success = True
                     break

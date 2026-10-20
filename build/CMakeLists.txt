@@ -220,6 +220,8 @@ add_custom_target(zircon_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libzircon.s
 # ==============================================================================
 # Target: iris_init (Freestanding Bootstrap Server)
 # ==============================================================================
+set(IRIS_SYSTEM_NODE "irisOS-dev" CACHE STRING "System node name / hostname for irisOS")
+
 set(IRIS_INIT_SRCS
     "${IRIS_ROOT}/servers/iris_init/src/main.c"
     "${IRIS_ROOT}/servers/drivers/pci/pci.c"
@@ -227,6 +229,10 @@ set(IRIS_INIT_SRCS
 
 add_executable(iris_init ${IRIS_INIT_SRCS})
 add_dependencies(iris_init zircon_syscall_headers)
+
+target_compile_definitions(iris_init PRIVATE
+    IRIS_SYSTEM_NODE="${IRIS_SYSTEM_NODE}"
+)
 
 target_include_directories(iris_init PRIVATE
     "${IRIS_ROOT}"

@@ -703,3 +703,92 @@ diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream.LflszF/zircon/sys
  
  MODULE := $(LOCAL_DIR).tftp-example
  
+diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream/zircon/kernel/lib/gfxconsole/gfxconsole.cpp kernel/zircon/kernel/lib/gfxconsole/gfxconsole.cpp
+--- /tmp/zircon_upstream/zircon/kernel/lib/gfxconsole/gfxconsole.cpp	2026-10-19 11:19:56
++++ kernel/zircon/kernel/lib/gfxconsole/gfxconsole.cpp	2026-10-21 00:13:00
+@@ -69,10 +69,45 @@
+ 
+ static const struct gfx_font* font = &font_9x16;
+ 
++static void apply_sgr(uint32_t code) {
++    switch (code) {
++    case 0:
++        gfxconsole.front_color = TEXT_COLOR;
++        gfxconsole.back_color = BACK_COLOR;
++        break;
++    case 1: // Bold / Bright
++        break;
++    case 30: gfxconsole.front_color = 0xff000000; break; // Black
++    case 31: gfxconsole.front_color = 0xffff5555; break; // Red
++    case 32: gfxconsole.front_color = 0xff55ff55; break; // Green
++    case 33: gfxconsole.front_color = 0xffffff55; break; // Yellow
++    case 34: gfxconsole.front_color = 0xff5555ff; break; // Blue
++    case 35: gfxconsole.front_color = 0xffff55ff; break; // Magenta
++    case 36: gfxconsole.front_color = 0xff55ffff; break; // Cyan
++    case 37: gfxconsole.front_color = 0xffffffff; break; // White
++    case 39: gfxconsole.front_color = TEXT_COLOR; break; // Default fg
++    case 40: gfxconsole.back_color = 0xff000000; break;  // Black bg
++    case 49: gfxconsole.back_color = BACK_COLOR; break;  // Default bg
++    case 90: gfxconsole.front_color = 0xff555555; break; // Bright Black
++    case 91: gfxconsole.front_color = 0xffff5555; break; // Bright Red
++    case 92: gfxconsole.front_color = 0xff55ff55; break; // Bright Green
++    case 93: gfxconsole.front_color = 0xffffff55; break; // Bright Yellow
++    case 94: gfxconsole.front_color = 0xff5555ff; break; // Bright Blue
++    case 95: gfxconsole.front_color = 0xffff55ff; break; // Bright Magenta
++    case 96: gfxconsole.front_color = 0xff55ffff; break; // Bright Cyan
++    case 97: gfxconsole.front_color = 0xffffffff; break; // Bright White
++    default: break;
++    }
++}
++
+ static bool gfxconsole_putc(char c) {
+     static enum { NORMAL,
+-                  ESCAPE } state = NORMAL;
++                  ESCAPE_START,
++                  CSI } state = NORMAL;
+     static uint32_t p_num = 0;
+     bool inval = 0;
+ 
+     if (state == NORMAL) {
+@@ -95,24 +130,29 @@
+             break;
+         case 0x1b:
+             p_num = 0;
+-            state = ESCAPE;
++            state = ESCAPE_START;
+             break;
+         default:
+             draw_char(c, font);
+             gfxconsole.x++;
+             break;
+         }
+-    } else if (state == ESCAPE) {
++    } else if (state == ESCAPE_START) {
++        if (c == '[') {
++            state = CSI;
++            p_num = 0;
++        } else {
++            state = NORMAL;
++        }
++    } else if (state == CSI) {
+         if (c >= '0' && c <= '9') {
+             p_num = (p_num * 10) + (c - '0');
++        } else if (c == ';') {
++            apply_sgr(p_num);
++            p_num = 0;
++        } else if (c == 'm') {
++            apply_sgr(p_num);
++            state = NORMAL;
+         } else if (c == 'D') {
+             if (p_num <= gfxconsole.x)
+                 gfxconsole.x -= p_num;
+             state = NORMAL;
+-        } else if (c == '[') {
+-            // eat this character
+-        } else {
+-            draw_char(c, font);
+-            gfxconsole.x++;
++        } else if (c >= '@' && c <= '~') {
+             state = NORMAL;
+         }
+     }
