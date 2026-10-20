@@ -11,7 +11,7 @@ This document tracks implementation status, completed milestones, verification c
 | **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
 | **Phase 3** | Native SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
 | **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
-| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **NEXT UP** |
+| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **IN PROGRESS (Step 5.1 COMPLETED)** |
 | **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |
 
 ---
@@ -56,7 +56,7 @@ This document tracks implementation status, completed milestones, verification c
 
 ---
 
-## Phase 4: PCIe Drivers, Storage Encryption & Filesystems (IN PROGRESS)
+## Phase 4: PCIe Drivers, Storage Encryption & Filesystems (COMPLETED)
 
 ### Step 4.1: Unified PCIe (ECAM) Discovery & Ring 3 `virtio-blk-pci` Driver (COMPLETED)
 * **Unified PCIe ECAM Scanner (`sdk/libiris/include/iris/pci.h`, `sdk/libiris/src/pci.c`):**
@@ -93,23 +93,37 @@ This document tracks implementation status, completed milestones, verification c
   * Serves `IRIS_PROTO_FS` (`FS_OPEN`, `FS_CLOSE`, `FS_READ`, `FS_WRITE`, `FS_SEEK`, `FS_STAT`), enforces `EROFS` (`IRIS_ERR_READ_ONLY`) on `/System` write attempts, and resolves virtual symlinks `/bin -> /System/Bin` and `/lib -> /System/Libraries`.
 * **Standard C Library VFS Integration (`sdk/mlibc-sysdeps/iris/generic/generic.cpp`):**
   * Routes `sys_open`, `sys_read`, `sys_write`, `sys_close`, `sys_stat`, `sys_fstat`, `sys_seek` through `vfs_ipc_call()` to `iris_fshost` via inherited `PA_HND(PA_NS_DIR, 0)`.
-* **Automated Headless Test Runner (`scripts/verify_qemu.py` & `./iris test`):**
-  * Non-blocking stdio poller with strict 20s timeouts and instant EFI Shell / panic / failure detection.
-  * Successfully verified on both architectures:
-    * Reading `/System/Resources/release.txt` ("irisOS release 0.1.0").
-    * Rejecting write to `/System/readonly_test.txt` with `EROFS` (`errno=30`).
-    * Creating, writing, and verifying persistent data on `/Users/verify.txt` (59 bytes, ino=10).
 * **Documentation:** [`docs/storage_and_vfs.md`](docs/storage_and_vfs.md).
 
 ---
 
-## Phase 5: Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell (NEXT UP)
+## Phase 5: Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell (IN PROGRESS)
+
+### Step 5.1: Input Drivers & Ring 3 Pseudo-Terminal Server (`iris_pty`) (COMPLETED)
+* **VirtIO Input PCIe Driver (`servers/drivers/virtio_input/` & `sdk/libiris/include/iris/pci.h`):**
+  * Implemented PCIe enumeration and Ring 3 driver for `virtio-input-pci` (Device ID `0x1052` modern, `0x1010` transitional) across `x86_64` (PCIe q35) and `AArch64` (PCIe virt).
+  * Features split virtqueue event buffer management, raw scancode EV_KEY translation to standard ASCII characters (supporting Shift modifier uppercase and symbols), and graceful teardown.
+  * UART serial console input worker (`zx_debug_read`) automatically configured as fallback when VirtIO input hardware is absent.
+* **Pseudo-Terminal Server (`servers/iris_pty/` -> `bin/iris_pty`):**
+  * Standalone Ring 3 user-space daemon listening on dedicated IPC protocol `IRIS_PROTO_PTY` (`0x0005`).
+  * **Line Discipline Engine:**
+    * **Canonical (Cooked) Mode:** Line buffering up to 1024 bytes, interactive backspace handling (`\b \b` visual erasing), and character echoing to stdout/debuglog.
+    * **Raw Mode:** Instantaneous character pass-through bypasses editing and echoing.
+    * **Control Sequences:** Carriage return normalization (`\r` -> `\n`), `Ctrl+C` POSIX signal delivery (`SIGINT=2`) with uncommitted line discard, and `Ctrl+D` End-of-File (EOF) indication.
+  * Window size geometry tracking (`iris_pty_window_t`: rows and columns) and mode flag querying/configuration (`IRIS_PTY_MODE_CANONICAL`, `IRIS_PTY_MODE_ECHO`, `IRIS_PTY_MODE_RAW`).
+* **Native SDK & mlibc Integration:**
+  * Public client API in [`sdk/libiris/include/iris/pty.h`](sdk/libiris/include/iris/pty.h) and [`sdk/libiris/src/pty.c`](sdk/libiris/src/pty.c): `iris_pty_set_mode()`, `iris_pty_get_mode()`, `iris_pty_set_window()`, `iris_pty_get_window()`, `iris_pty_inject()`, `iris_pty_get_signal()`, `iris_pty_read()`, `iris_pty_write()`.
+  * `sdk/mlibc-sysdeps/iris/generic/entry.cpp`: Auto-detects `IRIS_FD_PTY` transferred as `PA_HND(PA_FD, 0)` and maps standard streams (FD 0 stdin, FD 1 stdout, FD 2 stderr) directly to the PTY channel endpoint.
+  * Implemented synchronous channel call pattern (`zx_channel_write` + `zx_object_wait_one` + `zx_channel_read`) in `sdk/libiris/src/channel.c` to preserve standard 24-byte `iris_msg_hdr_t` ABI without `zx_channel_call` 4-byte header collisions.
+* **Automated Verification:**
+  * Added automated Step 10 tests in `apps/tests/its_irisOS/main.c`: verified PTY file descriptors (0 & 1), `isatty(0)=1`, `isatty(1)=1`, window size query (24x80), canonical buffering with backspace editing, character echo, raw mode pass-through, `Ctrl+C` SIGINT generation, and `Ctrl+D` EOF delivery.
+  * Verified full execution and clean exit with zero leaks across both `x86_64` and `aarch64`.
+* **Documentation:** [`docs/ipc_protocol.md`](docs/ipc_protocol.md).
 
 * **Immediate Next Steps for Phase 5:**
-  1. Build `servers/iris_pty` for pseudo-terminal emulation, terminal line discipline, escape sequence parsing, and POSIX signals (Ctrl+C / `SIGINT`).
-  2. Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys.
-  3. Compile and package `vendor/toybox` against `mlibc` (providing `sh`, `ls`, `cat`, `echo`, `cp`, `mkdir`, etc. without `fork()`, utilizing `posix_spawn()`).
-  4. Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
+  1. **Step 5.2:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
+  2. **Step 5.3:** Compile and package `vendor/toybox` against `mlibc` (providing `sh`, `ls`, `cat`, `echo`, `cp`, `mkdir`, etc. without `fork()`, utilizing `posix_spawn()`).
+  3. **Step 5.4:** Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
 
 ---
 
@@ -171,26 +185,43 @@ System Node: irisOS-dev (x86_64)
 [  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.
 [  OK  ] Located bin/iris_fshost in BOOTFS (2415640 bytes).
 [  OK  ] Started process iris_fshost (bin/iris_fshost).
-[  OK  ] Located bin/its_irisOS in BOOTFS (2277904 bytes).
+[  OK  ] Discovered VirtIO Input Device at PCI 00:04.0 (Vendor: 0x1af4, Device: 0x1052).
+[  OK  ] Located bin/iris_pty in BOOTFS (2261864 bytes).
+[  OK  ] Started process iris_pty (bin/iris_pty).
+[  OK  ] iris_pty: Starting Pseudo-Terminal Server.
+[  OK  ] iris_pty: Bound to PCI 00:04.0 (Vendor: 0x1af4, Device: 0x1052).
+[  OK  ] iris_pty: Primary input active via virtio-input-pci.
+[  OK  ] iris_pty: Line discipline initialized (canonical cooked mode, echoing enabled).
+[  OK  ] iris_pty: IPC server listening on control channel.
+[  OK  ] iris_pty IPC control channel verified (PING/PONG response).
+[  OK  ] Located bin/its_irisOS in BOOTFS (2294312 bytes).
 [  OK  ] Started process its_irisOS (bin/its_irisOS).
 [  OK  ] iris_fshost: Parsed GPT (ESP=2048..67583, System_A=67584..133119 [prio=15,ok=1], System_B=133120..198655, Data=198656..260095).
+[  OK  ] iris_fshost: Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
+[  OK  ] iris_fshost: Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
+[  OK  ] iris_fshost: Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.
 [  OK  ] its_irisOS: malloc/free & snprintf (standard C runtime heap & stdio verified).
 [  OK  ] its_irisOS: FD Table direct write(1) to stdout.
 [  OK  ] its_irisOS: FD Table isatty(1)=1, isatty(2)=1 (console TTY verified).
 [  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
 [  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
 [  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
-[  OK  ] iris_fshost: Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
-[  OK  ] iris_fshost: Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
-[  OK  ] iris_fshost: Active virtual symlinks: /bin -> /System/Bin, /lib -> /System/Libraries.
 [  OK  ] its_irisOS: Read /System/Resources/release.txt ("irisOS release 0.1.0").
 [  OK  ] its_irisOS: Write to /System/readonly_test.txt rejected with EROFS (errno=30).
 [  OK  ] its_irisOS: Wrote & verified /Users/verify.txt (59 bytes, ino=10, "irisOS Phase 4 UFS2 + AES-256-XTS VFS Persistence Verified!").
+[  OK  ] its_irisOS: PTY file descriptors 0 and 1 verified (isatty(0)=1, isatty(1)=1).
+[  OK  ] its_irisOS: PTY window size query verified (24 rows x 80 cols).
+[  OK  ] its_irisOS: PTY character echoing to console output verified.
+[  OK  ] its_irisOS: PTY raw mode immediate pass-through verified ("RAW_INPUT").
+[  OK  ] its_irisOS: PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
+[  OK  ] its_irisOS: PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
 [  OK  ] its_irisOS: Interactive Test Suite all checks passed.
 [  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.
 [  OK  ] Process its_irisOS finished execution.
+[  OK  ] iris_pty: Daemon exited cleanly.
 [  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
 [  OK  ] Phase 4 Step 4.3 GPT, UFS2 (libufs) & iris_fshost VFS verification complete.
+[  OK  ] Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete.
 ```
 
 ### 2. `AArch64` (`aarch64`) Confirmed Boot (`./iris test aarch64`)
@@ -225,7 +256,17 @@ System Node: irisOS-dev (aarch64)
 [  OK  ] Phase 4 Step 4.2 iris_crypt AES-256-XTS proxy verification complete.
 [  OK  ] Located bin/iris_fshost in BOOTFS (2537896 bytes).
 [  OK  ] Started process iris_fshost (bin/iris_fshost).
-[  OK  ] Located bin/its_irisOS in BOOTFS (2397784 bytes).
+[  OK  ] Discovered VirtIO Input Device at PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1052).
+[  OK  ] Located bin/iris_pty in BOOTFS (2382408 bytes).
+[  OK  ] Started process iris_pty (bin/iris_pty).
+[  OK  ] iris_pty: Starting Pseudo-Terminal Server.
+[  OK  ] iris_pty: Bound to PCI 00:03.0 (Vendor: 0x1af4, Device: 0x1052).
+[  OK  ] iris_pty: Primary input active via virtio-input-pci.
+[  OK  ] iris_pty: Line discipline initialized (canonical cooked mode, echoing enabled).
+[  OK  ] iris_pty: IPC server listening on control channel.
+[  OK  ] iris_pty IPC control channel verified (PING/PONG response).
+[  OK  ] Located bin/its_irisOS in BOOTFS (2414400 bytes).
+[  OK  ] Started process its_irisOS (bin/its_irisOS).
 [  OK  ] iris_fshost: Parsed GPT (ESP=2048..67583, System_A=67584..133119 [prio=15,ok=1], System_B=133120..198655, Data=198656..260095).
 [  OK  ] iris_fshost: Mounted System_A (UFS2 magic 0x19540119) at /System [Read-Only].
 [  OK  ] iris_fshost: Mounted encrypted Data (UFS2 magic 0x19540119) at /Users & /Applications [Read-Write].
@@ -236,13 +277,20 @@ System Node: irisOS-dev (aarch64)
 [  OK  ] its_irisOS: Console device open("/dev/console") -> fd 3, write & close.
 [  OK  ] its_irisOS: FD Table invalid descriptor rejection (EBADF).
 [  OK  ] its_irisOS: POSIX spawn file actions (init/adddup2/destroy).
-[  OK  ] Started process its_irisOS (bin/its_irisOS).
 [  OK  ] its_irisOS: Read /System/Resources/release.txt ("irisOS release 0.1.0").
 [  OK  ] its_irisOS: Write to /System/readonly_test.txt rejected with EROFS (errno=30).
 [  OK  ] its_irisOS: Wrote & verified /Users/verify.txt (59 bytes, ino=10, "irisOS Phase 4 UFS2 + AES-256-XTS VFS Persistence Verified!").
+[  OK  ] its_irisOS: PTY file descriptors 0 and 1 verified (isatty(0)=1, isatty(1)=1).
+[  OK  ] its_irisOS: PTY window size query verified (24 rows x 80 cols).
+[  OK  ] its_irisOS: PTY character echoing to console output verified.
+[  OK  ] its_irisOS: PTY raw mode immediate pass-through verified ("RAW_INPUT").
+[  OK  ] its_irisOS: PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
+[  OK  ] its_irisOS: PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
 [  OK  ] its_irisOS: Interactive Test Suite all checks passed.
 [  OK  ] iris_crypt: Zeroized AES-256-XTS keys and exited cleanly.
 [  OK  ] Process its_irisOS finished execution.
+[  OK  ] iris_pty: Daemon exited cleanly.
 [  OK  ] virtio_blk: Unpinned BTI DMA tokens (zx_pmt_unpin) and exited cleanly.
 [  OK  ] Phase 4 Step 4.3 GPT, UFS2 (libufs) & iris_fshost VFS verification complete.
+[  OK  ] Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete.
 ```

@@ -160,8 +160,27 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
 
                     if (htype == PA_FD) {
                         int target_fd = static_cast<int>(PA_HND_ARG(info));
-                        iris_fd_type_t ftype = (target_fd <= 2) ? IRIS_FD_DEBUGLOG : IRIS_FD_CHANNEL;
+                        iris_fd_entry_t* cur = iris_fd_get(target_fd);
+                        if (target_fd <= 2 && cur && cur->type == IRIS_FD_PTY) {
+                            zx_handle_close(h);
+                            continue;
+                        }
+                        iris_fd_type_t ftype = IRIS_FD_CHANNEL;
+                        if (target_fd <= 2) {
+                            zx_info_handle_basic_t basic = {};
+                            zx_status_t st = zx_object_get_info(h, ZX_INFO_HANDLE_BASIC, &basic, sizeof(basic), nullptr, nullptr);
+                            if (st == ZX_OK && basic.type == ZX_OBJ_TYPE_CHANNEL) {
+                                ftype = IRIS_FD_PTY;
+                                iris_set_pty_channel(h);
+                            } else {
+                                ftype = IRIS_FD_DEBUGLOG;
+                            }
+                        }
                         iris_fd_bind(target_fd, h, ftype, (target_fd == 0) ? O_RDONLY : O_WRONLY);
+                        if (target_fd == 0 && ftype == IRIS_FD_PTY) {
+                            iris_fd_bind(1, h, IRIS_FD_PTY, O_WRONLY);
+                            iris_fd_bind(2, h, IRIS_FD_PTY, O_WRONLY);
+                        }
                     } else if (info == PA_HND(PA_FDIO_LOGGER, 0)) {
                         iris_set_debuglog(h);
                     } else if (info == PA_HND(PA_PROC_SELF, 0)) {
@@ -180,6 +199,8 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         iris_set_root_resource(h);
                     } else if (info == PA_HND(PA_NS_DIR, 0)) {
                         iris_set_fshost_channel(h);
+                    } else if (info == PA_HND(PA_USER0, 0)) {
+                        iris_set_pty_channel(h);
                     }
                 }
                 iris_set_process_handles(proc_self, thrd_self, vmar_root, job_def);

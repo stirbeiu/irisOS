@@ -58,6 +58,7 @@ static zx_handle_t g_debuglog_handle = ZX_HANDLE_INVALID;
 static zx_handle_t g_vdso_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_bootfs_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_fshost_channel = ZX_HANDLE_INVALID;
+static zx_handle_t g_pty_channel = ZX_HANDLE_INVALID;
 
 extern "C" void iris_set_vmar_root(zx_handle_t handle) {
     g_vmar_root_self = handle;
@@ -84,6 +85,34 @@ static zx_handle_t iris_get_fshost_channel(void) {
         g_fshost_channel = zx_take_startup_handle(PA_HND(PA_NS_DIR, 0));
     }
     return g_fshost_channel;
+}
+
+extern "C" void iris_set_pty_channel(zx_handle_t handle) {
+    g_pty_channel = handle;
+}
+
+extern "C" iris_fd_entry_t* iris_fd_get(int fd);
+
+extern "C" zx_handle_t iris_get_pty_channel(void) {
+    if (g_pty_channel != ZX_HANDLE_INVALID) {
+        return g_pty_channel;
+    }
+    iris_fd_entry_t* e0 = iris_fd_get(0);
+    if (e0 && e0->type == IRIS_FD_PTY && e0->handle != ZX_HANDLE_INVALID) {
+        return e0->handle;
+    }
+    iris_fd_entry_t* e1 = iris_fd_get(1);
+    if (e1 && e1->type == IRIS_FD_PTY && e1->handle != ZX_HANDLE_INVALID) {
+        return e1->handle;
+    }
+    return ZX_HANDLE_INVALID;
+}
+
+extern "C" zx_handle_t iris_get_debuglog(void) {
+    if (g_debuglog_handle == ZX_HANDLE_INVALID) {
+        g_debuglog_handle = zx_take_startup_handle(PA_HND(PA_FDIO_LOGGER, 0));
+    }
+    return g_debuglog_handle;
 }
 
 /* ==============================================================================
@@ -237,11 +266,16 @@ extern "C" zx_handle_t zx_take_startup_handle(uint32_t hnd_info) {
     return ZX_HANDLE_INVALID;
 }
 
+extern "C" [[gnu::weak]] void iris_init_runtime(zx_handle_t proc, zx_handle_t vmar, zx_handle_t job);
+
 extern "C" void iris_set_process_handles(zx_handle_t proc, zx_handle_t thrd, zx_handle_t vmar, zx_handle_t job) {
     if (proc != ZX_HANDLE_INVALID) g_process_self = proc;
     if (thrd != ZX_HANDLE_INVALID) g_thread_self = thrd;
     if (vmar != ZX_HANDLE_INVALID) g_vmar_root_self = vmar;
     if (job != ZX_HANDLE_INVALID) g_job_default = job;
+    if (iris_init_runtime) {
+        iris_init_runtime(proc, vmar, job);
+    }
 }
 
 extern "C" zx_handle_t zx_process_self(void) {
@@ -438,6 +472,8 @@ static zx_status_t (*pfn_zx_bti_pin)(zx_handle_t bti, uint32_t options, zx_handl
 static zx_status_t (*pfn_zx_pmt_unpin)(zx_handle_t pmt) = nullptr;
 static zx_status_t (*pfn_zx_object_wait_one)(zx_handle_t handle, zx_signals_t signals, zx_time_t deadline, zx_signals_t* observed) = nullptr;
 static zx_status_t (*pfn_zx_object_wait_many)(zx_wait_item_t* items, size_t num_items, zx_time_t deadline) = nullptr;
+static zx_status_t (*pfn_zx_debug_read)(zx_handle_t handle, char* buffer, size_t* buffer_size) = nullptr;
+static zx_status_t (*pfn_zx_object_get_info)(zx_handle_t handle, uint32_t topic, void* buffer, size_t buffer_size, size_t* actual, size_t* avail) = nullptr;
 
 static void* vdso_find(uintptr_t base, const char* name, const char* name_with_underscore) {
     void* ptr = vdso_sym_lookup(base, name_with_underscore);
@@ -485,6 +521,8 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_pmt_unpin             = (decltype(pfn_zx_pmt_unpin))vdso_find(base, "zx_pmt_unpin", "_zx_pmt_unpin");
     pfn_zx_object_wait_one       = (decltype(pfn_zx_object_wait_one))vdso_find(base, "zx_object_wait_one", "_zx_object_wait_one");
     pfn_zx_object_wait_many      = (decltype(pfn_zx_object_wait_many))vdso_find(base, "zx_object_wait_many", "_zx_object_wait_many");
+    pfn_zx_debug_read            = (decltype(pfn_zx_debug_read))vdso_find(base, "zx_debug_read", "_zx_debug_read");
+    pfn_zx_object_get_info       = (decltype(pfn_zx_object_get_info))vdso_find(base, "zx_object_get_info", "_zx_object_get_info");
 }
 
 /* Exported ABI wrappers dispatching into kernel-registered vDSO */
@@ -742,6 +780,16 @@ extern "C" zx_status_t zx_object_wait_many(zx_wait_item_t* items, size_t num_ite
     return ZX_ERR_NOT_SUPPORTED;
 }
 
+extern "C" zx_status_t zx_debug_read(zx_handle_t handle, char* buffer, size_t* buffer_size) {
+    if (pfn_zx_debug_read) return pfn_zx_debug_read(handle, buffer, buffer_size);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_object_get_info(zx_handle_t handle, uint32_t topic, void* buffer, size_t buffer_size, size_t* actual, size_t* avail) {
+    if (pfn_zx_object_get_info) return pfn_zx_object_get_info(handle, topic, buffer, buffer_size, actual, avail);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
 
 
 /* ==============================================================================
@@ -961,10 +1009,104 @@ static int vfs_ipc_call(zx_handle_t fs_ch, uint32_t opcode,
     return 0;
 }
 
+static int pty_ipc_call(zx_handle_t pty_ch, uint32_t opcode,
+                        const void* req_payload, uint32_t req_len,
+                        void* rep_buf, uint32_t rep_max,
+                        uint32_t* out_rep_payload_len) {
+    if (pty_ch == ZX_HANDLE_INVALID) {
+        return EBADF;
+    }
+
+    static uint8_t send_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+    if (sizeof(iris_msg_hdr_t) + req_len > sizeof(send_buf)) {
+        return EINVAL;
+    }
+
+    static uint32_t s_generic_pty_txid = 200;
+    uint32_t txid = ++s_generic_pty_txid;
+    iris_msg_hdr_t* hdr = reinterpret_cast<iris_msg_hdr_t*>(send_buf);
+    iris_msg_hdr_init(hdr, IRIS_PROTO_PTY, opcode, txid, req_len);
+    if (req_len > 0 && req_payload != nullptr) {
+        memcpy(send_buf + sizeof(iris_msg_hdr_t), req_payload, req_len);
+    }
+
+    zx_status_t st = zx_channel_write(pty_ch, 0, send_buf,
+                                      static_cast<uint32_t>(sizeof(iris_msg_hdr_t) + req_len),
+                                      nullptr, 0);
+    if (st != ZX_OK) {
+        return EIO;
+    }
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(pty_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) {
+        return EIO;
+    }
+
+    static uint8_t recv_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(pty_ch, 0, recv_buf, nullptr, sizeof(recv_buf), 0,
+                         &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t)) {
+        return EIO;
+    }
+
+    const iris_msg_hdr_t* rep_hdr = reinterpret_cast<const iris_msg_hdr_t*>(recv_buf);
+    if (!iris_msg_hdr_is_valid(rep_hdr, IRIS_PROTO_PTY) || rep_hdr->txid != txid) {
+        return EIO;
+    }
+    if (rep_hdr->status != ZX_OK) {
+        return (rep_hdr->status < 0) ? -rep_hdr->status : EIO;
+    }
+
+    uint32_t plen = rep_hdr->payload_len;
+    if (plen > act_bytes - sizeof(iris_msg_hdr_t)) {
+        plen = act_bytes - static_cast<uint32_t>(sizeof(iris_msg_hdr_t));
+    }
+    if (rep_buf != nullptr && rep_max > 0) {
+        uint32_t copy_len = (plen < rep_max) ? plen : rep_max;
+        memcpy(rep_buf, recv_buf + sizeof(iris_msg_hdr_t), copy_len);
+    }
+    if (out_rep_payload_len != nullptr) {
+        *out_rep_payload_len = plen;
+    }
+    return 0;
+}
+
 int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
     iris_fd_entry_t* entry = iris_fd_get(fd);
     if (!entry || entry->type == IRIS_FD_CLOSED) {
         return EBADF;
+    }
+
+    if (entry->type == IRIS_FD_PTY) {
+        if (count == 0) {
+            *bytes_written = 0;
+            return 0;
+        }
+        uint32_t max_chunk = IRIS_IPC_MAX_PAYLOAD - static_cast<uint32_t>(sizeof(iris_pty_write_req_t));
+        uint32_t chunk = (count > max_chunk) ? max_chunk : static_cast<uint32_t>(count);
+
+        static uint8_t req_buf[IRIS_IPC_MAX_PAYLOAD] __attribute__((aligned(8)));
+        iris_pty_write_req_t* req = reinterpret_cast<iris_pty_write_req_t*>(req_buf);
+        req->count = chunk;
+        memcpy(req_buf + sizeof(iris_pty_write_req_t), buf, chunk);
+
+        iris_pty_write_resp_t resp = {};
+        int err = pty_ipc_call(entry->handle, IRIS_PTY_OP_WRITE,
+                               req_buf, static_cast<uint32_t>(sizeof(iris_pty_write_req_t) + chunk),
+                               &resp, sizeof(resp), nullptr);
+        if (err != 0) {
+            if (g_debuglog_handle != ZX_HANDLE_INVALID) {
+                zx_debuglog_write(g_debuglog_handle, 0, buf, count);
+                *bytes_written = static_cast<ssize_t>(count);
+                return 0;
+            }
+            return err;
+        }
+        *bytes_written = static_cast<ssize_t>(resp.bytes_written);
+        return 0;
     }
 
     if (entry->type == IRIS_FD_DEBUGLOG) {
@@ -1034,6 +1176,41 @@ int sys_read(int fd, void *buf, size_t count, ssize_t *bytes_read) {
         *bytes_read = 0;
         return 0;
     }
+    if (entry->type == IRIS_FD_PTY) {
+        if (count == 0) {
+            *bytes_read = 0;
+            return 0;
+        }
+        uint32_t chunk = (count > IRIS_IPC_MAX_PAYLOAD - sizeof(iris_pty_read_resp_t))
+                         ? (IRIS_IPC_MAX_PAYLOAD - static_cast<uint32_t>(sizeof(iris_pty_read_resp_t)))
+                         : static_cast<uint32_t>(count);
+        iris_pty_read_req_t req = { chunk };
+
+        static uint8_t rep_buf[IRIS_IPC_MAX_PAYLOAD] __attribute__((aligned(8)));
+        uint32_t act_payload = 0;
+        int err = pty_ipc_call(entry->handle, IRIS_PTY_OP_READ,
+                               &req, sizeof(req),
+                               rep_buf, sizeof(rep_buf), &act_payload);
+        if (err != 0) {
+            return err;
+        }
+        if (act_payload >= sizeof(iris_pty_read_resp_t)) {
+            const iris_pty_read_resp_t* resp = reinterpret_cast<const iris_pty_read_resp_t*>(rep_buf);
+            uint32_t nbytes = resp->bytes_read;
+            if (nbytes > 0 && act_payload >= sizeof(iris_pty_read_resp_t) + nbytes) {
+                uint32_t to_copy = (nbytes < chunk) ? nbytes : chunk;
+                memcpy(buf, rep_buf + sizeof(iris_pty_read_resp_t), to_copy);
+                *bytes_read = static_cast<ssize_t>(to_copy);
+                return 0;
+            } else if (nbytes == 0) {
+                /* EOF (Ctrl+D) */
+                *bytes_read = 0;
+                return 0;
+            }
+        }
+        *bytes_read = 0;
+        return 0;
+    }
     if (entry->type == IRIS_FD_VFS) {
         if (count == 0) {
             *bytes_read = 0;
@@ -1084,8 +1261,26 @@ int sys_open(const char *path, int flags, mode_t mode, int *fd) {
     if (!path || !fd) return EINVAL;
 
     // Standard character devices
-    if (iris_strcmp(path, "/dev/null") == 0 || iris_strcmp(path, "/dev/console") == 0 ||
-        iris_strcmp(path, "/dev/debuglog") == 0 || iris_strcmp(path, "/dev/zero") == 0) {
+    if (iris_strcmp(path, "/dev/null") == 0 || iris_strcmp(path, "/dev/zero") == 0) {
+        int new_fd = iris_fd_alloc(g_debuglog_handle, IRIS_FD_DEBUGLOG, flags);
+        if (new_fd < 0) {
+            return EMFILE;
+        }
+        *fd = new_fd;
+        return 0;
+    }
+
+    if (iris_strcmp(path, "/dev/console") == 0 || iris_strcmp(path, "/dev/tty") == 0 ||
+        iris_strcmp(path, "/dev/ptmx") == 0 || iris_strcmp(path, "/dev/debuglog") == 0) {
+        zx_handle_t pty_ch = iris_get_pty_channel();
+        if (pty_ch != ZX_HANDLE_INVALID) {
+            int new_fd = iris_fd_alloc(pty_ch, IRIS_FD_PTY, flags);
+            if (new_fd < 0) {
+                return EMFILE;
+            }
+            *fd = new_fd;
+            return 0;
+        }
         int new_fd = iris_fd_alloc(g_debuglog_handle, IRIS_FD_DEBUGLOG, flags);
         if (new_fd < 0) {
             return EMFILE;
@@ -1198,7 +1393,7 @@ int sys_isatty(int fd) {
     if (!entry || entry->type == IRIS_FD_CLOSED) {
         return ENOTTY;
     }
-    if (entry->type == IRIS_FD_DEBUGLOG) {
+    if (entry->type == IRIS_FD_DEBUGLOG || entry->type == IRIS_FD_PTY) {
         return 0; /* 0 in mlibc indicates isatty is true */
     }
     return ENOTTY;

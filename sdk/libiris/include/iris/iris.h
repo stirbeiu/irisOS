@@ -38,5 +38,6 @@
 #include <iris/vmo.h>
 #include <iris/spawn.h>
 #include <iris/init.h>
+#include <iris/pty.h>
 
 #endif /* IRIS_H_ */

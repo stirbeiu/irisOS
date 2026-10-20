@@ -762,8 +762,14 @@ static zx_status_t spawn_elf_binary(
     info_array[num_h++] = PA_HND(PA_FDIO_LOGGER, 0);
 
     /* Transfer standard inherited file descriptors 0 (stdin), 1 (stdout), 2 (stderr) */
-    g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
-    info_array[num_h++] = PA_HND(PA_FD, 0);
+    if (extra_info2 == PA_HND(PA_USER0, 0) && extra_handle2 != ZX_HANDLE_INVALID) {
+        hnd_array[num_h] = extra_handle2;
+        info_array[num_h++] = PA_HND(PA_FD, 0);
+        extra_handle2 = ZX_HANDLE_INVALID;
+    } else {
+        g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
+        info_array[num_h++] = PA_HND(PA_FD, 0);
+    }
 
     g_zx_handle_duplicate(g_debuglog_handle, ZX_RIGHT_SAME_RIGHTS, &hnd_array[num_h]);
     info_array[num_h++] = PA_HND(PA_FD, 1);
@@ -836,15 +842,18 @@ static zx_status_t spawn_elf_binary(
 /**
  * @brief Locates and launches bin/its_irisOS (Interactive Test Suite) from BOOTFS.
  */
-static void spawn_its_irisOS(zx_handle_t fshost_client_ch) {
+static void spawn_its_irisOS(zx_handle_t fshost_client_ch, zx_handle_t pty_client_ch) {
     zx_handle_t child_proc = ZX_HANDLE_INVALID;
     zx_status_t status = spawn_elf_binary("its_irisOS", "bin/its_irisOS",
                                           fshost_client_ch, PA_HND(PA_NS_DIR, 0),
-                                          ZX_HANDLE_INVALID, 0,
+                                          pty_client_ch, PA_HND(PA_USER0, 0),
                                           ZX_HANDLE_INVALID, 0,
                                           &child_proc);
     if (fshost_client_ch != ZX_HANDLE_INVALID) {
         g_zx_handle_close(fshost_client_ch);
+    }
+    if (pty_client_ch != ZX_HANDLE_INVALID) {
+        g_zx_handle_close(pty_client_ch);
     }
     if (status == ZX_OK && child_proc != ZX_HANDLE_INVALID) {
         zx_signals_t observed = 0;
@@ -1249,8 +1258,82 @@ static void test_virtio_blk(void) {
         return;
     }
 
-    /* Spawn and execute Interactive Test Suite (bin/its_irisOS) connected to iris_fshost */
-    spawn_its_irisOS(fshost_client_ch);
+    /* ==========================================================================
+     * Phase 5 Step 5.1: Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty)
+     * ========================================================================== */
+
+    /* Scan PCIe for VirtIO Input Device */
+    virtio_pci_dev_t input_dev;
+    iris_memset(&input_dev, 0, sizeof(input_dev));
+    if (pci_find_virtio_device(ecam_vaddr, 16, VIRTIO_DEV_ID_INPUT, &input_dev)) {
+        log_printf("[  OK  ] Discovered VirtIO Input Device at PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).",
+                   input_dev.bus, input_dev.dev, input_dev.func, input_dev.vendor_id, input_dev.device_id);
+    } else {
+        log_printf("[  OK  ] VirtIO Input Device not detected on PCIe bus; using UART fallback.");
+    }
+
+    /* Create PTY Control Channel Pair for iris_init */
+    zx_handle_t pty_control_client_ch = ZX_HANDLE_INVALID;
+    zx_handle_t pty_control_server_ch = ZX_HANDLE_INVALID;
+    status = g_zx_channel_create(0, &pty_control_client_ch, &pty_control_server_ch);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to create iris_pty control channel (%d).", status);
+        return;
+    }
+
+    /* Create dedicated PTY Client Channel Pair for its_irisOS */
+    zx_handle_t pty_its_client_ch = ZX_HANDLE_INVALID;
+    zx_handle_t pty_its_server_ch = ZX_HANDLE_INVALID;
+    status = g_zx_channel_create(0, &pty_its_client_ch, &pty_its_server_ch);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to create iris_pty its channel (%d).", status);
+        return;
+    }
+
+    /* Spawn bin/iris_pty from BOOTFS:
+     *  PA_USER0, 0 = pty_control_server_ch (for iris_init)
+     *  PA_RESOURCE = root_resource (for ECAM & UART)
+     *  PA_USER0, 1 = pty_its_server_ch (for its_irisOS)
+     */
+    zx_handle_t root_res_pty = ZX_HANDLE_INVALID;
+    g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_pty);
+
+    zx_handle_t pty_proc = ZX_HANDLE_INVALID;
+    status = spawn_elf_binary("iris_pty", "bin/iris_pty",
+                              pty_control_server_ch, PA_HND(PA_USER0, 0),
+                              root_res_pty, PA_HND(PA_RESOURCE, 0),
+                              pty_its_server_ch, PA_HND(PA_USER0, 1),
+                              &pty_proc);
+    g_zx_handle_close(pty_control_server_ch);
+    g_zx_handle_close(pty_its_server_ch);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to spawn bin/iris_pty (%d).", status);
+        g_zx_handle_close(pty_control_client_ch);
+        g_zx_handle_close(pty_its_client_ch);
+        return;
+    }
+
+    /* Verify iris_pty is responsive with PING */
+    iris_msg_hdr_t pty_ping;
+    iris_msg_hdr_init(&pty_ping, IRIS_PROTO_SYSTEM, IRIS_SYS_OP_PING, 50, 0);
+    status = g_zx_channel_write(pty_control_client_ch, 0, &pty_ping, sizeof(pty_ping), NULL, 0);
+    if (status != ZX_OK) {
+        log_printf("[FAILED] iris_init: Failed to send PING to iris_pty (%d).", status);
+        return;
+    }
+
+    observed = 0;
+    g_zx_object_wait_one(pty_control_client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    status = g_zx_channel_read(pty_control_client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+    rep = (iris_msg_hdr_t*)rep_buf;
+    if (status != ZX_OK || rep->protocol != IRIS_PROTO_SYSTEM || rep->opcode != IRIS_SYS_OP_PONG) {
+        log_printf("[FAILED] iris_init: Invalid PING response from iris_pty.");
+        return;
+    }
+    log_printf("[  OK  ] iris_pty IPC control channel verified (PING/PONG response).");
+
+    /* Spawn and execute Interactive Test Suite (bin/its_irisOS) connected to iris_fshost and iris_pty */
+    spawn_its_irisOS(fshost_client_ch, pty_its_client_ch);
 
     /* Wait for iris_fshost clean exit after its_irisOS closes its VFS channel */
     if (fshost_proc != ZX_HANDLE_INVALID) {
@@ -1266,6 +1349,22 @@ static void test_virtio_blk(void) {
         g_zx_handle_close(crypt_proc);
     }
 
+    /* Send shutdown to iris_pty and wait for clean exit */
+    iris_msg_hdr_t pty_shut;
+    iris_msg_hdr_init(&pty_shut, IRIS_PROTO_SYSTEM, IRIS_SYS_OP_SHUTDOWN, 60, 0);
+    g_zx_channel_write(pty_control_client_ch, 0, &pty_shut, sizeof(pty_shut), NULL, 0);
+
+    observed = 0;
+    g_zx_object_wait_one(pty_control_client_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &observed);
+    g_zx_channel_read(pty_control_client_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+
+    g_zx_handle_close(pty_control_client_ch);
+    if (pty_proc != ZX_HANDLE_INVALID) {
+        observed = 0;
+        g_zx_object_wait_one(pty_proc, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &observed);
+        g_zx_handle_close(pty_proc);
+    }
+
     /* Close virtio_blk control channel and wait for BTI PMT unpinning and clean exit */
     g_zx_handle_close(client_ch);
     if (blk_proc != ZX_HANDLE_INVALID) {
@@ -1275,6 +1374,7 @@ static void test_virtio_blk(void) {
     }
 
     log_printf("[  OK  ] Phase 4 Step 4.3 GPT, UFS2 (libufs) & iris_fshost VFS verification complete.");
+    log_printf("[  OK  ] Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete.");
 }
 
 /**

@@ -83,6 +83,10 @@ if [[ ! -f "${BUILD_DIR}/bin/iris_fshost" ]]; then
     echo "==> Building iris_fshost for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "iris-fshost-${ARCH_NAME}"
 fi
+if [[ ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
+    echo "==> Building iris_pty for ${ARCH_NAME}..."
+    make -C "${ROOT_DIR}/build" "iris-pty-${ARCH_NAME}"
+fi
 
 # 3. Ensure Zircon kernel ZBI exists
 if [[ ! -f "${ZIRCON_BUILD}/kernel.zbi" ]]; then
@@ -126,7 +130,8 @@ fi
             -e "bin/its_irisOS=${BUILD_DIR}/bin/its_irisOS" \
             -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk" \
             -e "bin/iris_crypt=${BUILD_DIR}/bin/iris_crypt" \
-            -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost"
+            -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost" \
+            -e "bin/iris_pty=${BUILD_DIR}/bin/iris_pty"
 
 cp -f "${IRIS_ZBI_A}" "${IRIS_ZBI_B}"
 

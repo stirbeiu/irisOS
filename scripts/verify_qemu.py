@@ -45,6 +45,7 @@ def run_verification(arch: str, timeout: float = 20.0) -> int:
             "-device", "nvme,drive=bootdisk,serial=irisboot,bootindex=0",
             "-drive", f"file={disk_raw},if=none,id=hd0,format=raw",
             "-device", "virtio-blk-pci,drive=hd0",
+            "-device", "virtio-keyboard-pci",
             "-device", "virtio-rng-pci",
             "-serial", "stdio",
             "-display", "none"
@@ -68,6 +69,7 @@ def run_verification(arch: str, timeout: float = 20.0) -> int:
             "-device", "nvme,drive=bootdisk,serial=irisboot,bootindex=0",
             "-drive", f"file={disk_raw},if=none,id=hd0,format=raw",
             "-device", "virtio-blk-pci,drive=hd0",
+            "-device", "virtio-keyboard-pci",
             "-device", "virtio-rng-pci",
             "-serial", "stdio",
             "-display", "none"
@@ -127,7 +129,7 @@ def run_verification(arch: str, timeout: float = 20.0) -> int:
                     break
 
                 # 3. Detect verification completion
-                if "Phase 4 Step 4.3 GPT, UFS2 (libufs) & iris_fshost VFS verification complete." in accumulated_output:
+                if "Phase 5 Step 5.1 Input Drivers & Ring 3 Pseudo-Terminal Server (iris_pty) verification complete." in accumulated_output:
                     time.sleep(0.3)
                     # Read any remaining output
                     try:

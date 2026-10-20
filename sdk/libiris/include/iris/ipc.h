@@ -267,7 +267,84 @@ typedef struct iris_fs_stat_resp {
 #define IRIS_PTY_OP_SET_WINDOW   0x0042u /**< Update terminal window row and column dimensions */
 #define IRIS_PTY_OP_GET_WINDOW   0x0043u /**< Query terminal window dimensions */
 #define IRIS_PTY_OP_DRAIN        0x0044u /**< Flush and drain pending terminal buffers */
-#define IRIS_PTY_OP_SIGNAL       0x0045u /**< Send POSIX signal (SIGINT, SIGWINCH, etc.) */
+#define IRIS_PTY_OP_SIGNAL       0x0045u /**< Send or query POSIX signal (SIGINT, SIGWINCH, etc.) */
+#define IRIS_PTY_OP_SET_MODE     0x0046u /**< Set canonical / raw / echo terminal line mode */
+#define IRIS_PTY_OP_GET_MODE     0x0047u /**< Query current terminal line mode flags */
+#define IRIS_PTY_OP_INJECT       0x0048u /**< Inject raw/synthetic input bytes into PTY stream */
+#define IRIS_PTY_OP_OPEN_CLIENT  0x0049u /**< Request new PTY client session channel endpoint */
+
+/* PTY Line Mode Flags */
+#define IRIS_PTY_MODE_CANONICAL  (1u << 0) /**< Canonical (cooked) mode: line buffering & backspace editing */
+#define IRIS_PTY_MODE_ECHO       (1u << 1) /**< Echo typed characters back to output display */
+#define IRIS_PTY_MODE_RAW        0u        /**< Raw mode: immediate character pass-through, no echo */
+
+#pragma pack(push, 4)
+/**
+ * @brief Request payload for IRIS_PTY_OP_READ.
+ */
+typedef struct iris_pty_read_req {
+    uint32_t count; /**< Maximum number of bytes requested */
+} iris_pty_read_req_t;
+
+/**
+ * @brief Reply payload for IRIS_PTY_OP_READ (bytes immediately follow this struct).
+ */
+typedef struct iris_pty_read_resp {
+    uint32_t bytes_read; /**< Actual number of bytes returned */
+} iris_pty_read_resp_t;
+
+/**
+ * @brief Request payload for IRIS_PTY_OP_WRITE (bytes immediately follow this struct).
+ */
+typedef struct iris_pty_write_req {
+    uint32_t count; /**< Number of bytes trailing this struct to write */
+} iris_pty_write_req_t;
+
+/**
+ * @brief Reply payload for IRIS_PTY_OP_WRITE.
+ */
+typedef struct iris_pty_write_resp {
+    uint32_t bytes_written; /**< Number of bytes successfully written/echoed */
+} iris_pty_write_resp_t;
+
+/**
+ * @brief Window size payload for IRIS_PTY_OP_SET_WINDOW / IRIS_PTY_OP_GET_WINDOW.
+ */
+typedef struct iris_pty_window {
+    uint16_t rows;   /**< Terminal rows (default: 24) */
+    uint16_t cols;   /**< Terminal columns (default: 80) */
+    uint16_t xpixel; /**< Horizontal pixels (default: 0) */
+    uint16_t ypixel; /**< Vertical pixels (default: 0) */
+} iris_pty_window_t;
+
+/**
+ * @brief Mode payload for IRIS_PTY_OP_SET_MODE / IRIS_PTY_OP_GET_MODE.
+ */
+typedef struct iris_pty_mode {
+    uint32_t flags; /**< Bitwise OR of IRIS_PTY_MODE_* */
+} iris_pty_mode_t;
+
+/**
+ * @brief Synthetic input injection payload for IRIS_PTY_OP_INJECT (bytes immediately follow).
+ */
+typedef struct iris_pty_inject_req {
+    uint32_t count; /**< Number of raw/synthetic input bytes trailing this struct */
+} iris_pty_inject_req_t;
+
+/**
+ * @brief Reply payload for IRIS_PTY_OP_INJECT.
+ */
+typedef struct iris_pty_inject_resp {
+    uint32_t bytes_injected; /**< Number of bytes accepted into line discipline */
+} iris_pty_inject_resp_t;
+
+/**
+ * @brief Signal payload for IRIS_PTY_OP_SIGNAL.
+ */
+typedef struct iris_pty_signal_req {
+    uint32_t signo; /**< POSIX signal number (e.g. 2 for SIGINT) */
+} iris_pty_signal_req_t;
+#pragma pack(pop)
 
 /**
  * @brief Hardware Driver / Block Storage Protocol Opcodes (IRIS_PROTO_DRIVER)

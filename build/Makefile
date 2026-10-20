@@ -296,6 +296,10 @@ its-irisOS-x86_64: mlibc-x86_64
 		-isystem $(OUT_DIR)/build-x86_64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
 		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-x86_64/gen \
+		-isystem $(OUT_DIR)/build-x86_64/gen/zircon \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
@@ -323,6 +327,10 @@ its-irisOS-aarch64: mlibc-aarch64
 		-isystem $(OUT_DIR)/build-aarch64/mlibc \
 		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
 		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-aarch64/gen \
+		-isystem $(OUT_DIR)/build-aarch64/gen/zircon \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
 		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
@@ -567,12 +575,121 @@ iris-fshost-aarch64: mlibc-aarch64 libufs-aarch64
 iris-fshost: iris-fshost-x86_64 iris-fshost-aarch64
 
 # ------------------------------------------------------------------------------
+# Ring 3 Pseudo-Terminal Server Daemon (bin/iris_pty)
+# ------------------------------------------------------------------------------
+iris-pty-x86_64: mlibc-x86_64
+	@echo "==> Compiling iris_pty (x86_64)..."
+	@mkdir -p $(OUT_DIR)/build-x86_64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-x86_64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-x86_64/gen \
+		-isystem $(OUT_DIR)/build-x86_64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-isystem $(ROOT_DIR)/servers/iris_pty/include \
+		-isystem $(ROOT_DIR)/servers/drivers/virtio_input/include \
+		-c $(ROOT_DIR)/servers/drivers/virtio_input/src/virtio_input.c -o $(OUT_DIR)/build-x86_64/virtio_input.o; \
+	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-x86_64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-x86_64/gen \
+		-isystem $(OUT_DIR)/build-x86_64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-isystem $(ROOT_DIR)/servers/iris_pty/include \
+		-isystem $(ROOT_DIR)/servers/drivers/virtio_input/include \
+		-c $(ROOT_DIR)/servers/iris_pty/src/main.c -o $(OUT_DIR)/build-x86_64/iris_pty.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-x86_64/iris_pty.o \
+		$(OUT_DIR)/build-x86_64/virtio_input.o \
+		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
+		$(OUT_DIR)/build-x86_64/lib/libiris.a \
+		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-x86_64/bin/iris_pty
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/iris_pty"
+
+iris-pty-aarch64: mlibc-aarch64
+	@echo "==> Compiling iris_pty (aarch64)..."
+	@mkdir -p $(OUT_DIR)/build-aarch64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-aarch64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-aarch64/gen \
+		-isystem $(OUT_DIR)/build-aarch64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-isystem $(ROOT_DIR)/servers/iris_pty/include \
+		-isystem $(ROOT_DIR)/servers/drivers/virtio_input/include \
+		-c $(ROOT_DIR)/servers/drivers/virtio_input/src/virtio_input.c -o $(OUT_DIR)/build-aarch64/virtio_input.o; \
+	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-isystem "$$CLANG_RES" \
+		-isystem $(OUT_DIR)/build-aarch64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-aarch64/gen \
+		-isystem $(OUT_DIR)/build-aarch64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-isystem $(ROOT_DIR)/servers/iris_pty/include \
+		-isystem $(ROOT_DIR)/servers/drivers/virtio_input/include \
+		-c $(ROOT_DIR)/servers/iris_pty/src/main.c -o $(OUT_DIR)/build-aarch64/iris_pty.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-aarch64/iris_pty.o \
+		$(OUT_DIR)/build-aarch64/virtio_input.o \
+		$(OUT_DIR)/build-aarch64/mlibc/libc.a \
+		$(OUT_DIR)/build-aarch64/lib/libiris.a \
+		$(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-aarch64/bin/iris_pty
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/bin/iris_pty"
+
+iris-pty: iris-pty-x86_64 iris-pty-aarch64
+
+# ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64 iris-crypt-x86_64 iris-fshost-x86_64
+image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64 iris-crypt-x86_64 iris-fshost-x86_64 iris-pty-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-aarch64: build-aarch64 its-irisOS-aarch64 virtio-blk-aarch64 iris-crypt-aarch64 iris-fshost-aarch64
+image-aarch64: build-aarch64 its-irisOS-aarch64 virtio-blk-aarch64 iris-crypt-aarch64 iris-fshost-aarch64 iris-pty-aarch64
 	@$(BUILD_DIR)/mkimage.sh aarch64
 
 run: run-x86_64

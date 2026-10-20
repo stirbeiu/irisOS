@@ -97,12 +97,65 @@ The header is declared in [`sdk/libiris/include/iris/ipc.h`](../sdk/libiris/incl
 * `IRIS_COMP_OP_POLL_EVENT` (`0x0035`): Fetch keyboard or mouse input events.
 
 #### IRIS_PROTO_PTY (`0x0005`)
-* `IRIS_PTY_OP_READ` (`0x0040`): Read buffered input from terminal.
-* `IRIS_PTY_OP_WRITE` (`0x0041`): Output text stream to terminal.
-* `IRIS_PTY_OP_SET_WINDOW` (`0x0042`): Update row and column dimensions.
-* `IRIS_PTY_OP_GET_WINDOW` (`0x0043`): Query terminal dimensions.
+* `IRIS_PTY_OP_READ` (`0x0040`): Read buffered input from terminal discipline.
+* `IRIS_PTY_OP_WRITE` (`0x0041`): Output text stream to terminal and console output.
+* `IRIS_PTY_OP_SET_WINDOW` (`0x0042`): Update row and column window dimensions.
+* `IRIS_PTY_OP_GET_WINDOW` (`0x0043`): Query terminal dimensions (`iris_pty_window_t`).
 * `IRIS_PTY_OP_DRAIN` (`0x0044`): Flush pending I/O buffers.
-* `IRIS_PTY_OP_SIGNAL` (`0x0045`): Send POSIX signal (`SIGINT`, `SIGWINCH`).
+* `IRIS_PTY_OP_SIGNAL` (`0x0045`): Query/consume pending POSIX signal (`SIGINT`, `SIGWINCH`).
+* `IRIS_PTY_OP_SET_MODE` (`0x0046`): Set terminal mode flags (`IRIS_PTY_MODE_*`).
+* `IRIS_PTY_OP_GET_MODE` (`0x0047`): Query active terminal mode flags.
+* `IRIS_PTY_OP_INJECT` (`0x0048`): Inject synthetic keyboard characters into line discipline.
+* `IRIS_PTY_OP_OPEN_CLIENT` (`0x0049`): Create a new PTY client channel endpoint.
+
+##### PTY Mode Flags & Line Discipline Semantics
+* `IRIS_PTY_MODE_CANONICAL` (`0x0001`): Canonical (cooked) input processing. Line-buffered until `\n` or `\r`. Supports interactive line editing: backspace (`\b` or `0x7F` DEL) erases the previous character and emits destructive backspace sequence `\b \b`. Translates carriage return (`\r`) to newline (`\n`).
+* `IRIS_PTY_MODE_ECHO` (`0x0002`): Character echoing enabled. Typed characters are immediately routed to console output.
+* `IRIS_PTY_MODE_RAW` (`0x0000`): Raw mode pass-through. Characters are transferred immediately to the ready buffer without line buffering, editing, or special character translation.
+* `Ctrl+C` (`0x03`): Generates `SIGINT` (signo 2), discards the current line editing buffer, and emits `^C\n` to output.
+* `Ctrl+D` (`0x04`): When line buffer is empty, delivers EOF (read returns 0 bytes). When line buffer contains pending text, flushes the pending characters immediately without a newline.
+
+##### PTY Wire Structs (`<iris/ipc.h>`)
+```c
+typedef struct {
+    uint32_t count;
+} iris_pty_read_req_t;
+
+typedef struct {
+    uint32_t bytes_read;
+} iris_pty_read_resp_t;
+
+typedef struct {
+    uint32_t count;
+} iris_pty_write_req_t;
+
+typedef struct {
+    uint32_t bytes_written;
+} iris_pty_write_resp_t;
+
+typedef struct {
+    uint16_t rows;
+    uint16_t cols;
+    uint16_t xpixels;
+    uint16_t ypixels;
+} iris_pty_window_t;
+
+typedef struct {
+    uint32_t flags;
+} iris_pty_mode_t;
+
+typedef struct {
+    uint32_t count;
+} iris_pty_inject_req_t;
+
+typedef struct {
+    uint32_t bytes_injected;
+} iris_pty_inject_resp_t;
+
+typedef struct {
+    uint32_t signo;
+} iris_pty_signal_req_t;
+```
 
 #### IRIS_PROTO_DRIVER (`0x0006`)
 * `IRIS_BLK_OP_GET_INFO` (`0x0050`): Query block device geometry (sector count and sector size).
@@ -161,6 +214,16 @@ The C API is exposed via [`sdk/libiris/include/iris/iris.h`](../sdk/libiris/incl
 ### 5.4 Runtime Capability Accessors ([`init.h`](../sdk/libiris/include/iris/init.h))
 * `iris_init_runtime(zx_handle_t proc, zx_handle_t vmar, zx_handle_t job)`: Sets process-wide capability handles.
 * `iris_process_self()`, `iris_vmar_root_self()`, `iris_job_default()`: Accessors with weak fallback symbols resolving `zx_process_self()`, `zx_vmar_root_self()`, and `zx_job_default()`.
+
+### 5.5 Pseudo-Terminal Client Helpers ([`pty.h`](../sdk/libiris/include/iris/pty.h))
+* `iris_pty_set_mode(zx_handle_t pty_ch, uint32_t flags)`: Configures canonical/raw and echo terminal modes.
+* `iris_pty_get_mode(zx_handle_t pty_ch, uint32_t* out_flags)`: Retrieves active terminal mode flags.
+* `iris_pty_set_window(zx_handle_t pty_ch, uint16_t rows, uint16_t cols)`: Sets terminal rows and columns.
+* `iris_pty_get_window(zx_handle_t pty_ch, uint16_t* out_rows, uint16_t* out_cols)`: Queries terminal window size.
+* `iris_pty_inject(zx_handle_t pty_ch, const void* data, size_t len)`: Injects synthetic keystrokes or input streams into the line discipline.
+* `iris_pty_get_signal(zx_handle_t pty_ch, uint32_t* out_signo)`: Reads and clears pending terminal signals (e.g., `SIGINT=2`).
+* `iris_pty_read(zx_handle_t pty_ch, void* buf, size_t max_len, size_t* out_read)`: Reads processed characters from the terminal buffer.
+* `iris_pty_write(zx_handle_t pty_ch, const void* buf, size_t len)`: Writes character stream to terminal output.
 
 ---
 

@@ -329,28 +329,43 @@ zx_status_t iris_channel_call(zx_handle_t channel,
         iris_memcpy((uint8_t*)wr_ptr + sizeof(iris_msg_hdr_t), req_payload, req_hdr->payload_len);
     }
 
-    zx_channel_call_args_t call_args = {
-        .wr_bytes = wr_ptr,
-        .wr_handles = req_handles,
-        .rd_bytes = rd_ptr,
-        .rd_handles = resp_handles,
-        .wr_num_bytes = wr_size,
-        .wr_num_handles = num_req_handles,
-        .rd_num_bytes = rd_size,
-        .rd_num_handles = max_resp_handles,
-    };
-
-    uint32_t act_bytes = 0;
-    uint32_t act_handles = 0;
-
-    /* Issue synchronous channel call: atomically writes request and awaits reply */
-    zx_status_t status = zx_channel_call(channel, 0, deadline, &call_args,
-                                         &act_bytes, &act_handles);
+    /* Issue synchronous channel call: write request, await reply, read response */
+    zx_status_t status = zx_channel_write(channel, 0, wr_ptr, wr_size, req_handles, num_req_handles);
 
     if (wr_vaddr) {
         zx_vmar_unmap(zx_vmar_root_self(), wr_vaddr, wr_size);
         zx_handle_close(wr_vmo);
     }
+
+    if (status != ZX_OK) {
+        if (rd_vaddr) {
+            zx_vmar_unmap(zx_vmar_root_self(), rd_vaddr, rd_size);
+            zx_handle_close(rd_vmo);
+        }
+        return status;
+    }
+
+    zx_signals_t observed = 0;
+    status = zx_object_wait_one(channel, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED, deadline, &observed);
+    if (status != ZX_OK) {
+        if (rd_vaddr) {
+            zx_vmar_unmap(zx_vmar_root_self(), rd_vaddr, rd_size);
+            zx_handle_close(rd_vmo);
+        }
+        return status;
+    }
+    if (observed & ZX_CHANNEL_PEER_CLOSED) {
+        if (rd_vaddr) {
+            zx_vmar_unmap(zx_vmar_root_self(), rd_vaddr, rd_size);
+            zx_handle_close(rd_vmo);
+        }
+        return ZX_ERR_PEER_CLOSED;
+    }
+
+    uint32_t act_bytes = 0;
+    uint32_t act_handles = 0;
+    status = zx_channel_read(channel, 0, rd_ptr, resp_handles, rd_size, max_resp_handles,
+                             &act_bytes, &act_handles);
 
     if (status != ZX_OK) {
         if (rd_vaddr) {

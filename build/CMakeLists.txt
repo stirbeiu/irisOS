@@ -199,6 +199,7 @@ set(LIBIRIS_SRCS
     "${IRIS_ROOT}/sdk/libiris/src/spawn.c"
     "${IRIS_ROOT}/sdk/libiris/src/init.c"
     "${IRIS_ROOT}/sdk/libiris/src/pci.c"
+    "${IRIS_ROOT}/sdk/libiris/src/pty.c"
 )
 
 # 1. Static library (libiris.a)

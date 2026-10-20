@@ -32,6 +32,7 @@ typedef enum iris_fd_type {
     IRIS_FD_DEBUGLOG = 1, /**< Kernel debuglog handle (early console write-only) */
     IRIS_FD_CHANNEL  = 2, /**< Raw IPC channel to peer/server */
     IRIS_FD_VFS      = 3, /**< VFS file handle routed via iris_fshost (IRIS_PROTO_FS) */
+    IRIS_FD_PTY      = 4, /**< Pseudo-terminal channel routed via iris_pty (IRIS_PROTO_PTY) */
 } iris_fd_type_t;
 
 /**
@@ -110,6 +111,11 @@ int iris_fd_count_open(void);
 void iris_set_debuglog(zx_handle_t handle);
 
 /**
+ * @brief Retrieve the global debuglog handle.
+ */
+zx_handle_t iris_get_debuglog(void);
+
+/**
  * @brief Store the inherited vDSO VMO handle for child process spawning.
  */
 void iris_set_vdso_vmo(zx_handle_t handle);
@@ -123,6 +129,16 @@ void iris_set_bootfs_vmo(zx_handle_t handle);
  * @brief Store the inherited iris_fshost VFS router IPC channel handle.
  */
 void iris_set_fshost_channel(zx_handle_t handle);
+
+/**
+ * @brief Store the inherited iris_pty pseudo-terminal IPC channel handle.
+ */
+void iris_set_pty_channel(zx_handle_t handle);
+
+/**
+ * @brief Retrieve the iris_pty pseudo-terminal IPC channel handle.
+ */
+zx_handle_t iris_get_pty_channel(void);
 
 #ifdef __cplusplus
 }

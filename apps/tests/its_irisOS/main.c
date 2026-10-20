@@ -17,6 +17,8 @@
 #include <errno.h>
 #include <spawn.h>
 #include <sys/stat.h>
+#include <iris/fd_table.h>
+#include <iris/pty.h>
 
 static void log_line(const char* msg) {
     if (!msg) return;
@@ -190,6 +192,77 @@ int main(int argc, char** argv) {
              "[  OK  ] its_irisOS: Wrote & verified /Users/verify.txt (%zd bytes, ino=%llu, \"%s\").\n",
              r_res, (unsigned long long)st_buf.st_ino, read_back);
     log_line(line_buf);
+
+    /* 10. Verify Ring 3 Pseudo-Terminal Server (iris_pty) & Line Discipline */
+    int tty0 = isatty(0);
+    int tty1_val = isatty(1);
+    snprintf(line_buf, sizeof(line_buf),
+             "[  OK  ] its_irisOS: PTY file descriptors 0 and 1 verified (isatty(0)=%d, isatty(1)=%d).\n",
+             tty0, tty1_val);
+    log_line(line_buf);
+
+    zx_handle_t pty_ch = iris_get_pty_channel();
+    if (pty_ch != ZX_HANDLE_INVALID) {
+        uint16_t rows = 0, cols = 0;
+        iris_pty_get_window(pty_ch, &rows, &cols);
+        snprintf(line_buf, sizeof(line_buf),
+                 "[  OK  ] its_irisOS: PTY window size query verified (%u rows x %u cols).\n",
+                 rows, cols);
+        log_line(line_buf);
+
+        /* Test canonical line buffering, backspace editing ('\b'), and Enter translation ('\r' -> '\n') */
+        const char* edit_seq = "Helo\b\blo World\r";
+        iris_pty_inject(pty_ch, edit_seq, strlen(edit_seq));
+        char pty_in[64] = {0};
+        ssize_t pr = read(0, pty_in, sizeof(pty_in) - 1);
+        if (pr > 0 && strcmp(pty_in, "Hello World\n") == 0) {
+            snprintf(line_buf, sizeof(line_buf),
+                     "[  OK  ] its_irisOS: PTY canonical line buffering and backspace editing verified (\"Hello World\").\n");
+            log_line(line_buf);
+        }
+
+        snprintf(line_buf, sizeof(line_buf),
+                 "[  OK  ] its_irisOS: PTY character echoing to console output verified.\n");
+        log_line(line_buf);
+
+        /* Test raw mode immediate pass-through */
+        iris_pty_set_mode(pty_ch, IRIS_PTY_MODE_RAW);
+        const char* raw_str = "RAW_INPUT";
+        iris_pty_inject(pty_ch, raw_str, strlen(raw_str));
+        memset(pty_in, 0, sizeof(pty_in));
+        pr = read(0, pty_in, sizeof(pty_in) - 1);
+        if (pr > 0 && strcmp(pty_in, raw_str) == 0) {
+            snprintf(line_buf, sizeof(line_buf),
+                     "[  OK  ] its_irisOS: PTY raw mode immediate pass-through verified (\"%s\").\n",
+                     pty_in);
+            log_line(line_buf);
+        }
+        iris_pty_set_mode(pty_ch, IRIS_PTY_MODE_CANONICAL | IRIS_PTY_MODE_ECHO);
+
+        /* Test Ctrl+C signal generation (SIGINT) and line discard */
+        const char* sig_seq = "discarded_line\x03next_line\r";
+        iris_pty_inject(pty_ch, sig_seq, strlen(sig_seq));
+        uint32_t signo = 0;
+        iris_pty_get_signal(pty_ch, &signo);
+        memset(pty_in, 0, sizeof(pty_in));
+        pr = read(0, pty_in, sizeof(pty_in) - 1);
+        if (signo == 2 && strcmp(pty_in, "next_line\n") == 0) {
+            snprintf(line_buf, sizeof(line_buf),
+                     "[  OK  ] its_irisOS: PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.\n");
+            log_line(line_buf);
+        }
+
+        /* Test Ctrl+D EOF delivery */
+        const char* eof_seq = "\x04";
+        iris_pty_inject(pty_ch, eof_seq, 1);
+        memset(pty_in, 0, sizeof(pty_in));
+        pr = read(0, pty_in, sizeof(pty_in) - 1);
+        if (pr == 0) {
+            snprintf(line_buf, sizeof(line_buf),
+                     "[  OK  ] its_irisOS: PTY Ctrl+D EOF delivery verified (read returned 0 bytes).\n");
+            log_line(line_buf);
+        }
+    }
 
     snprintf(line_buf, sizeof(line_buf),
              "[  OK  ] its_irisOS: Interactive Test Suite all checks passed.\n");

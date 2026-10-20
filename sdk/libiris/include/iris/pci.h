@@ -143,6 +143,7 @@ static inline uint64_t pci_get_default_ecam_base(void) {
 /* VirtIO Transitional / Legacy Device IDs (0x1000..0x103F) */
 #define VIRTIO_DEV_ID_NET_TRANS     0x1000u
 #define VIRTIO_DEV_ID_BLK_TRANS     0x1001u
+#define VIRTIO_DEV_ID_INPUT_TRANS   0x1010u
 
 /* VirtIO 1.0 PCI Capability Types (virtio_pci_cap::cfg_type) */
 #define VIRTIO_PCI_CAP_COMMON_CFG   1u /**< Common configuration */
