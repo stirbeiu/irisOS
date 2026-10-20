@@ -10,10 +10,8 @@ This document tracks implementation status, completed milestones, verification c
 | :--- | :--- | :--- |
 | **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
 | **Phase 3** | Safe SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
-| **Phase 4.1** | Unified PCIe (ECAM) Discovery & Ring 3 `virtio-blk-pci` Driver | **COMPLETED (100%)** |
-| **Phase 4.2** | Block-Level Encryption Proxy (`iris_crypt` — AES-256-XTS + Argon2id) | **COMPLETED (100%)** |
-| **Phase 4.3** | GPT Parser, FatFs (`ESP`), `libufs` UFS2 & VFS Router (`iris_fshost`) | **NEXT UP** |
-| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | Pending |
+| **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
+| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **NEXT UP** |
 | **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |
 
 ---
@@ -77,19 +75,51 @@ This document tracks implementation status, completed milestones, verification c
   * Translates logical sector $L$ to physical sector $P = L + 8$ on downstream `virtio_blk`, encrypting writes and decrypting reads using `mbedtls_aes_crypt_xts()` with 64-bit little-endian logical LBA as the XTS tweak.
   * Documentation: [`docs/storage_and_vfs.md`](docs/storage_and_vfs.md).
 
-### Step 4.3: GPT Parser, FatFs, `libufs` UFS2 & VFS Router (`iris_fshost`) (NEXT UP)
-* **Remaining Tasks for Step 4.3:**
-  1. Cross-compile `vendor/fatfs` (FAT32 for `ESP`) and `vendor/libufs` (UFS2/FFS for `System_A`, `System_B`, and `Data`).
-  2. Update `build/mkimage.sh` to format a 4-partition GPT disk image (`ESP`, `System_A`, `System_B`, `Data`).
-  3. Implement `servers/iris_fshost` with GPT parser, A/B slot selector, `/System` read-only UFS2 mount, `/Users` & `/Applications` read-write encrypted UFS2 mount (via `iris_crypt`), and `/bin` + `/lib` virtual symlinks.
-  4. Connect `mlibc` file syscalls (`sys_open`, `sys_read`, `sys_write`, `sys_seek`, `sys_close`, `sys_stat`) to `iris_fshost` over `IRIS_PROTO_FS`.
+### Step 4.3: GPT Parser, `libufs` UFS2 & VFS Router (`iris_fshost`) (COMPLETED)
+* **128 MB 4-Partition GPT Raw Disk (`build/mkimage.sh`, `scripts/mk_gpt_disk.py`, `build/mkufs2_host.c`):**
+  * Assembles Protective MBR (LBA 0), Primary GPT (LBA 1..33), and Backup GPT (LBA 262111..262143):
+    * Partition 1: `ESP` (LBA `2048..67583`, 32 MB FAT).
+    * Partition 2: `System_A` (LBA `67584..133119`, 32 MB UFS2, active immutable system root).
+    * Partition 3: `System_B` (LBA `133120..198655`, 32 MB UFS2, inactive rollback slot).
+    * Partition 4: `Data` (LBA `198656..260095`, 30 MB Encrypted UFS2 via `iris_crypt`, Sectors 0..7 reserved for 4 KB `iris_crypt` header).
+  * Host formatter `out/host/mkufs2` formats valid FreeBSD UFS2 volumes with superblock, cylinder group descriptors, dinode tables, and populated directory structures (`Bin`, `Libraries`, `Servers`, `Resources/release.txt`).
+* **FreeBSD UFS2 Integration (`vendor/libufs` -> `libufs.a`):**
+  * Cross-compiled `vendor/libufs` into `libufs.a` for `x86_64` and `aarch64` with Homebrew LLVM using `-D_LIBUFS -Dpread=iris_ufs_pread -Dpwrite=iris_ufs_pwrite`.
+  * Implemented [`servers/iris_fshost/src/ufs_io.c`](servers/iris_fshost/src/ufs_io.c): block-device adapter routing all UFS2 reads/writes to IPC channels over `IRIS_PROTO_DRIVER`.
+* **Central VFS Router (`servers/iris_fshost/src/main.c` -> `bin/iris_fshost`):**
+  * Reads and validates Primary GPT header and partition entries from `virtio_blk`.
+  * Evaluates GPT attributes to select active slot (`System_A`, `prio=15, ok=1`) and mounts UFS2 at `/System` (read-only).
+  * Connects to `iris_crypt` to mount decrypted `Data` at `/Users` and `/Applications` (read-write).
+  * Serves `IRIS_PROTO_FS` (`FS_OPEN`, `FS_CLOSE`, `FS_READ`, `FS_WRITE`, `FS_SEEK`, `FS_STAT`), enforces `EROFS` (`IRIS_ERR_READ_ONLY`) on `/System` write attempts, and resolves virtual symlinks `/bin -> /System/Bin` and `/lib -> /System/Libraries`.
+* **Standard C Library VFS Integration (`sdk/mlibc-sysdeps/iris/generic/generic.cpp`):**
+  * Routes `sys_open`, `sys_read`, `sys_write`, `sys_close`, `sys_stat`, `sys_fstat`, `sys_seek` through `vfs_ipc_call()` to `iris_fshost` via inherited `PA_HND(PA_NS_DIR, 0)`.
+* **Automated Headless Test Runner (`scripts/verify_qemu.py` & `./iris test`):**
+  * Non-blocking stdio poller with strict 20s timeouts and instant EFI Shell / panic / failure detection.
+  * Successfully verified on both architectures:
+    * Reading `/System/Resources/release.txt` ("irisOS release 0.1.0").
+    * Rejecting write to `/System/readonly_test.txt` with `EROFS` (`errno=30`).
+    * Creating, writing, and verifying persistent data on `/Users/verify.txt` (59 bytes, ino=10).
+* **Documentation:** [`docs/storage_and_vfs.md`](docs/storage_and_vfs.md).
+
+---
+
+## Phase 5: Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell (NEXT UP)
+
+* **Immediate Next Steps for Phase 5:**
+  1. Build `servers/iris_pty` for pseudo-terminal emulation, terminal line discipline, escape sequence parsing, and POSIX signals (Ctrl+C / `SIGINT`).
+  2. Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys.
+  3. Compile and package `vendor/toybox` against `mlibc` (providing `sh`, `ls`, `cat`, `echo`, `cp`, `mkdir`, etc. without `fork()`, utilizing `posix_spawn()`).
+  4. Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
 
 ---
 
 ## Build & Verification Commands
 
 ```bash
-# Build system and disk images for both x86_64 and aarch64
+# Automated headless verification on both architectures (or single architecture)
+./iris test all         # Tests both x86_64 and aarch64
+./iris test x86_64      # Headless x86_64 QEMU verification
+./iris test aarch64     # Headless aarch64 QEMU verification
 ./iris build all        # or: make build all
 
 # Build a single architecture

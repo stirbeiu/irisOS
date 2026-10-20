@@ -29,6 +29,7 @@ show_help() {
 USAGE:
   ./iris build <arch>    Build system images
   ./iris run <arch>      Launch VM in QEMU window with serial console
+  ./iris test <arch>     Run automated headless verification in QEMU
   ./iris clean           Clean all build artifacts
 
 TARGET ARCHITECTURES:
@@ -173,6 +174,32 @@ EOF
     esac
 }
 
+cmd_test() {
+    local target="${1:-all}"
+    case "${target}" in
+        all)
+            echo "======================================================================"
+            echo " [irisOS] Running verification for ALL architectures..."
+            echo "======================================================================"
+            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a x86_64
+            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a aarch64
+            ;;
+        x86_64)
+            shift || true
+            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a x86_64 "$@"
+            ;;
+        aarch64)
+            shift || true
+            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a aarch64 "$@"
+            ;;
+        *)
+            echo "Error: Unknown test target '${target}'."
+            echo "Usage: ./iris test [all | x86_64 | aarch64]"
+            exit 1
+            ;;
+    esac
+}
+
 cmd_clean() {
     make -C "${BUILD_DIR}" clean
 }
@@ -187,6 +214,9 @@ case "${COMMAND}" in
         ;;
     run)
         cmd_run "$@"
+        ;;
+    test)
+        cmd_test "$@"
         ;;
     clean)
         cmd_clean "$@"

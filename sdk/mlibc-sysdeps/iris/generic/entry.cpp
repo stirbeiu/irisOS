@@ -22,6 +22,9 @@
 #ifndef PA_FD
 #define PA_FD 0x30u
 #endif
+#ifndef PA_NS_DIR
+#define PA_NS_DIR 0x20u
+#endif
 
 #include <iris/fd_table.h>
 
@@ -175,6 +178,8 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         iris_set_bootfs_vmo(h);
                     } else if (info == PA_HND(PA_RESOURCE, 0)) {
                         iris_set_root_resource(h);
+                    } else if (info == PA_HND(PA_NS_DIR, 0)) {
+                        iris_set_fshost_channel(h);
                     }
                 }
                 iris_set_process_handles(proc_self, thrd_self, vmar_root, job_def);

@@ -30,17 +30,19 @@ extern "C" {
 typedef enum iris_fd_type {
     IRIS_FD_CLOSED   = 0, /**< Slot is unused / closed */
     IRIS_FD_DEBUGLOG = 1, /**< Kernel debuglog handle (early console write-only) */
-    IRIS_FD_CHANNEL  = 2, /**< IPC channel to server (iris_fshost, iris_pty, etc.) */
+    IRIS_FD_CHANNEL  = 2, /**< Raw IPC channel to peer/server */
+    IRIS_FD_VFS      = 3, /**< VFS file handle routed via iris_fshost (IRIS_PROTO_FS) */
 } iris_fd_type_t;
 
 /**
  * @brief Representation of an entry in the client-side file descriptor table.
  */
 typedef struct iris_fd_entry {
-    zx_handle_t    handle; /**< Zircon capability handle (channel or debuglog) */
-    int            flags;  /**< POSIX file status flags (O_RDONLY, O_WRONLY, O_RDWR, etc.) */
-    off_t          offset; /**< Current file seek position */
-    iris_fd_type_t type;   /**< Descriptor category */
+    zx_handle_t    handle;     /**< Zircon capability handle (channel or debuglog) */
+    uint32_t       vfs_handle; /**< Server-side VFS open file handle on iris_fshost */
+    int            flags;      /**< POSIX file status flags (O_RDONLY, O_WRONLY, O_RDWR, etc.) */
+    off_t          offset;     /**< Current file seek position */
+    iris_fd_type_t type;       /**< Descriptor category */
 } iris_fd_entry_t;
 
 /**
@@ -116,6 +118,11 @@ void iris_set_vdso_vmo(zx_handle_t handle);
  * @brief Store the inherited BOOTFS VMO handle for executable loading.
  */
 void iris_set_bootfs_vmo(zx_handle_t handle);
+
+/**
+ * @brief Store the inherited iris_fshost VFS router IPC channel handle.
+ */
+void iris_set_fshost_channel(zx_handle_t handle);
 
 #ifdef __cplusplus
 }

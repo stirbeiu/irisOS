@@ -79,10 +79,13 @@
 #include "servers/iris_crypt/include/iris_crypt.h"
 
 /* Channel endpoints */
-static zx_handle_t g_server_channel = ZX_HANDLE_INVALID;
+#define MAX_CRYPT_CLIENTS 4
+static zx_handle_t g_client_channels[MAX_CRYPT_CLIENTS];
+static uint32_t    g_num_clients    = 0;
 static zx_handle_t g_blk_channel    = ZX_HANDLE_INVALID;
 
-/* Downstream block device geometry */
+/* Downstream block device & GPT Data partition geometry */
+static uint64_t g_part_start_sector    = 0;
 static uint64_t g_phys_sector_count    = 0;
 static uint64_t g_logical_sector_count = 0;
 static uint32_t g_sector_size          = 512u;
@@ -308,6 +311,44 @@ static void compute_header_checksum(const iris_crypt_header_t* hdr, uint8_t out_
 }
 
 /**
+ * @brief Inspect LBA 1..5 for a GPT partition table and locate Partition 4 ("Data").
+ *        If no GPT is found, defaults to the whole block device starting at LBA 0.
+ */
+static void detect_gpt_data_partition(void) {
+    uint8_t gpt_buf[512 * 4] __attribute__((aligned(8)));
+    if (downstream_read_sectors(1, 4, gpt_buf) != ZX_OK) {
+        return;
+    }
+
+    /* Check "EFI PART" signature at LBA 1 (offset 0 of gpt_buf) */
+    if (memcmp(gpt_buf, "EFI PART", 8) != 0) {
+        return;
+    }
+
+    /* Partition entries start at LBA 2 (offset 512 of gpt_buf), 128 bytes each */
+    const uint8_t* entries = gpt_buf + 512;
+    for (uint32_t i = 0; i < 12; ++i) {
+        const uint8_t* ent = entries + (i * 128);
+        uint64_t first_lba = 0;
+        uint64_t last_lba  = 0;
+        memcpy(&first_lba, ent + 32, sizeof(uint64_t));
+        memcpy(&last_lba,  ent + 40, sizeof(uint64_t));
+        if (first_lba == 0 || last_lba <= first_lba) {
+            continue;
+        }
+        /* Match UTF-16LE name "Data" at offset 56 */
+        const uint16_t* name16 = (const uint16_t*)(ent + 56);
+        if (name16[0] == 'D' && name16[1] == 'a' && name16[2] == 't' &&
+            name16[3] == 'a' && name16[4] == 0) {
+            g_part_start_sector    = first_lba;
+            g_phys_sector_count    = (last_lba - first_lba) + 1ULL;
+            g_logical_sector_count = g_phys_sector_count - IRIS_CRYPT_HEADER_SECTORS;
+            return;
+        }
+    }
+}
+
+/**
  * @brief Initialize or unlock the 4 KB Sector 0 metadata header using Argon2id
  *        and the Phase 4 deterministic development key fallback.
  */
@@ -315,8 +356,8 @@ static zx_status_t init_or_unlock_metadata_header(void) {
     static iris_crypt_header_t hdr __attribute__((aligned(8)));
     memset(&hdr, 0, sizeof(hdr));
 
-    /* 1. Read physical Sectors 0..7 (4096 bytes) from virtio_blk */
-    zx_status_t st = downstream_read_sectors(0, IRIS_CRYPT_HEADER_SECTORS, &hdr);
+    /* 1. Read physical Sectors 0..7 (4096 bytes) of the target partition from virtio_blk */
+    zx_status_t st = downstream_read_sectors(g_part_start_sector, IRIS_CRYPT_HEADER_SECTORS, &hdr);
     if (st != ZX_OK) {
         crypt_log("[FAILED] iris_crypt: Failed to read Sector 0 metadata header (%d).\n", st);
         return st;
@@ -394,7 +435,7 @@ static zx_status_t init_or_unlock_metadata_header(void) {
         compute_header_checksum(&hdr, hdr.header_checksum);
 
         /* Write 4 KB header to physical Sectors 0..7 on virtio_blk */
-        st = downstream_write_sectors(0, IRIS_CRYPT_HEADER_SECTORS, &hdr);
+        st = downstream_write_sectors(g_part_start_sector, IRIS_CRYPT_HEADER_SECTORS, &hdr);
         if (st != ZX_OK) {
             crypt_log("[FAILED] iris_crypt: Failed to write Sector 0 metadata header (%d).\n", st);
             return st;
@@ -456,192 +497,216 @@ static zx_status_t init_or_unlock_metadata_header(void) {
  * Block Proxy Server Loop (IRIS_PROTO_DRIVER)
  * ============================================================================== */
 
-static void run_proxy_server(void) {
-    crypt_log("[  OK  ] iris_crypt: Block proxy listening (logical Sector 0 -> physical Sector %u, %llu sectors).\n",
-              IRIS_CRYPT_HEADER_SECTORS, (unsigned long long)g_logical_sector_count);
-
-    static uint8_t req_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+static void handle_client_request(zx_handle_t ch, const uint8_t* req_buf, uint32_t act_bytes) {
     static uint8_t rep_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
     static uint8_t crypto_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+
+    if (act_bytes < sizeof(iris_msg_hdr_t)) {
+        return;
+    }
+
+    const iris_msg_hdr_t* req_hdr = (const iris_msg_hdr_t*)req_buf;
+    if (!iris_msg_hdr_is_valid(req_hdr, IRIS_PROTO_DRIVER)) {
+        return;
+    }
+
+    iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
+    uint32_t rep_total_len = sizeof(iris_msg_hdr_t);
+
+    switch (req_hdr->opcode) {
+        case IRIS_BLK_OP_GET_INFO: {
+            iris_blk_info_t* info = (iris_blk_info_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+            info->sector_count = g_logical_sector_count;
+            info->sector_size  = g_sector_size;
+            info->max_transfer = g_max_transfer;
+
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_blk_info_t));
+            rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_blk_info_t);
+            break;
+        }
+
+        case IRIS_BLK_OP_WRITE: {
+            if (!g_unlocked) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ACCESS_DENIED, 0);
+                break;
+            }
+            if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                break;
+            }
+
+            const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+            if (rw->num_sectors == 0 || rw->num_sectors > g_max_transfer ||
+                rw->start_sector + rw->num_sectors > g_logical_sector_count) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_OUT_OF_RANGE, 0);
+                break;
+            }
+
+            uint32_t data_bytes = rw->num_sectors * IRIS_CRYPT_SECTOR_SIZE;
+            if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t) + data_bytes) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BUFFER_TOO_SMALL, 0);
+                break;
+            }
+
+            const uint8_t* plain_in = (const uint8_t*)(rw + 1);
+            zx_status_t crypt_st = ZX_OK;
+
+            /* Encrypt each 512-byte sector using AES-256-XTS with logical sector LBA as tweak */
+            for (uint32_t i = 0; i < rw->num_sectors; ++i) {
+                uint8_t data_unit[16];
+                make_xts_data_unit(rw->start_sector + i, data_unit);
+
+                int rc = mbedtls_aes_crypt_xts(
+                    &g_xts_enc,
+                    MBEDTLS_AES_ENCRYPT,
+                    IRIS_CRYPT_SECTOR_SIZE,
+                    data_unit,
+                    plain_in + (i * IRIS_CRYPT_SECTOR_SIZE),
+                    crypto_buf + (i * IRIS_CRYPT_SECTOR_SIZE)
+                );
+                if (rc != 0) {
+                    crypt_st = ZX_ERR_INTERNAL;
+                    break;
+                }
+            }
+
+            if (crypt_st != ZX_OK) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, crypt_st, 0);
+                break;
+            }
+
+            /* Translate logical sector offset past partition base + 4 KB metadata header (Sector 8+) */
+            uint64_t phys_sector = g_part_start_sector + rw->start_sector + IRIS_CRYPT_HEADER_SECTORS;
+            zx_status_t io_st = downstream_write_sectors(phys_sector, rw->num_sectors, crypto_buf);
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
+            break;
+        }
+
+        case IRIS_BLK_OP_READ: {
+            if (!g_unlocked) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ACCESS_DENIED, 0);
+                break;
+            }
+            if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                break;
+            }
+
+            const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+            if (rw->num_sectors == 0 || rw->num_sectors > g_max_transfer ||
+                rw->start_sector + rw->num_sectors > g_logical_sector_count) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_OUT_OF_RANGE, 0);
+                break;
+            }
+
+            uint32_t data_bytes = rw->num_sectors * IRIS_CRYPT_SECTOR_SIZE;
+            uint64_t phys_sector = g_part_start_sector + rw->start_sector + IRIS_CRYPT_HEADER_SECTORS;
+
+            /* Fetch ciphertext from downstream virtio_blk */
+            zx_status_t io_st = downstream_read_sectors(phys_sector, rw->num_sectors, crypto_buf);
+            if (io_st != ZX_OK) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
+                break;
+            }
+
+            uint8_t* plain_out = rep_buf + sizeof(iris_msg_hdr_t);
+            zx_status_t crypt_st = ZX_OK;
+
+            /* Decrypt each 512-byte sector using AES-256-XTS with logical sector LBA as tweak */
+            for (uint32_t i = 0; i < rw->num_sectors; ++i) {
+                uint8_t data_unit[16];
+                make_xts_data_unit(rw->start_sector + i, data_unit);
+
+                int rc = mbedtls_aes_crypt_xts(
+                    &g_xts_dec,
+                    MBEDTLS_AES_DECRYPT,
+                    IRIS_CRYPT_SECTOR_SIZE,
+                    data_unit,
+                    crypto_buf + (i * IRIS_CRYPT_SECTOR_SIZE),
+                    plain_out + (i * IRIS_CRYPT_SECTOR_SIZE)
+                );
+                if (rc != 0) {
+                    crypt_st = ZX_ERR_INTERNAL;
+                    break;
+                }
+            }
+
+            if (crypt_st == ZX_OK) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, data_bytes);
+                rep_total_len = sizeof(iris_msg_hdr_t) + data_bytes;
+            } else {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, crypt_st, 0);
+            }
+            break;
+        }
+
+        case IRIS_BLK_OP_FLUSH: {
+            zx_status_t io_st = downstream_flush();
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
+            break;
+        }
+
+        default:
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
+            break;
+    }
+
+    zx_channel_write(ch, 0, rep_buf, rep_total_len, NULL, 0);
+}
+
+static void run_proxy_server(void) {
+    crypt_log("[  OK  ] iris_crypt: Block proxy listening (LBA %llu+%u, %llu logical sectors).\n",
+              (unsigned long long)g_part_start_sector,
+              IRIS_CRYPT_HEADER_SECTORS,
+              (unsigned long long)g_logical_sector_count);
+
+    static uint8_t req_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
     zx_handle_t handles[IRIS_IPC_MAX_HANDLES];
 
     for (;;) {
-        uint32_t act_bytes = 0;
-        uint32_t act_handles = 0;
-        zx_status_t st = zx_channel_read(g_server_channel, 0,
-                                         req_buf, handles,
-                                         sizeof(req_buf), IRIS_IPC_MAX_HANDLES,
-                                         &act_bytes, &act_handles);
-
-        if (st == ZX_ERR_SHOULD_WAIT) {
-            zx_signals_t obs = 0;
-            st = zx_object_wait_one(g_server_channel,
-                                    ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
-                                    ZX_TIME_INFINITE, &obs);
-            if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) {
-                break;
+        zx_wait_item_t items[MAX_CRYPT_CLIENTS];
+        uint32_t active_count = 0;
+        for (uint32_t i = 0; i < g_num_clients; ++i) {
+            if (g_client_channels[i] != ZX_HANDLE_INVALID) {
+                items[active_count].handle  = g_client_channels[i];
+                items[active_count].waitfor = ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED;
+                items[active_count].pending = 0;
+                active_count++;
             }
-            continue;
+        }
+        if (active_count == 0) {
+            break;
         }
 
+        zx_status_t st = zx_object_wait_many(items, active_count, ZX_TIME_INFINITE);
         if (st != ZX_OK) {
-            if (st == ZX_ERR_PEER_CLOSED) {
-                break;
-            }
-            continue;
+            break;
         }
 
-        if (act_bytes < sizeof(iris_msg_hdr_t)) {
-            continue;
-        }
-
-        const iris_msg_hdr_t* req_hdr = (const iris_msg_hdr_t*)req_buf;
-        if (!iris_msg_hdr_is_valid(req_hdr, IRIS_PROTO_DRIVER)) {
-            continue;
-        }
-
-        iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
-        uint32_t rep_total_len = sizeof(iris_msg_hdr_t);
-
-        switch (req_hdr->opcode) {
-            case IRIS_BLK_OP_GET_INFO: {
-                iris_blk_info_t* info = (iris_blk_info_t*)(rep_buf + sizeof(iris_msg_hdr_t));
-                info->sector_count = g_logical_sector_count;
-                info->sector_size  = g_sector_size;
-                info->max_transfer = g_max_transfer;
-
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_blk_info_t));
-                rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_blk_info_t);
-                break;
-            }
-
-            case IRIS_BLK_OP_WRITE: {
-                if (!g_unlocked) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ACCESS_DENIED, 0);
-                    break;
-                }
-                if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
-                    break;
-                }
-
-                const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
-                if (rw->num_sectors == 0 || rw->num_sectors > g_max_transfer ||
-                    rw->start_sector + rw->num_sectors > g_logical_sector_count) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_OUT_OF_RANGE, 0);
-                    break;
-                }
-
-                uint32_t data_bytes = rw->num_sectors * IRIS_CRYPT_SECTOR_SIZE;
-                if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t) + data_bytes) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BUFFER_TOO_SMALL, 0);
-                    break;
-                }
-
-                const uint8_t* plain_in = (const uint8_t*)(rw + 1);
-                zx_status_t crypt_st = ZX_OK;
-
-                /* Encrypt each 512-byte sector using AES-256-XTS with logical sector LBA as tweak */
-                for (uint32_t i = 0; i < rw->num_sectors; ++i) {
-                    uint8_t data_unit[16];
-                    make_xts_data_unit(rw->start_sector + i, data_unit);
-
-                    int rc = mbedtls_aes_crypt_xts(
-                        &g_xts_enc,
-                        MBEDTLS_AES_ENCRYPT,
-                        IRIS_CRYPT_SECTOR_SIZE,
-                        data_unit,
-                        plain_in + (i * IRIS_CRYPT_SECTOR_SIZE),
-                        crypto_buf + (i * IRIS_CRYPT_SECTOR_SIZE)
-                    );
-                    if (rc != 0) {
-                        crypt_st = ZX_ERR_INTERNAL;
+        for (uint32_t i = 0; i < active_count; ++i) {
+            zx_handle_t ch = items[i].handle;
+            if (items[i].pending & ZX_CHANNEL_READABLE) {
+                for (;;) {
+                    uint32_t act_bytes = 0, act_handles = 0;
+                    zx_status_t rd_st = zx_channel_read(ch, 0,
+                                                        req_buf, handles,
+                                                        sizeof(req_buf), IRIS_IPC_MAX_HANDLES,
+                                                        &act_bytes, &act_handles);
+                    if (rd_st != ZX_OK) {
                         break;
                     }
+                    handle_client_request(ch, req_buf, act_bytes);
                 }
-
-                if (crypt_st != ZX_OK) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, crypt_st, 0);
-                    break;
-                }
-
-                /* Translate logical sector offset past 4 KB metadata header (Sector 8+) */
-                uint64_t phys_sector = rw->start_sector + IRIS_CRYPT_HEADER_SECTORS;
-                zx_status_t io_st = downstream_write_sectors(phys_sector, rw->num_sectors, crypto_buf);
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
-                break;
             }
-
-            case IRIS_BLK_OP_READ: {
-                if (!g_unlocked) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ACCESS_DENIED, 0);
-                    break;
-                }
-                if (req_hdr->payload_len < sizeof(iris_blk_rw_req_t)) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
-                    break;
-                }
-
-                const iris_blk_rw_req_t* rw = (const iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
-                if (rw->num_sectors == 0 || rw->num_sectors > g_max_transfer ||
-                    rw->start_sector + rw->num_sectors > g_logical_sector_count) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_OUT_OF_RANGE, 0);
-                    break;
-                }
-
-                uint32_t data_bytes = rw->num_sectors * IRIS_CRYPT_SECTOR_SIZE;
-                uint64_t phys_sector = rw->start_sector + IRIS_CRYPT_HEADER_SECTORS;
-
-                /* Fetch ciphertext from downstream virtio_blk */
-                zx_status_t io_st = downstream_read_sectors(phys_sector, rw->num_sectors, crypto_buf);
-                if (io_st != ZX_OK) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
-                    break;
-                }
-
-                uint8_t* plain_out = rep_buf + sizeof(iris_msg_hdr_t);
-                zx_status_t crypt_st = ZX_OK;
-
-                /* Decrypt each 512-byte sector using AES-256-XTS with logical sector LBA as tweak */
-                for (uint32_t i = 0; i < rw->num_sectors; ++i) {
-                    uint8_t data_unit[16];
-                    make_xts_data_unit(rw->start_sector + i, data_unit);
-
-                    int rc = mbedtls_aes_crypt_xts(
-                        &g_xts_dec,
-                        MBEDTLS_AES_DECRYPT,
-                        IRIS_CRYPT_SECTOR_SIZE,
-                        data_unit,
-                        crypto_buf + (i * IRIS_CRYPT_SECTOR_SIZE),
-                        plain_out + (i * IRIS_CRYPT_SECTOR_SIZE)
-                    );
-                    if (rc != 0) {
-                        crypt_st = ZX_ERR_INTERNAL;
-                        break;
+            if (items[i].pending & ZX_CHANNEL_PEER_CLOSED) {
+                for (uint32_t c = 0; c < g_num_clients; ++c) {
+                    if (g_client_channels[c] == ch) {
+                        zx_handle_close(ch);
+                        g_client_channels[c] = ZX_HANDLE_INVALID;
                     }
                 }
-
-                if (crypt_st == ZX_OK) {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, data_bytes);
-                    rep_total_len = sizeof(iris_msg_hdr_t) + data_bytes;
-                } else {
-                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, crypt_st, 0);
-                }
-                break;
             }
-
-            case IRIS_BLK_OP_FLUSH: {
-                zx_status_t io_st = downstream_flush();
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, io_st, 0);
-                break;
-            }
-
-            default:
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
-                break;
         }
-
-        zx_channel_write(g_server_channel, 0, rep_buf, rep_total_len, NULL, 0);
     }
 }
 
@@ -649,11 +714,16 @@ int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
-    /* 1. Extract upstream server channel (PA_USER0) and downstream virtio_blk channel (PA_USER1) */
-    g_server_channel = zx_take_startup_handle(PA_HND(PA_USER0, 0));
-    g_blk_channel    = zx_take_startup_handle(PA_HND(PA_USER1, 0));
+    /* 1. Extract upstream server channel(s) (PA_USER0, 0..3) and downstream virtio_blk channel (PA_USER1) */
+    for (uint32_t i = 0; i < MAX_CRYPT_CLIENTS; ++i) {
+        zx_handle_t h = zx_take_startup_handle(PA_HND(PA_USER0, i));
+        if (h != ZX_HANDLE_INVALID) {
+            g_client_channels[g_num_clients++] = h;
+        }
+    }
+    g_blk_channel = zx_take_startup_handle(PA_HND(PA_USER1, 0));
 
-    if (g_server_channel == ZX_HANDLE_INVALID || g_blk_channel == ZX_HANDLE_INVALID) {
+    if (g_num_clients == 0 || g_blk_channel == ZX_HANDLE_INVALID) {
         crypt_log("[FAILED] iris_crypt: Missing required IPC channel handles (PA_USER0 / PA_USER1).\n");
         return 1;
     }
@@ -667,10 +737,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    g_part_start_sector    = 0;
     g_phys_sector_count    = blk_info.sector_count;
     g_logical_sector_count = blk_info.sector_count - IRIS_CRYPT_HEADER_SECTORS;
     g_sector_size          = blk_info.sector_size ? blk_info.sector_size : 512u;
     g_max_transfer         = blk_info.max_transfer ? blk_info.max_transfer : 120u;
+
+    /* Locate GPT Partition 4 ("Data") if a GPT partition table is present at LBA 1 */
+    detect_gpt_data_partition();
 
     /* 3. Initialize or verify 4 KB Sector 0 metadata header and unlock AES-256-XTS contexts */
     st = init_or_unlock_metadata_header();
@@ -687,9 +761,11 @@ int main(int argc, char* argv[]) {
     mbedtls_aes_xts_free(&g_xts_dec);
     mbedtls_platform_zeroize(g_master_key, sizeof(g_master_key));
 
-    if (g_server_channel != ZX_HANDLE_INVALID) {
-        zx_handle_close(g_server_channel);
-        g_server_channel = ZX_HANDLE_INVALID;
+    for (uint32_t i = 0; i < g_num_clients; ++i) {
+        if (g_client_channels[i] != ZX_HANDLE_INVALID) {
+            zx_handle_close(g_client_channels[i]);
+            g_client_channels[i] = ZX_HANDLE_INVALID;
+        }
     }
     if (g_blk_channel != ZX_HANDLE_INVALID) {
         zx_handle_close(g_blk_channel);

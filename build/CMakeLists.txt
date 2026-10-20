@@ -354,6 +354,66 @@ if (EXISTS "${MBEDTLS_ROOT}/library/aes.c")
 endif()
 
 # ==============================================================================
+# Target: libufs (FreeBSD UFS2 / FFS Filesystem Library - BSD 2-Clause)
+# ==============================================================================
+set(LIBUFS_ROOT "${IRIS_ROOT}/vendor/libufs")
+if (EXISTS "${LIBUFS_ROOT}/libufs/sblock.c")
+    set(LIBUFS_SRCS
+        "${LIBUFS_ROOT}/libufs/block.c"
+        "${LIBUFS_ROOT}/libufs/cgroup.c"
+        "${LIBUFS_ROOT}/libufs/inode.c"
+        "${LIBUFS_ROOT}/libufs/sblock.c"
+        "${LIBUFS_ROOT}/sys/ufs/ffs/ffs_subr.c"
+        "${LIBUFS_ROOT}/sys/ufs/ffs/ffs_tables.c"
+        "${IRIS_ROOT}/servers/iris_fshost/src/ufs_io.c"
+    )
+
+    add_library(ufs STATIC EXCLUDE_FROM_ALL ${LIBUFS_SRCS})
+    add_dependencies(ufs zircon_syscall_headers)
+
+    target_include_directories(ufs PUBLIC
+        "${IRIS_ROOT}/servers/iris_fshost/include/compat"
+        "${IRIS_ROOT}/servers/iris_fshost/include"
+        "${LIBUFS_ROOT}/libufs"
+        "${LIBUFS_ROOT}/sys"
+        "${IRIS_ROOT}/sdk/libiris/include"
+        "${IRIS_ROOT}"
+        "${GEN_DIR}"
+        "${GEN_DIR}/zircon"
+        "${ZIRCON_ROOT}/system/public"
+        "${CMAKE_BINARY_DIR}/mlibc"
+        "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/ansi/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/posix/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/bsd/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/glibc/include"
+        "${IRIS_ROOT}/vendor/mlibc/options/internal/include"
+        "${IRIS_ROOT}/vendor/mlibc/include"
+    )
+
+    target_compile_definitions(ufs PRIVATE
+        _LIBUFS
+        pread=iris_ufs_pread
+        pwrite=iris_ufs_pwrite
+    )
+
+    target_compile_options(ufs PRIVATE
+        -ffreestanding
+        -fPIC
+        -O2
+        -Wno-unused-parameter
+        -Wno-unused-function
+        -Wno-sign-compare
+        -Wno-pointer-sign
+    )
+
+    set_target_properties(ufs PROPERTIES
+        OUTPUT_NAME "ufs"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    )
+endif()
+
+# ==============================================================================
 # Target: Zircon Microkernel Core
 # ==============================================================================
 set(KERNEL_ROOT "${ZIRCON_ROOT}/kernel")

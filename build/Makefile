@@ -40,7 +40,7 @@ all-aarch64: image-aarch64
 # ------------------------------------------------------------------------------
 # Host Tools (Darwin Apple Silicon)
 # ------------------------------------------------------------------------------
-tools: $(HOST_OUT)/zbi $(HOST_OUT)/abigen
+tools: $(HOST_OUT)/zbi $(HOST_OUT)/abigen $(HOST_OUT)/mkufs2
 
 $(HOST_OUT)/zbi: $(ZIRCON_DIR)/system/host/zbi/zbi.cpp
 	@mkdir -p $(HOST_OUT)
@@ -116,6 +116,37 @@ $(HOST_OUT)/abigen: $(ZIRCON_DIR)/system/host/abigen/abigen.cpp
 
 zbi: $(HOST_OUT)/zbi
 abigen: $(HOST_OUT)/abigen
+mkufs2: $(HOST_OUT)/mkufs2
+
+$(HOST_OUT)/mkufs2: $(BUILD_DIR)/mkufs2_host.c fetch-libufs fetch-mbedtls
+	@mkdir -p $(HOST_OUT)
+	@echo "==> Building host UFS2 + AES-256-XTS formatter ($(HOST_OUT)/mkufs2)..."
+	@$(HOST_CC) -O2 -D_LIBUFS \
+		-DMBEDTLS_CONFIG_FILE='"mbedtls_iris_config.h"' \
+		-I$(ROOT_DIR)/servers/iris_fshost/include/compat \
+		-I$(ROOT_DIR)/vendor/libufs/libufs \
+		-I$(ROOT_DIR)/vendor/libufs/sys \
+		-I$(ROOT_DIR)/vendor/mbedtls/include \
+		-I$(ROOT_DIR)/vendor/mbedtls/library \
+		-I$(BUILD_DIR) \
+		-I$(ROOT_DIR)/servers/iris_crypt/src \
+		-I$(ROOT_DIR) \
+		$(BUILD_DIR)/mkufs2_host.c \
+		$(ROOT_DIR)/vendor/libufs/libufs/block.c \
+		$(ROOT_DIR)/vendor/libufs/libufs/sblock.c \
+		$(ROOT_DIR)/vendor/libufs/libufs/cgroup.c \
+		$(ROOT_DIR)/vendor/libufs/libufs/inode.c \
+		$(ROOT_DIR)/vendor/libufs/sys/ufs/ffs/ffs_subr.c \
+		$(ROOT_DIR)/vendor/libufs/sys/ufs/ffs/ffs_tables.c \
+		$(ROOT_DIR)/vendor/mbedtls/library/aes.c \
+		$(ROOT_DIR)/vendor/mbedtls/library/sha256.c \
+		$(ROOT_DIR)/vendor/mbedtls/library/sha512.c \
+		$(ROOT_DIR)/vendor/mbedtls/library/platform_util.c \
+		$(ROOT_DIR)/vendor/mbedtls/library/constant_time.c \
+		$(ROOT_DIR)/servers/iris_crypt/src/argon2.c \
+		-Wno-sign-compare -Wno-pointer-sign -Wno-unused-parameter -Wno-unused-function -Wno-format \
+		-o $(HOST_OUT)/mkufs2
+	@echo "    [DONE] $(HOST_OUT)/mkufs2"
 
 # ------------------------------------------------------------------------------
 # Target Architecture Builds (CMake + Ninja + Microkernel)
@@ -177,6 +208,21 @@ fetch-mlibc:
 
 fetch-mbedtls:
 	@$(ROOT_DIR)/scripts/fetch_mbedtls.sh
+
+fetch-libufs:
+	@$(ROOT_DIR)/scripts/fetch_ufs.sh
+
+libufs-x86_64: mlibc-x86_64 fetch-libufs
+	@echo "==> Building libufs.a (x86_64)..."
+	@ninja -C $(OUT_DIR)/build-x86_64 ufs
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/lib/libufs.a"
+
+libufs-aarch64: mlibc-aarch64 fetch-libufs
+	@echo "==> Building libufs.a (aarch64)..."
+	@ninja -C $(OUT_DIR)/build-aarch64 ufs
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/lib/libufs.a"
+
+libufs: libufs-x86_64 libufs-aarch64
 
 mbedtls-x86_64: mlibc-x86_64 fetch-mbedtls
 	@echo "==> Building libmbedcrypto.a (x86_64)..."
@@ -440,12 +486,93 @@ iris-crypt-aarch64: mlibc-aarch64 mbedtls-aarch64
 iris-crypt: iris-crypt-x86_64 iris-crypt-aarch64
 
 # ------------------------------------------------------------------------------
+# Ring 3 Central VFS Router, GPT Parser & UFS2 Server Daemon (bin/iris_fshost)
+# ------------------------------------------------------------------------------
+iris-fshost-x86_64: mlibc-x86_64 libufs-x86_64
+	@echo "==> Compiling iris_fshost (x86_64)..."
+	@mkdir -p $(OUT_DIR)/build-x86_64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=x86_64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-D_LIBUFS \
+		-isystem "$$CLANG_RES" \
+		-isystem $(ROOT_DIR)/servers/iris_fshost/include/compat \
+		-isystem $(ROOT_DIR)/servers/iris_fshost/include \
+		-isystem $(ROOT_DIR)/vendor/libufs/libufs \
+		-isystem $(ROOT_DIR)/vendor/libufs/sys \
+		-isystem $(OUT_DIR)/build-x86_64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-x86_64/gen \
+		-isystem $(OUT_DIR)/build-x86_64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-Wno-sign-compare -Wno-pointer-sign -Wno-unused-parameter \
+		-c $(ROOT_DIR)/servers/iris_fshost/src/main.c -o $(OUT_DIR)/build-x86_64/iris_fshost.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-x86_64/iris_fshost.o \
+		$(OUT_DIR)/build-x86_64/lib/libufs.a \
+		$(OUT_DIR)/build-x86_64/mlibc/libc.a \
+		$(OUT_DIR)/build-x86_64/lib/libiris.a \
+		$(OUT_DIR)/build-x86_64/lib/libclang_rt.builtins-x86_64.a \
+		$(OUT_DIR)/build-x86_64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-x86_64/bin/iris_fshost
+	@echo "    [DONE] $(OUT_DIR)/build-x86_64/bin/iris_fshost"
+
+iris-fshost-aarch64: mlibc-aarch64 libufs-aarch64
+	@echo "==> Compiling iris_fshost (aarch64)..."
+	@mkdir -p $(OUT_DIR)/build-aarch64/bin
+	@CLANG_RES=$$($(LLVM_PREFIX)/bin/clang -print-resource-dir)/include; \
+	$(LLVM_PREFIX)/bin/clang --target=aarch64-unknown-linux-gnu -O2 -fPIE -nostdinc \
+		-D_LIBUFS \
+		-isystem "$$CLANG_RES" \
+		-isystem $(ROOT_DIR)/servers/iris_fshost/include/compat \
+		-isystem $(ROOT_DIR)/servers/iris_fshost/include \
+		-isystem $(ROOT_DIR)/vendor/libufs/libufs \
+		-isystem $(ROOT_DIR)/vendor/libufs/sys \
+		-isystem $(OUT_DIR)/build-aarch64/mlibc \
+		-isystem $(ROOT_DIR)/sdk/mlibc-sysdeps/iris/include \
+		-isystem $(ROOT_DIR)/sdk/libiris/include \
+		-isystem $(ROOT_DIR) \
+		-isystem $(ROOT_DIR)/kernel/zircon/system/public \
+		-isystem $(OUT_DIR)/build-aarch64/gen \
+		-isystem $(OUT_DIR)/build-aarch64/gen/zircon \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/ansi/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/posix/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/bsd/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/glibc/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/options/internal/include \
+		-isystem $(ROOT_DIR)/vendor/mlibc/include \
+		-Wno-sign-compare -Wno-pointer-sign -Wno-unused-parameter \
+		-c $(ROOT_DIR)/servers/iris_fshost/src/main.c -o $(OUT_DIR)/build-aarch64/iris_fshost.o
+	@/opt/homebrew/bin/ld.lld -pie -z text \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crt1.o \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crti.o \
+		$(OUT_DIR)/build-aarch64/iris_fshost.o \
+		$(OUT_DIR)/build-aarch64/lib/libufs.a \
+		$(OUT_DIR)/build-aarch64/mlibc/libc.a \
+		$(OUT_DIR)/build-aarch64/lib/libiris.a \
+		$(OUT_DIR)/build-aarch64/lib/libclang_rt.builtins-aarch64.a \
+		$(OUT_DIR)/build-aarch64/mlibc/sysdeps/iris/crtn.o \
+		-o $(OUT_DIR)/build-aarch64/bin/iris_fshost
+	@echo "    [DONE] $(OUT_DIR)/build-aarch64/bin/iris_fshost"
+
+iris-fshost: iris-fshost-x86_64 iris-fshost-aarch64
+
+# ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64 iris-crypt-x86_64
+image-x86_64: build-x86_64 its-irisOS-x86_64 virtio-blk-x86_64 iris-crypt-x86_64 iris-fshost-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-aarch64: build-aarch64 its-irisOS-aarch64 virtio-blk-aarch64 iris-crypt-aarch64
+image-aarch64: build-aarch64 its-irisOS-aarch64 virtio-blk-aarch64 iris-crypt-aarch64 iris-fshost-aarch64
 	@$(BUILD_DIR)/mkimage.sh aarch64
 
 run: run-x86_64

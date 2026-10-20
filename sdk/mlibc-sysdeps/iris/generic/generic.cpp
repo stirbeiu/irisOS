@@ -29,6 +29,11 @@
 #ifndef PA_FD
 #define PA_FD 0x30u
 #endif
+#ifndef PA_NS_DIR
+#define PA_NS_DIR 0x20u
+#endif
+
+#include <iris/ipc.h>
 
 /* ==============================================================================
  * Global Capability Handle Storage
@@ -52,6 +57,7 @@ static zx_handle_t g_debuglog_handle = ZX_HANDLE_INVALID;
 
 static zx_handle_t g_vdso_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_bootfs_vmo = ZX_HANDLE_INVALID;
+static zx_handle_t g_fshost_channel = ZX_HANDLE_INVALID;
 
 extern "C" void iris_set_vmar_root(zx_handle_t handle) {
     g_vmar_root_self = handle;
@@ -67,6 +73,17 @@ extern "C" void iris_set_vdso_vmo(zx_handle_t handle) {
 
 extern "C" void iris_set_bootfs_vmo(zx_handle_t handle) {
     g_bootfs_vmo = handle;
+}
+
+extern "C" void iris_set_fshost_channel(zx_handle_t handle) {
+    g_fshost_channel = handle;
+}
+
+static zx_handle_t iris_get_fshost_channel(void) {
+    if (g_fshost_channel == ZX_HANDLE_INVALID) {
+        g_fshost_channel = zx_take_startup_handle(PA_HND(PA_NS_DIR, 0));
+    }
+    return g_fshost_channel;
 }
 
 /* ==============================================================================
@@ -420,6 +437,7 @@ static zx_status_t (*pfn_zx_bti_create)(zx_handle_t iommu, uint32_t options, uin
 static zx_status_t (*pfn_zx_bti_pin)(zx_handle_t bti, uint32_t options, zx_handle_t vmo, uint64_t offset, uint64_t size, zx_paddr_t* addrs, size_t addrs_count, zx_handle_t* pmt) = nullptr;
 static zx_status_t (*pfn_zx_pmt_unpin)(zx_handle_t pmt) = nullptr;
 static zx_status_t (*pfn_zx_object_wait_one)(zx_handle_t handle, zx_signals_t signals, zx_time_t deadline, zx_signals_t* observed) = nullptr;
+static zx_status_t (*pfn_zx_object_wait_many)(zx_wait_item_t* items, size_t num_items, zx_time_t deadline) = nullptr;
 
 static void* vdso_find(uintptr_t base, const char* name, const char* name_with_underscore) {
     void* ptr = vdso_sym_lookup(base, name_with_underscore);
@@ -466,6 +484,7 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_bti_pin               = (decltype(pfn_zx_bti_pin))vdso_find(base, "zx_bti_pin", "_zx_bti_pin");
     pfn_zx_pmt_unpin             = (decltype(pfn_zx_pmt_unpin))vdso_find(base, "zx_pmt_unpin", "_zx_pmt_unpin");
     pfn_zx_object_wait_one       = (decltype(pfn_zx_object_wait_one))vdso_find(base, "zx_object_wait_one", "_zx_object_wait_one");
+    pfn_zx_object_wait_many      = (decltype(pfn_zx_object_wait_many))vdso_find(base, "zx_object_wait_many", "_zx_object_wait_many");
 }
 
 /* Exported ABI wrappers dispatching into kernel-registered vDSO */
@@ -718,6 +737,11 @@ extern "C" zx_status_t zx_object_wait_one(zx_handle_t handle, zx_signals_t signa
     return ZX_ERR_NOT_SUPPORTED;
 }
 
+extern "C" zx_status_t zx_object_wait_many(zx_wait_item_t* items, size_t num_items, zx_time_t deadline) {
+    if (pfn_zx_object_wait_many) return pfn_zx_object_wait_many(items, num_items, deadline);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
 
 
 /* ==============================================================================
@@ -855,6 +879,88 @@ int sys_futex_wake(int *pointer) {
     return (status == ZX_OK) ? 0 : -1;
 }
 
+static int vfs_status_to_errno(int32_t st) {
+    switch (st) {
+        case ZX_OK:                  return 0;
+        case IRIS_ERR_READ_ONLY:     return EROFS;
+        case ZX_ERR_NOT_FOUND:       return ENOENT;
+        case ZX_ERR_ACCESS_DENIED:   return EACCES;
+        case ZX_ERR_ALREADY_EXISTS:  return EEXIST;
+        case ZX_ERR_NOT_DIR:         return ENOTDIR;
+        case ZX_ERR_NOT_FILE:        return EISDIR;
+        case ZX_ERR_NO_SPACE:        return ENOSPC;
+        case ZX_ERR_NO_RESOURCES:    return EMFILE;
+        case ZX_ERR_NO_MEMORY:       return ENOMEM;
+        case ZX_ERR_INVALID_ARGS:    return EINVAL;
+        case ZX_ERR_BAD_HANDLE:      return EBADF;
+        case ZX_ERR_NOT_SUPPORTED:   return ENOSYS;
+        default:                     return EIO;
+    }
+}
+
+static uint32_t g_vfs_txid = 10000u;
+
+static int vfs_ipc_call(zx_handle_t fs_ch, uint32_t opcode,
+                        const void* req_payload, uint32_t req_len,
+                        void* rep_buf, uint32_t rep_max,
+                        uint32_t* out_rep_payload_len) {
+    if (fs_ch == ZX_HANDLE_INVALID) {
+        return ENOENT;
+    }
+
+    static uint8_t send_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+    if (sizeof(iris_msg_hdr_t) + req_len > sizeof(send_buf)) {
+        return EINVAL;
+    }
+
+    iris_msg_hdr_t* hdr = reinterpret_cast<iris_msg_hdr_t*>(send_buf);
+    uint32_t txid = ++g_vfs_txid;
+    iris_msg_hdr_init(hdr, IRIS_PROTO_FS, opcode, txid, req_len);
+    if (req_len > 0 && req_payload != nullptr) {
+        memcpy(send_buf + sizeof(iris_msg_hdr_t), req_payload, req_len);
+    }
+
+    zx_status_t st = zx_channel_write(fs_ch, 0, send_buf,
+                                      static_cast<uint32_t>(sizeof(iris_msg_hdr_t) + req_len),
+                                      nullptr, 0);
+    if (st != ZX_OK) {
+        return EIO;
+    }
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(fs_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) {
+        return EIO;
+    }
+
+    static uint8_t recv_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(fs_ch, 0, recv_buf, nullptr, sizeof(recv_buf), 0,
+                         &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t)) {
+        return EIO;
+    }
+
+    const iris_msg_hdr_t* rep_hdr = reinterpret_cast<const iris_msg_hdr_t*>(recv_buf);
+    if (rep_hdr->status != ZX_OK) {
+        return vfs_status_to_errno(rep_hdr->status);
+    }
+
+    uint32_t plen = rep_hdr->payload_len;
+    if (plen > act_bytes - sizeof(iris_msg_hdr_t)) {
+        plen = act_bytes - static_cast<uint32_t>(sizeof(iris_msg_hdr_t));
+    }
+    if (rep_buf != nullptr && rep_max > 0) {
+        uint32_t copy_len = (plen < rep_max) ? plen : rep_max;
+        memcpy(rep_buf, recv_buf + sizeof(iris_msg_hdr_t), copy_len);
+    }
+    if (out_rep_payload_len != nullptr) {
+        *out_rep_payload_len = plen;
+    }
+    return 0;
+}
+
 int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
     iris_fd_entry_t* entry = iris_fd_get(fd);
     if (!entry || entry->type == IRIS_FD_CLOSED) {
@@ -879,6 +985,32 @@ int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
         return 0;
     }
 
+    if (entry->type == IRIS_FD_VFS) {
+        if (count == 0) {
+            *bytes_written = 0;
+            return 0;
+        }
+        uint32_t max_chunk = IRIS_IPC_MAX_PAYLOAD - static_cast<uint32_t>(sizeof(iris_fs_write_req_t));
+        uint32_t chunk = (count > max_chunk) ? max_chunk : static_cast<uint32_t>(count);
+
+        static uint8_t req_buf[IRIS_IPC_MAX_PAYLOAD] __attribute__((aligned(8)));
+        iris_fs_write_req_t* req = reinterpret_cast<iris_fs_write_req_t*>(req_buf);
+        req->vfs_handle = entry->vfs_handle;
+        req->count      = chunk;
+        memcpy(req_buf + sizeof(iris_fs_write_req_t), buf, chunk);
+
+        iris_fs_write_resp_t resp = {};
+        int err = vfs_ipc_call(entry->handle, IRIS_FS_OP_WRITE,
+                               req_buf, static_cast<uint32_t>(sizeof(iris_fs_write_req_t) + chunk),
+                               &resp, sizeof(resp), nullptr);
+        if (err != 0) {
+            return err;
+        }
+        entry->offset += static_cast<off_t>(resp.bytes_written);
+        *bytes_written = static_cast<ssize_t>(resp.bytes_written);
+        return 0;
+    }
+
     if (entry->type == IRIS_FD_CHANNEL) {
         if (entry->handle != ZX_HANDLE_INVALID) {
             zx_status_t st = zx_channel_write(entry->handle, 0, buf, (uint32_t)count, nullptr, 0);
@@ -900,6 +1032,27 @@ int sys_read(int fd, void *buf, size_t count, ssize_t *bytes_read) {
     }
     if (entry->type == IRIS_FD_DEBUGLOG) {
         *bytes_read = 0;
+        return 0;
+    }
+    if (entry->type == IRIS_FD_VFS) {
+        if (count == 0) {
+            *bytes_read = 0;
+            return 0;
+        }
+        uint32_t chunk = (count > IRIS_IPC_MAX_PAYLOAD) ? IRIS_IPC_MAX_PAYLOAD : static_cast<uint32_t>(count);
+        iris_fs_read_req_t req = {};
+        req.vfs_handle = entry->vfs_handle;
+        req.count      = chunk;
+
+        uint32_t act_read = 0;
+        int err = vfs_ipc_call(entry->handle, IRIS_FS_OP_READ,
+                               &req, sizeof(req),
+                               buf, chunk, &act_read);
+        if (err != 0) {
+            return err;
+        }
+        entry->offset += static_cast<off_t>(act_read);
+        *bytes_read = static_cast<ssize_t>(act_read);
         return 0;
     }
     if (entry->type == IRIS_FD_CHANNEL) {
@@ -928,7 +1081,6 @@ static int iris_strcmp(const char *s1, const char *s2) {
 }
 
 int sys_open(const char *path, int flags, mode_t mode, int *fd) {
-    (void)mode;
     if (!path || !fd) return EINVAL;
 
     // Standard character devices
@@ -942,11 +1094,59 @@ int sys_open(const char *path, int flags, mode_t mode, int *fd) {
         return 0;
     }
 
-    // Prepared for Phase 4 iris_fshost VFS IPC channel routing
-    return ENOENT;
+    // Route regular file paths through IPC to iris_fshost
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch == ZX_HANDLE_INVALID) {
+        return ENOENT;
+    }
+
+    iris_fs_open_req_t req = {};
+    req.flags = static_cast<uint32_t>(flags);
+    req.mode  = static_cast<uint32_t>(mode);
+    size_t plen = strlen(path);
+    if (plen >= sizeof(req.path)) {
+        return ENAMETOOLONG;
+    }
+    memcpy(req.path, path, plen + 1);
+
+    iris_fs_open_resp_t resp = {};
+    int err = vfs_ipc_call(fs_ch, IRIS_FS_OP_OPEN, &req, sizeof(req), &resp, sizeof(resp), nullptr);
+    if (err != 0) {
+        return err;
+    }
+
+    int new_fd = iris_fd_alloc(fs_ch, IRIS_FD_VFS, flags);
+    if (new_fd < 0) {
+        iris_fs_close_req_t creq = { resp.vfs_handle, 0 };
+        vfs_ipc_call(fs_ch, IRIS_FS_OP_CLOSE, &creq, sizeof(creq), nullptr, 0, nullptr);
+        return EMFILE;
+    }
+
+    iris_fd_entry_t* entry = iris_fd_get(new_fd);
+    if (entry) {
+        entry->vfs_handle = resp.vfs_handle;
+        entry->offset     = 0;
+    }
+
+    *fd = new_fd;
+    return 0;
 }
 
 int sys_close(int fd) {
+    iris_fd_entry_t* entry = iris_fd_get(fd);
+    if (!entry || entry->type == IRIS_FD_CLOSED) {
+        return EBADF;
+    }
+    if (entry->type == IRIS_FD_VFS) {
+        iris_fs_close_req_t req = { entry->vfs_handle, 0 };
+        vfs_ipc_call(entry->handle, IRIS_FS_OP_CLOSE, &req, sizeof(req), nullptr, 0, nullptr);
+        entry->handle     = ZX_HANDLE_INVALID;
+        entry->vfs_handle = 0;
+        entry->flags      = 0;
+        entry->offset     = 0;
+        entry->type       = IRIS_FD_CLOSED;
+        return 0;
+    }
     if (iris_fd_close(fd) != 0) {
         return EBADF;
     }
@@ -960,6 +1160,24 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
     }
     if (entry->type == IRIS_FD_DEBUGLOG) {
         return ESPIPE;
+    }
+    if (entry->type == IRIS_FD_VFS) {
+        iris_fs_seek_req_t req = {};
+        req.vfs_handle = entry->vfs_handle;
+        req.whence     = static_cast<int32_t>(whence);
+        req.offset     = static_cast<int64_t>(offset);
+
+        iris_fs_seek_resp_t resp = {};
+        int err = vfs_ipc_call(entry->handle, IRIS_FS_OP_SEEK,
+                               &req, sizeof(req), &resp, sizeof(resp), nullptr);
+        if (err != 0) {
+            return err;
+        }
+        entry->offset = static_cast<off_t>(resp.new_offset);
+        if (new_offset) {
+            *new_offset = entry->offset;
+        }
+        return 0;
     }
     if (entry->type == IRIS_FD_CHANNEL) {
         if (whence == SEEK_SET) {
@@ -990,6 +1208,26 @@ int sys_fstat(int fd, struct stat *statbuf) {
     iris_fd_entry_t* entry = iris_fd_get(fd);
     if (!entry || entry->type == IRIS_FD_CLOSED) {
         return EBADF;
+    }
+    if (entry->type == IRIS_FD_VFS) {
+        iris_fs_stat_req_t req = {};
+        req.vfs_handle = entry->vfs_handle;
+        req.use_handle = 1;
+
+        iris_fs_stat_resp_t resp = {};
+        int err = vfs_ipc_call(entry->handle, IRIS_FS_OP_STAT,
+                               &req, sizeof(req), &resp, sizeof(resp), nullptr);
+        if (err != 0) {
+            return err;
+        }
+        if (statbuf) {
+            memset(statbuf, 0, sizeof(*statbuf));
+            statbuf->st_ino   = static_cast<ino_t>(resp.ino);
+            statbuf->st_size  = static_cast<off_t>(resp.size);
+            statbuf->st_mode  = static_cast<mode_t>(resp.mode);
+            statbuf->st_nlink = static_cast<nlink_t>(resp.nlink);
+        }
+        return 0;
     }
     if (statbuf) {
         memset(statbuf, 0, sizeof(*statbuf));
@@ -1023,7 +1261,8 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
     // Propagate open file descriptors from the client-side FD table
     for (int fd = 0; fd < IRIS_MAX_FD && num_actions < IRIS_SPAWN_MAX_ACTIONS; fd++) {
         iris_fd_entry_t* entry = iris_fd_get(fd);
-        if (entry && entry->type != IRIS_FD_CLOSED && entry->handle != ZX_HANDLE_INVALID) {
+        if (entry && entry->type != IRIS_FD_CLOSED && entry->type != IRIS_FD_VFS &&
+            entry->handle != ZX_HANDLE_INVALID) {
             zx_handle_t child_h = ZX_HANDLE_INVALID;
             if (zx_handle_duplicate(entry->handle, ZX_RIGHT_SAME_RIGHTS, &child_h) == ZX_OK) {
                 actions[num_actions].type = IRIS_SPAWN_ACTION_ADD_FD;
@@ -1031,6 +1270,18 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
                 actions[num_actions].target_fd = fd;
                 num_actions++;
             }
+        }
+    }
+
+    // Propagate iris_fshost channel as PA_NS_DIR if available
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+        zx_handle_t child_fs = ZX_HANDLE_INVALID;
+        if (zx_handle_duplicate(fs_ch, ZX_RIGHT_SAME_RIGHTS, &child_fs) == ZX_OK) {
+            actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
+            actions[num_actions].handle = child_fs;
+            actions[num_actions].handle_info = PA_HND(PA_NS_DIR, 0);
+            num_actions++;
         }
     }
 
@@ -1115,13 +1366,46 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
 #endif
 
 int sys_stat(fsfd_target fsfdt, int fd, const char *path, int flags, struct stat *statbuf) {
-    (void)fsfdt;
-    (void)fd;
-    (void)path;
     (void)flags;
+    if (fsfdt == fsfd_target::fd) {
+        return sys_fstat(fd, statbuf);
+    }
+    if (!path) {
+        return EINVAL;
+    }
+    if (iris_strcmp(path, "/dev/null") == 0 || iris_strcmp(path, "/dev/console") == 0 ||
+        iris_strcmp(path, "/dev/debuglog") == 0 || iris_strcmp(path, "/dev/zero") == 0) {
+        if (statbuf) {
+            memset(statbuf, 0, sizeof(*statbuf));
+            statbuf->st_mode = S_IFCHR | 0666;
+        }
+        return 0;
+    }
+
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch == ZX_HANDLE_INVALID) {
+        return ENOENT;
+    }
+
+    iris_fs_stat_req_t req = {};
+    req.use_handle = 0;
+    size_t plen = strlen(path);
+    if (plen >= sizeof(req.path)) {
+        return ENAMETOOLONG;
+    }
+    memcpy(req.path, path, plen + 1);
+
+    iris_fs_stat_resp_t resp = {};
+    int err = vfs_ipc_call(fs_ch, IRIS_FS_OP_STAT, &req, sizeof(req), &resp, sizeof(resp), nullptr);
+    if (err != 0) {
+        return err;
+    }
     if (statbuf) {
         memset(statbuf, 0, sizeof(*statbuf));
-        statbuf->st_mode = S_IFCHR | 0666;
+        statbuf->st_ino   = static_cast<ino_t>(resp.ino);
+        statbuf->st_size  = static_cast<off_t>(resp.size);
+        statbuf->st_mode  = static_cast<mode_t>(resp.mode);
+        statbuf->st_nlink = static_cast<nlink_t>(resp.nlink);
     }
     return 0;
 }

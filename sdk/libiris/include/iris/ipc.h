@@ -152,6 +152,94 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_FS_OP_TRUNCATE      0x001Au /**< Truncate file to specified size */
 #define IRIS_FS_OP_SYNC          0x001Bu /**< Flush cached dirty buffers to storage */
 
+#pragma pack(push, 4)
+/**
+ * @brief Request payload for IRIS_FS_OP_OPEN.
+ */
+typedef struct iris_fs_open_req {
+    uint32_t flags;      /**< POSIX open flags (O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND) */
+    uint32_t mode;       /**< Permission mode bits (e.g. 0644) */
+    char     path[256];  /**< Null-terminated absolute VFS path */
+} iris_fs_open_req_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_OPEN.
+ */
+typedef struct iris_fs_open_resp {
+    uint32_t vfs_handle; /**< Server-side open file table slot ID */
+    uint32_t is_dir;     /**< 1 if directory, 0 if regular file */
+    uint64_t size;       /**< Current file size in bytes */
+} iris_fs_open_resp_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_CLOSE.
+ */
+typedef struct iris_fs_close_req {
+    uint32_t vfs_handle; /**< Server-side open file table slot ID */
+    uint32_t reserved;
+} iris_fs_close_req_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_READ.
+ */
+typedef struct iris_fs_read_req {
+    uint32_t vfs_handle; /**< Server-side open file table slot ID */
+    uint32_t count;      /**< Maximum bytes to read */
+} iris_fs_read_req_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_WRITE (data bytes immediately follow this struct).
+ */
+typedef struct iris_fs_write_req {
+    uint32_t vfs_handle; /**< Server-side open file table slot ID */
+    uint32_t count;      /**< Number of bytes trailing this struct */
+} iris_fs_write_req_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_WRITE.
+ */
+typedef struct iris_fs_write_resp {
+    uint32_t bytes_written; /**< Actual bytes written */
+    uint32_t reserved;
+} iris_fs_write_resp_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_SEEK.
+ */
+typedef struct iris_fs_seek_req {
+    uint32_t vfs_handle; /**< Server-side open file table slot ID */
+    int32_t  whence;     /**< SEEK_SET (0), SEEK_CUR (1), or SEEK_END (2) */
+    int64_t  offset;     /**< Byte offset */
+} iris_fs_seek_req_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_SEEK.
+ */
+typedef struct iris_fs_seek_resp {
+    int64_t new_offset;  /**< Updated file offset in bytes */
+} iris_fs_seek_resp_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_STAT.
+ */
+typedef struct iris_fs_stat_req {
+    uint32_t vfs_handle; /**< Server-side open file table slot ID (if use_handle == 1) */
+    uint32_t use_handle; /**< 1 to stat vfs_handle (fstat), 0 to stat path */
+    char     path[256];  /**< Null-terminated VFS path (if use_handle == 0) */
+} iris_fs_stat_req_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_STAT.
+ */
+typedef struct iris_fs_stat_resp {
+    uint64_t ino;        /**< Inode number */
+    uint64_t size;       /**< File size in bytes */
+    uint32_t mode;       /**< POSIX st_mode (S_IFREG | 0644, S_IFDIR | 0755, etc.) */
+    uint32_t nlink;      /**< Hard link count */
+    uint64_t mtime_sec;  /**< Modification time in seconds since epoch */
+} iris_fs_stat_resp_t;
+#pragma pack(pop)
+
 /**
  * @brief Cryptographic Storage Protocol Opcodes (IRIS_PROTO_CRYPT)
  */
@@ -230,6 +318,7 @@ typedef struct iris_blk_rw_req {
 #define IRIS_ERR_ALREADY_BOUND    ZX_ERR_ALREADY_BOUND
 #define IRIS_ERR_PEER_CLOSED      ZX_ERR_PEER_CLOSED
 #define IRIS_ERR_BUFFER_TOO_SMALL ZX_ERR_BUFFER_TOO_SMALL
+#define IRIS_ERR_READ_ONLY        (-56) /**< Read-only filesystem (maps to POSIX EROFS) */
 
 /* ==============================================================================
  * Inline Helper Functions
