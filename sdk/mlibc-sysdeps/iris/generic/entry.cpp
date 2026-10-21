@@ -18,6 +18,7 @@
 #include <zircon/types.h>
 #include <zircon/processargs.h>
 #include <zircon/syscalls.h>
+#include <string.h>
 
 #ifndef PA_FD
 #define PA_FD 0x30u
@@ -31,6 +32,7 @@
 extern "C" void iris_vdso_init(uintptr_t base);
 extern "C" void iris_init_startup_handles(size_t nhandles, const zx_handle_t handles[], const uint32_t handle_info[]);
 extern "C" void iris_set_debuglog(zx_handle_t handle);
+extern "C" zx_handle_t iris_get_debuglog(void);
 extern "C" void iris_set_vdso_vmo(zx_handle_t handle);
 extern "C" void iris_set_bootfs_vmo(zx_handle_t handle);
 extern "C" void iris_set_root_resource(zx_handle_t handle);
@@ -123,6 +125,11 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
     static char* default_argv[] = { app_name, nullptr };
     char** argv = default_argv;
 
+    static char parsed_argv_buf[2048];
+    static char* parsed_argv[64];
+    static char parsed_env_buf[2048];
+    static char* parsed_env[64];
+
     static char* default_env[] = { nullptr };
     if (!environ) {
         environ = default_env;
@@ -143,6 +150,65 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
         if (status == ZX_OK && act_bytes >= sizeof(zx_proc_args_t)) {
             const zx_proc_args_t* pargs = reinterpret_cast<const zx_proc_args_t*>(msg_buf);
             if (pargs->protocol == ZX_PROCARGS_PROTOCOL && pargs->version == ZX_PROCARGS_VERSION) {
+                /* Unpack command line argument strings */
+                if (pargs->args_off != 0 && pargs->args_num > 0 && pargs->args_off < act_bytes) {
+                    uint32_t num = pargs->args_num;
+                    if (num > 63) num = 63;
+                    const char* p = reinterpret_cast<const char*>(msg_buf + pargs->args_off);
+                    const char* end = reinterpret_cast<const char*>(msg_buf + act_bytes);
+                    char* dst = parsed_argv_buf;
+                    char* dst_end = parsed_argv_buf + sizeof(parsed_argv_buf);
+                    uint32_t a = 0;
+                    while (a < num && p < end) {
+                        size_t slen = 0;
+                        while (p + slen < end && p[slen] != '\0') {
+                            slen++;
+                        }
+                        if (p + slen >= end) break;
+                        slen++; // include null terminator
+                        if (dst + slen >= dst_end) break;
+                        parsed_argv[a] = dst;
+                        memcpy(dst, p, slen);
+                        dst += slen;
+                        p += slen;
+                        a++;
+                    }
+                    if (a > 0) {
+                        parsed_argv[a] = nullptr;
+                        argc = static_cast<int>(a);
+                        argv = parsed_argv;
+                    }
+                }
+
+                /* Unpack environment strings */
+                if (pargs->environ_off != 0 && pargs->environ_num > 0 && pargs->environ_off < act_bytes) {
+                    uint32_t num = pargs->environ_num;
+                    if (num > 63) num = 63;
+                    const char* p = reinterpret_cast<const char*>(msg_buf + pargs->environ_off);
+                    const char* end = reinterpret_cast<const char*>(msg_buf + act_bytes);
+                    char* dst = parsed_env_buf;
+                    char* dst_end = parsed_env_buf + sizeof(parsed_env_buf);
+                    uint32_t e = 0;
+                    while (e < num && p < end) {
+                        size_t slen = 0;
+                        while (p + slen < end && p[slen] != '\0') {
+                            slen++;
+                        }
+                        if (p + slen >= end) break;
+                        slen++; // include null terminator
+                        if (dst + slen >= dst_end) break;
+                        parsed_env[e] = dst;
+                        memcpy(dst, p, slen);
+                        dst += slen;
+                        p += slen;
+                        e++;
+                    }
+                    if (e > 0) {
+                        parsed_env[e] = nullptr;
+                        environ = parsed_env;
+                    }
+                }
+
                 const uint32_t* info_table = reinterpret_cast<const uint32_t*>(msg_buf + pargs->handle_info_off);
                 iris_init_startup_handles(act_handles, handles, info_table);
 
@@ -153,35 +219,12 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
 
                 iris_fd_table_init();
 
+                /* First pass: extract system capabilities */
                 for (uint32_t i = 0; i < act_handles; i++) {
                     uint32_t info = info_table[i];
                     zx_handle_t h = handles[i];
-                    uint32_t htype = PA_HND_TYPE(info);
 
-                    if (htype == PA_FD) {
-                        int target_fd = static_cast<int>(PA_HND_ARG(info));
-                        iris_fd_entry_t* cur = iris_fd_get(target_fd);
-                        if (target_fd <= 2 && cur && cur->type == IRIS_FD_PTY) {
-                            zx_handle_close(h);
-                            continue;
-                        }
-                        iris_fd_type_t ftype = IRIS_FD_CHANNEL;
-                        if (target_fd <= 2) {
-                            zx_info_handle_basic_t basic = {};
-                            zx_status_t st = zx_object_get_info(h, ZX_INFO_HANDLE_BASIC, &basic, sizeof(basic), nullptr, nullptr);
-                            if (st == ZX_OK && basic.type == ZX_OBJ_TYPE_CHANNEL) {
-                                ftype = IRIS_FD_PTY;
-                                iris_set_pty_channel(h);
-                            } else {
-                                ftype = IRIS_FD_DEBUGLOG;
-                            }
-                        }
-                        iris_fd_bind(target_fd, h, ftype, (target_fd == 0) ? O_RDONLY : O_WRONLY);
-                        if (target_fd == 0 && ftype == IRIS_FD_PTY) {
-                            iris_fd_bind(1, h, IRIS_FD_PTY, O_WRONLY);
-                            iris_fd_bind(2, h, IRIS_FD_PTY, O_WRONLY);
-                        }
-                    } else if (info == PA_HND(PA_FDIO_LOGGER, 0)) {
+                    if (info == PA_HND(PA_FDIO_LOGGER, 0)) {
                         iris_set_debuglog(h);
                     } else if (info == PA_HND(PA_PROC_SELF, 0)) {
                         proc_self = h;
@@ -201,6 +244,59 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         iris_set_fshost_channel(h);
                     } else if (info == PA_HND(PA_USER0, 0)) {
                         iris_set_pty_channel(h);
+                    }
+                }
+
+                zx_koid_t pty_koid = 0;
+                zx_handle_t pty_ch = iris_get_pty_channel();
+                if (pty_ch != ZX_HANDLE_INVALID) {
+                    zx_info_handle_basic_t pb = {};
+                    if (zx_object_get_info(pty_ch, ZX_INFO_HANDLE_BASIC, &pb, sizeof(pb), nullptr, nullptr) == ZX_OK) {
+                        pty_koid = pb.koid;
+                    }
+                }
+
+                /* Second pass: bind file descriptors */
+                for (uint32_t i = 0; i < act_handles; i++) {
+                    uint32_t info = info_table[i];
+                    zx_handle_t h = handles[i];
+                    uint32_t htype = PA_HND_TYPE(info);
+
+                    if (htype == PA_FD) {
+                        int target_fd = static_cast<int>(PA_HND_ARG(info));
+                        iris_fd_type_t ftype = IRIS_FD_CHANNEL;
+                        zx_info_handle_basic_t basic = {};
+                        zx_status_t st = zx_object_get_info(h, ZX_INFO_HANDLE_BASIC, &basic, sizeof(basic), nullptr, nullptr);
+                        if (st == ZX_OK) {
+                            if (basic.type == ZX_OBJ_TYPE_LOG) {
+                                ftype = IRIS_FD_DEBUGLOG;
+                                if (iris_get_debuglog() == ZX_HANDLE_INVALID) {
+                                    iris_set_debuglog(h);
+                                }
+                            } else if (basic.type == ZX_OBJ_TYPE_CHANNEL) {
+                                if (pty_koid != 0 && basic.koid == pty_koid) {
+                                    ftype = IRIS_FD_PTY;
+                                } else {
+                                    ftype = IRIS_FD_CHANNEL;
+                                }
+                            } else if (basic.type == ZX_OBJ_TYPE_SOCKET) {
+                                ftype = IRIS_FD_SOCKET;
+                            }
+                        }
+                        iris_fd_bind(target_fd, h, ftype, (target_fd == 0) ? O_RDONLY : O_WRONLY);
+                    }
+                }
+
+                /* Initialize standard streams (0, 1, 2) if not explicitly bound */
+                zx_handle_t log_h = iris_get_debuglog();
+                for (int fd = 0; fd < 3; fd++) {
+                    iris_fd_entry_t* cur = iris_fd_get(fd);
+                    if (!cur || cur->type == IRIS_FD_CLOSED) {
+                        if (pty_ch != ZX_HANDLE_INVALID) {
+                            iris_fd_bind(fd, pty_ch, IRIS_FD_PTY, (fd == 0) ? O_RDONLY : O_WRONLY);
+                        } else if (log_h != ZX_HANDLE_INVALID) {
+                            iris_fd_bind(fd, log_h, IRIS_FD_DEBUGLOG, (fd == 0) ? O_RDONLY : O_WRONLY);
+                        }
                     }
                 }
                 iris_set_process_handles(proc_self, thrd_self, vmar_root, job_def);

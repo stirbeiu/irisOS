@@ -196,6 +196,9 @@ fetch-mbedtls:
 fetch-libufs:
 	@$(ROOT_DIR)/scripts/fetch_ufs.sh
 
+fetch-toybox:
+	@$(ROOT_DIR)/scripts/fetch_toybox.sh
+
 # ------------------------------------------------------------------------------
 # Sub-Target Aliases (delegating to Ninja)
 # ------------------------------------------------------------------------------
@@ -236,6 +239,14 @@ iris-fshost: iris-fshost-x86_64 iris-fshost-aarch64
 iris-pty-x86_64: build-x86_64
 iris-pty-aarch64: build-aarch64
 iris-pty: iris-pty-x86_64 iris-pty-aarch64
+
+toybox-x86_64: build-x86_64
+	@$(ROOT_DIR)/scripts/build_toybox.sh x86_64 $(OUT_DIR)/build-x86_64
+
+toybox-aarch64: build-aarch64
+	@$(ROOT_DIR)/scripts/build_toybox.sh aarch64 $(OUT_DIR)/build-aarch64
+
+toybox: toybox-x86_64 toybox-aarch64
 
 # ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution

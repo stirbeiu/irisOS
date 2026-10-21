@@ -16,9 +16,16 @@
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <sys/resource.h>
+#include <signal.h>
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdarg.h>
+#include <termios.h>
+#include <bits/winsize.h>
 
 #include <zircon/types.h>
 #include <zircon/syscalls.h>
@@ -51,9 +58,7 @@ static zx_handle_t g_job_default = ZX_HANDLE_INVALID;
 static zx_handle_t g_debuglog_handle = ZX_HANDLE_INVALID;
 
 #include <iris/fd_table.h>
-#if !MLIBC_BUILDING_RTLD
 #include <iris/spawn.h>
-#endif
 
 static zx_handle_t g_vdso_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_bootfs_vmo = ZX_HANDLE_INVALID;
@@ -220,7 +225,7 @@ extern "C" int iris_fd_close(int fd) {
     if (!entry || entry->type == IRIS_FD_CLOSED) {
         return -1;
     }
-    if (entry->type == IRIS_FD_CHANNEL && entry->handle != ZX_HANDLE_INVALID) {
+    if ((entry->type == IRIS_FD_CHANNEL || entry->type == IRIS_FD_SOCKET) && entry->handle != ZX_HANDLE_INVALID) {
         zx_handle_close(entry->handle);
     }
     entry->handle = ZX_HANDLE_INVALID;
@@ -431,11 +436,15 @@ static zx_status_t (*pfn_zx_channel_create)(uint32_t options, zx_handle_t* out0,
 static zx_status_t (*pfn_zx_channel_call)(
     zx_handle_t handle, uint32_t options, zx_time_t deadline,
     const zx_channel_call_args_t* args, uint32_t* actual_bytes, uint32_t* actual_handles) = nullptr;
+static zx_status_t (*pfn_zx_socket_create)(uint32_t options, zx_handle_t* out0, zx_handle_t* out1) = nullptr;
+static zx_status_t (*pfn_zx_socket_write)(zx_handle_t handle, uint32_t options, const void* buffer, size_t buffer_size, size_t* actual) = nullptr;
+static zx_status_t (*pfn_zx_socket_read)(zx_handle_t handle, uint32_t options, void* buffer, size_t buffer_size, size_t* actual) = nullptr;
 
 static zx_status_t (*pfn_zx_handle_close)(zx_handle_t handle) = nullptr;
 static zx_status_t (*pfn_zx_handle_duplicate)(zx_handle_t handle, zx_rights_t rights, zx_handle_t* out) = nullptr;
 static zx_status_t (*pfn_zx_debuglog_write)(zx_handle_t handle, uint32_t options, const void* buffer, size_t buffer_size) = nullptr;
 static zx_status_t (*pfn_zx_vmo_create)(uint64_t size, uint32_t options, zx_handle_t* out) = nullptr;
+static zx_status_t (*pfn_zx_vmo_replace_as_executable)(zx_handle_t handle, zx_handle_t vmex, zx_handle_t* out) = nullptr;
 static zx_status_t (*pfn_zx_vmo_get_size)(zx_handle_t handle, uint64_t* size) = nullptr;
 static zx_status_t (*pfn_zx_vmo_set_size)(zx_handle_t handle, uint64_t size) = nullptr;
 static zx_status_t (*pfn_zx_vmo_read)(zx_handle_t handle, void* data, uint64_t offset, size_t len) = nullptr;
@@ -494,6 +503,7 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_handle_duplicate   = (decltype(pfn_zx_handle_duplicate))vdso_find(base, "zx_handle_duplicate", "_zx_handle_duplicate");
     pfn_zx_debuglog_write     = (decltype(pfn_zx_debuglog_write))vdso_find(base, "zx_debuglog_write", "_zx_debuglog_write");
     pfn_zx_vmo_create         = (decltype(pfn_zx_vmo_create))vdso_find(base, "zx_vmo_create", "_zx_vmo_create");
+    pfn_zx_vmo_replace_as_executable = (decltype(pfn_zx_vmo_replace_as_executable))vdso_find(base, "zx_vmo_replace_as_executable", "_zx_vmo_replace_as_executable");
     pfn_zx_vmo_get_size       = (decltype(pfn_zx_vmo_get_size))vdso_find(base, "zx_vmo_get_size", "_zx_vmo_get_size");
     pfn_zx_vmo_set_size       = (decltype(pfn_zx_vmo_set_size))vdso_find(base, "zx_vmo_set_size", "_zx_vmo_set_size");
     pfn_zx_vmo_read           = (decltype(pfn_zx_vmo_read))vdso_find(base, "zx_vmo_read", "_zx_vmo_read");
@@ -523,6 +533,9 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_object_wait_many      = (decltype(pfn_zx_object_wait_many))vdso_find(base, "zx_object_wait_many", "_zx_object_wait_many");
     pfn_zx_debug_read            = (decltype(pfn_zx_debug_read))vdso_find(base, "zx_debug_read", "_zx_debug_read");
     pfn_zx_object_get_info       = (decltype(pfn_zx_object_get_info))vdso_find(base, "zx_object_get_info", "_zx_object_get_info");
+    pfn_zx_socket_create         = (decltype(pfn_zx_socket_create))vdso_find(base, "zx_socket_create", "_zx_socket_create");
+    pfn_zx_socket_write          = (decltype(pfn_zx_socket_write))vdso_find(base, "zx_socket_write", "_zx_socket_write");
+    pfn_zx_socket_read           = (decltype(pfn_zx_socket_read))vdso_find(base, "zx_socket_read", "_zx_socket_read");
 }
 
 /* Exported ABI wrappers dispatching into kernel-registered vDSO */
@@ -573,6 +586,27 @@ extern "C" zx_status_t zx_handle_duplicate(zx_handle_t handle, zx_rights_t right
     return ZX_ERR_NOT_SUPPORTED;
 }
 
+extern "C" zx_status_t zx_socket_create(uint32_t options, zx_handle_t* out0, zx_handle_t* out1) {
+    if (pfn_zx_socket_create) {
+        return pfn_zx_socket_create(options, out0, out1);
+    }
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_socket_write(zx_handle_t handle, uint32_t options, const void* buffer, size_t buffer_size, size_t* actual) {
+    if (pfn_zx_socket_write) {
+        return pfn_zx_socket_write(handle, options, buffer, buffer_size, actual);
+    }
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_socket_read(zx_handle_t handle, uint32_t options, void* buffer, size_t buffer_size, size_t* actual) {
+    if (pfn_zx_socket_read) {
+        return pfn_zx_socket_read(handle, options, buffer, buffer_size, actual);
+    }
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
 extern "C" zx_status_t zx_debuglog_write(zx_handle_t handle, uint32_t options, const void* buffer, size_t buffer_size) {
     if (pfn_zx_debuglog_write) {
         return pfn_zx_debuglog_write(handle, options, buffer, buffer_size);
@@ -583,6 +617,13 @@ extern "C" zx_status_t zx_debuglog_write(zx_handle_t handle, uint32_t options, c
 extern "C" zx_status_t zx_vmo_create(uint64_t size, uint32_t options, zx_handle_t* out) {
     if (pfn_zx_vmo_create) {
         return pfn_zx_vmo_create(size, options, out);
+    }
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_vmo_replace_as_executable(zx_handle_t handle, zx_handle_t vmex, zx_handle_t* out) {
+    if (pfn_zx_vmo_replace_as_executable) {
+        return pfn_zx_vmo_replace_as_executable(handle, vmex, out);
     }
     return ZX_ERR_NOT_SUPPORTED;
 }
@@ -1153,6 +1194,34 @@ int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
         return 0;
     }
 
+    if (entry->type == IRIS_FD_SOCKET) {
+        if (entry->handle != ZX_HANDLE_INVALID) {
+            size_t actual = 0;
+            zx_status_t st = zx_socket_write(entry->handle, 0, buf, count, &actual);
+            if (st == ZX_OK) {
+                *bytes_written = static_cast<ssize_t>(actual);
+                return 0;
+            } else if (st == ZX_ERR_PEER_CLOSED) {
+                return EPIPE;
+            } else if (st == ZX_ERR_SHOULD_WAIT) {
+                zx_signals_t observed = 0;
+                zx_status_t wst = zx_object_wait_one(entry->handle,
+                                                     ZX_SOCKET_WRITABLE | ZX_SOCKET_PEER_CLOSED,
+                                                     ZX_TIME_INFINITE, &observed);
+                if (wst == ZX_OK) {
+                    st = zx_socket_write(entry->handle, 0, buf, count, &actual);
+                    if (st == ZX_OK) {
+                        *bytes_written = static_cast<ssize_t>(actual);
+                        return 0;
+                    }
+                }
+                return (st == ZX_ERR_PEER_CLOSED) ? EPIPE : EIO;
+            }
+            return EIO;
+        }
+        return EBADF;
+    }
+
     if (entry->type == IRIS_FD_CHANNEL) {
         if (entry->handle != ZX_HANDLE_INVALID) {
             zx_status_t st = zx_channel_write(entry->handle, 0, buf, (uint32_t)count, nullptr, 0);
@@ -1232,14 +1301,54 @@ int sys_read(int fd, void *buf, size_t count, ssize_t *bytes_read) {
         *bytes_read = static_cast<ssize_t>(act_read);
         return 0;
     }
+    if (entry->type == IRIS_FD_SOCKET) {
+        if (entry->handle != ZX_HANDLE_INVALID) {
+            if (count == 0) {
+                *bytes_read = 0;
+                return 0;
+            }
+            size_t actual = 0;
+            zx_status_t st = zx_socket_read(entry->handle, 0, buf, count, &actual);
+            if (st == ZX_OK) {
+                *bytes_read = static_cast<ssize_t>(actual);
+                return 0;
+            }
+            if (st == ZX_ERR_SHOULD_WAIT) {
+                zx_signals_t observed = 0;
+                zx_status_t wst = zx_object_wait_one(entry->handle,
+                                                     ZX_SOCKET_READABLE | ZX_SOCKET_PEER_CLOSED,
+                                                     ZX_TIME_INFINITE, &observed);
+                if (wst == ZX_OK) {
+                    st = zx_socket_read(entry->handle, 0, buf, count, &actual);
+                    if (st == ZX_OK) {
+                        *bytes_read = static_cast<ssize_t>(actual);
+                        return 0;
+                    }
+                }
+            }
+            if (st == ZX_ERR_PEER_CLOSED) {
+                *bytes_read = 0;
+                return 0;
+            }
+        }
+        *bytes_read = 0;
+        return 0;
+    }
+
     if (entry->type == IRIS_FD_CHANNEL) {
         if (entry->handle != ZX_HANDLE_INVALID) {
             uint32_t act_bytes = 0;
             uint32_t act_handles = 0;
-            zx_status_t st = zx_channel_read(entry->handle, 0, buf, nullptr, (uint32_t)count, 0, &act_bytes, &act_handles);
-            if (st == ZX_OK) {
-                *bytes_read = (ssize_t)act_bytes;
-                return 0;
+            zx_signals_t observed = 0;
+            zx_status_t wst = zx_object_wait_one(entry->handle,
+                                                 ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                                                 ZX_TIME_INFINITE, &observed);
+            if (wst == ZX_OK) {
+                zx_status_t st = zx_channel_read(entry->handle, 0, buf, nullptr, (uint32_t)count, 0, &act_bytes, &act_handles);
+                if (st == ZX_OK) {
+                    *bytes_read = (ssize_t)act_bytes;
+                    return 0;
+                }
             }
         }
         *bytes_read = 0;
@@ -1255,6 +1364,71 @@ static int iris_strcmp(const char *s1, const char *s2) {
         s2++;
     }
     return (int)(unsigned char)*s1 - (int)(unsigned char)*s2;
+}
+
+static char* iris_strncpy(char* dest, const char* src, size_t n) {
+    size_t i = 0;
+    while (i < n && src[i] != '\0') {
+        dest[i] = src[i];
+        i++;
+    }
+    while (i < n) {
+        dest[i] = '\0';
+        i++;
+    }
+    return dest;
+}
+
+static int iris_strncmp(const char* s1, const char* s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s1[i] != s2[i] || s1[i] == '\0') {
+            return (int)(unsigned char)s1[i] - (int)(unsigned char)s2[i];
+        }
+    }
+    return 0;
+}
+
+static char* iris_strchr(const char* s, int c) {
+    while (*s != '\0') {
+        if (*s == static_cast<char>(c)) return const_cast<char*>(s);
+        s++;
+    }
+    return (c == '\0') ? const_cast<char*>(s) : nullptr;
+}
+
+static char g_cwd[256] = "/";
+
+static void resolve_relative_path(const char* in_path, char* out_buf, size_t out_size) {
+    if (!in_path || out_size == 0) return;
+    if (in_path[0] == '/') {
+        size_t len = strlen(in_path);
+        if (len >= out_size) len = out_size - 1;
+        memcpy(out_buf, in_path, len);
+        out_buf[len] = '\0';
+        return;
+    }
+    if (iris_strcmp(in_path, ".") == 0 || iris_strcmp(in_path, "./") == 0) {
+        size_t len = strlen(g_cwd);
+        if (len >= out_size) len = out_size - 1;
+        memcpy(out_buf, g_cwd, len);
+        out_buf[len] = '\0';
+        return;
+    }
+    size_t clen = strlen(g_cwd);
+    size_t plen = strlen(in_path);
+    size_t idx = 0;
+    while (idx < clen && idx + 1 < out_size) {
+        out_buf[idx] = g_cwd[idx];
+        idx++;
+    }
+    if (idx > 0 && out_buf[idx - 1] != '/' && idx + 1 < out_size) {
+        out_buf[idx++] = '/';
+    }
+    size_t pidx = 0;
+    while (pidx < plen && idx + 1 < out_size) {
+        out_buf[idx++] = in_path[pidx++];
+    }
+    out_buf[idx] = '\0';
 }
 
 int sys_open(const char *path, int flags, mode_t mode, int *fd) {
@@ -1295,14 +1469,17 @@ int sys_open(const char *path, int flags, mode_t mode, int *fd) {
         return ENOENT;
     }
 
+    char resolved_path[256];
+    resolve_relative_path(path, resolved_path, sizeof(resolved_path));
+
     iris_fs_open_req_t req = {};
     req.flags = static_cast<uint32_t>(flags);
     req.mode  = static_cast<uint32_t>(mode);
-    size_t plen = strlen(path);
+    size_t plen = strlen(resolved_path);
     if (plen >= sizeof(req.path)) {
         return ENAMETOOLONG;
     }
-    memcpy(req.path, path, plen + 1);
+    memcpy(req.path, resolved_path, plen + 1);
 
     iris_fs_open_resp_t resp = {};
     int err = vfs_ipc_call(fs_ch, IRIS_FS_OP_OPEN, &req, sizeof(req), &resp, sizeof(resp), nullptr);
@@ -1374,6 +1551,10 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
         }
         return 0;
     }
+    if (entry->type == IRIS_FD_SOCKET) {
+        return ESPIPE;
+    }
+
     if (entry->type == IRIS_FD_CHANNEL) {
         if (whence == SEEK_SET) {
             entry->offset = offset;
@@ -1426,8 +1607,10 @@ int sys_fstat(int fd, struct stat *statbuf) {
     }
     if (statbuf) {
         memset(statbuf, 0, sizeof(*statbuf));
-        if (entry->type == IRIS_FD_DEBUGLOG) {
+        if (entry->type == IRIS_FD_DEBUGLOG || entry->type == IRIS_FD_PTY) {
             statbuf->st_mode = S_IFCHR | 0666;
+        } else if (entry->type == IRIS_FD_SOCKET) {
+            statbuf->st_mode = S_IFIFO | 0666;
         } else {
             statbuf->st_mode = S_IFREG | 0644;
             statbuf->st_size = entry->offset;
@@ -1436,7 +1619,85 @@ int sys_fstat(int fd, struct stat *statbuf) {
     return 0;
 }
 
-#if !MLIBC_BUILDING_RTLD
+int sys_uname(struct utsname *buf) {
+    if (!buf) return EFAULT;
+    memset(buf, 0, sizeof(*buf));
+    iris_strncpy(buf->sysname, "irisOS", sizeof(buf->sysname) - 1);
+    iris_strncpy(buf->nodename, "irisOS-dev", sizeof(buf->nodename) - 1);
+    iris_strncpy(buf->release, "0.1.0", sizeof(buf->release) - 1);
+    iris_strncpy(buf->version, "Zircon 1011 (Ring 3 userland)", sizeof(buf->version) - 1);
+#if defined(__x86_64__)
+    iris_strncpy(buf->machine, "x86_64", sizeof(buf->machine) - 1);
+#elif defined(__aarch64__)
+    iris_strncpy(buf->machine, "aarch64", sizeof(buf->machine) - 1);
+#else
+    iris_strncpy(buf->machine, "unknown", sizeof(buf->machine) - 1);
+#endif
+    iris_strncpy(buf->domainname, "local", sizeof(buf->domainname) - 1);
+    return 0;
+}
+
+int sys_waitpid(pid_t pid, int *status, int flags, struct rusage *ru, pid_t *ret_pid) {
+    (void)ru;
+    if (pid <= 0) {
+        return ECHILD;
+    }
+    zx_handle_t proc_handle = static_cast<zx_handle_t>(pid);
+    zx_time_t deadline = (flags & WNOHANG) ? 0 : ZX_TIME_INFINITE;
+    zx_signals_t observed = 0;
+    zx_status_t zstatus = zx_object_wait_one(proc_handle, ZX_PROCESS_TERMINATED, deadline, &observed);
+    if (zstatus == ZX_ERR_TIMED_OUT) {
+        if (flags & WNOHANG) {
+            if (ret_pid) *ret_pid = 0;
+            return 0;
+        }
+        return ECHILD;
+    }
+    if (zstatus != ZX_OK) {
+        return ECHILD;
+    }
+
+    zx_info_process_t info = {};
+    zx_status_t istatus = zx_object_get_info(proc_handle, ZX_INFO_PROCESS, &info, sizeof(info), nullptr, nullptr);
+    if (istatus == ZX_OK && info.exited) {
+        if (status) {
+            *status = static_cast<int>((info.return_code & 0xff) << 8);
+        }
+    } else {
+        if (status) *status = 0;
+    }
+
+    zx_handle_close(proc_handle);
+    if (ret_pid) *ret_pid = pid;
+    return 0;
+}
+
+int sys_pipe(int *fds, int flags) {
+    if (!fds) return EFAULT;
+    (void)flags;
+    zx_handle_t s0 = ZX_HANDLE_INVALID;
+    zx_handle_t s1 = ZX_HANDLE_INVALID;
+    zx_status_t status = zx_socket_create(0, &s0, &s1);
+    if (status != ZX_OK) {
+        return ENOMEM;
+    }
+    int fd0 = iris_fd_alloc(s0, IRIS_FD_SOCKET, O_RDONLY);
+    if (fd0 < 0) {
+        zx_handle_close(s0);
+        zx_handle_close(s1);
+        return EMFILE;
+    }
+    int fd1 = iris_fd_alloc(s1, IRIS_FD_SOCKET, O_WRONLY);
+    if (fd1 < 0) {
+        iris_fd_close(fd0);
+        zx_handle_close(s1);
+        return EMFILE;
+    }
+    fds[0] = fd0;
+    fds[1] = fd1;
+    return 0;
+}
+
 int sys_spawn(pid_t *__restrict res, const char *__restrict path,
               const posix_spawn_file_actions_t *file_actions,
               const posix_spawnattr_t *__restrict attrs,
@@ -1449,6 +1710,150 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
 
     uint32_t envc = 0;
     while (envp && envp[envc]) envc++;
+
+    // 1. Resolve executable path (search PATH if relative/name only)
+    char resolved_path[256];
+    const char* exec_path = path;
+    if (path[0] != '/' && path[0] != '.') {
+        const char* path_env = "/System/Bin:/bin";
+        for (uint32_t i = 0; i < envc; i++) {
+            if (envp && envp[i] && iris_strncmp(envp[i], "PATH=", 5) == 0) {
+                path_env = envp[i] + 5;
+                break;
+            }
+        }
+        char path_copy[256];
+        iris_strncpy(path_copy, path_env, sizeof(path_copy) - 1);
+        path_copy[sizeof(path_copy) - 1] = '\0';
+        const char* pcur = path_copy;
+        bool found = false;
+        while (*pcur != '\0') {
+            while (*pcur == ':') pcur++;
+            if (*pcur == '\0') break;
+            const char* pend = pcur;
+            while (*pend != '\0' && *pend != ':') pend++;
+            size_t tlen = static_cast<size_t>(pend - pcur);
+            size_t plen = strlen(path);
+            if (tlen + plen + 2 < sizeof(resolved_path)) {
+                memcpy(resolved_path, pcur, tlen);
+                resolved_path[tlen] = '/';
+                memcpy(resolved_path + tlen + 1, path, plen + 1);
+                struct stat st;
+                if (sys_stat(fsfd_target::path, -1, resolved_path, 0, &st) == 0) {
+                    exec_path = resolved_path;
+                    found = true;
+                    break;
+                }
+            }
+            pcur = pend;
+        }
+        if (!found) {
+            size_t plen = strlen(path);
+            if (12 + plen + 1 < sizeof(resolved_path)) {
+                memcpy(resolved_path, "/System/Bin/", 12);
+                memcpy(resolved_path + 12, path, plen + 1);
+                struct stat st;
+                if (sys_stat(fsfd_target::path, -1, resolved_path, 0, &st) == 0) {
+                    exec_path = resolved_path;
+                }
+            }
+        }
+    }
+
+    // 2. Open binary from VFS
+    int exec_fd = -1;
+    int err = sys_open(exec_path, O_RDONLY, 0, &exec_fd);
+    if (err != 0) {
+        return err;
+    }
+
+    // 3. Inspect header for shebang (#!/bin/sh)
+    char head[256];
+    ssize_t head_read = 0;
+    sys_read(exec_fd, head, sizeof(head) - 1, &head_read);
+    if (head_read >= 2 && head[0] == '#' && head[1] == '!') {
+        head[head_read] = '\0';
+        char* line_end = iris_strchr(head, '\n');
+        if (line_end) *line_end = '\0';
+        char* r_end = iris_strchr(head, '\r');
+        if (r_end) *r_end = '\0';
+
+        char* p = head + 2;
+        while (*p == ' ' || *p == '\t') p++;
+        char* interp = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        char* interp_arg = nullptr;
+        if (*p) {
+            *p = '\0';
+            p++;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p) interp_arg = p;
+        }
+
+        sys_close(exec_fd);
+
+        // Build new argv: [interp, (interp_arg), exec_path, argv[1], ...]
+        const char* new_argv[64];
+        uint32_t na = 0;
+        new_argv[na++] = interp;
+        if (interp_arg && *interp_arg) {
+            new_argv[na++] = interp_arg;
+        }
+        new_argv[na++] = exec_path;
+        for (uint32_t i = 1; i < argc && na < 62; i++) {
+            new_argv[na++] = argv[i];
+        }
+        new_argv[na] = nullptr;
+
+        return sys_spawn(res, interp, file_actions, attrs, const_cast<char* const*>(new_argv), envp);
+    }
+
+    // 4. ELF Binary: determine size and load into executable VMO
+    struct stat exec_stat;
+    err = sys_fstat(exec_fd, &exec_stat);
+    if (err != 0 || exec_stat.st_size <= 0) {
+        sys_close(exec_fd);
+        return (err != 0) ? err : ENOEXEC;
+    }
+
+    zx_handle_t vmo = ZX_HANDLE_INVALID;
+    zx_status_t vst = zx_vmo_create(static_cast<uint64_t>(exec_stat.st_size), 0, &vmo);
+    if (vst != ZX_OK) {
+        sys_close(exec_fd);
+        return ENOMEM;
+    }
+
+    off_t dummy_off = 0;
+    sys_seek(exec_fd, 0, SEEK_SET, &dummy_off);
+
+    uint8_t load_buf[32768];
+    uint64_t cur_pos = 0;
+    uint64_t total_size = static_cast<uint64_t>(exec_stat.st_size);
+
+    while (cur_pos < total_size) {
+        size_t chunk = sizeof(load_buf);
+        if (cur_pos + chunk > total_size) {
+            chunk = static_cast<size_t>(total_size - cur_pos);
+        }
+        ssize_t n_read = 0;
+        int r_err = sys_read(exec_fd, load_buf, chunk, &n_read);
+        if (r_err != 0 || n_read <= 0) {
+            break;
+        }
+        zx_vmo_write(vmo, load_buf, cur_pos, static_cast<size_t>(n_read));
+        cur_pos += static_cast<uint64_t>(n_read);
+    }
+    sys_close(exec_fd);
+
+    if (cur_pos < total_size) {
+        zx_handle_close(vmo);
+        return EIO;
+    }
+
+    zx_handle_t exec_vmo = ZX_HANDLE_INVALID;
+    if (zx_vmo_replace_as_executable(vmo, ZX_HANDLE_INVALID, &exec_vmo) != ZX_OK) {
+        exec_vmo = vmo;
+    }
 
     iris_spawn_action_t actions[IRIS_SPAWN_MAX_ACTIONS];
     size_t num_actions = 0;
@@ -1480,20 +1885,33 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
         }
     }
 
+    // Propagate iris_pty channel as PA_USER0 if available
+    zx_handle_t pty_ch = iris_get_pty_channel();
+    if (pty_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+        zx_handle_t child_pty = ZX_HANDLE_INVALID;
+        if (zx_handle_duplicate(pty_ch, ZX_RIGHT_SAME_RIGHTS, &child_pty) == ZX_OK) {
+            actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
+            actions[num_actions].handle = child_pty;
+            actions[num_actions].handle_info = PA_HND(PA_USER0, 0);
+            num_actions++;
+        }
+    }
+
     // Process posix_spawn file actions if provided
     if (file_actions && file_actions->__actions) {
-        struct fdop_header {
-            struct fdop_header *next, *prev;
-            int cmd;
-            int fd, srcfd;
-            char *path;
-            int oflag;
+        #define IRIS_FDOP_CLOSE 1
+        #define IRIS_FDOP_DUP2 2
+        #define IRIS_FDOP_OPEN 3
+        struct iris_fdop {
+            struct iris_fdop *next, *prev;
+            int cmd, fd, srcfd, oflag;
             mode_t mode;
+            char path[];
         };
-        fdop_header* op = nullptr;
-        for (op = (fdop_header*)file_actions->__actions; op->next; op = op->next);
+        iris_fdop* op = nullptr;
+        for (op = (iris_fdop*)file_actions->__actions; op && op->next; op = op->next);
         for (; op; op = op->prev) {
-            if (op->cmd == 0 /* FDOP_CLOSE */) {
+            if (op->cmd == IRIS_FDOP_CLOSE) {
                 for (size_t i = 0; i < num_actions; i++) {
                     if (actions[i].type == IRIS_SPAWN_ACTION_ADD_FD && actions[i].target_fd == op->fd) {
                         if (actions[i].handle != ZX_HANDLE_INVALID) {
@@ -1502,7 +1920,7 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
                         }
                     }
                 }
-            } else if (op->cmd == 1 /* FDOP_DUP2 */) {
+            } else if (op->cmd == IRIS_FDOP_DUP2) {
                 zx_handle_t src_h = ZX_HANDLE_INVALID;
                 for (size_t i = 0; i < num_actions; i++) {
                     if (actions[i].type == IRIS_SPAWN_ACTION_ADD_FD && actions[i].target_fd == op->srcfd) {
@@ -1510,26 +1928,68 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
                         break;
                     }
                 }
-                if (src_h != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
-                    zx_handle_t dup_h = ZX_HANDLE_INVALID;
-                    if (zx_handle_duplicate(src_h, ZX_RIGHT_SAME_RIGHTS, &dup_h) == ZX_OK) {
-                        actions[num_actions].type = IRIS_SPAWN_ACTION_ADD_FD;
-                        actions[num_actions].handle = dup_h;
-                        actions[num_actions].target_fd = op->fd;
-                        num_actions++;
+                if (src_h == ZX_HANDLE_INVALID) {
+                    iris_fd_entry_t* fe = iris_fd_get(op->srcfd);
+                    if (fe && fe->type != IRIS_FD_CLOSED) {
+                        src_h = fe->handle;
                     }
+                }
+                if (src_h != ZX_HANDLE_INVALID) {
+                    zx_handle_t dup_h = ZX_HANDLE_INVALID;
+                    zx_status_t dst = zx_handle_duplicate(src_h, ZX_RIGHT_SAME_RIGHTS, &dup_h);
+                    if (dst == ZX_OK) {
+                        bool found = false;
+                        for (size_t i = 0; i < num_actions; i++) {
+                            if (actions[i].type == IRIS_SPAWN_ACTION_ADD_FD && actions[i].target_fd == op->fd) {
+                                if (actions[i].handle != ZX_HANDLE_INVALID) {
+                                    zx_handle_close(actions[i].handle);
+                                }
+                                actions[i].handle = dup_h;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+                            actions[num_actions].type = IRIS_SPAWN_ACTION_ADD_FD;
+                            actions[num_actions].handle = dup_h;
+                            actions[num_actions].target_fd = op->fd;
+                            num_actions++;
+                        }
+                    }
+                }
+            } else if (op->cmd == IRIS_FDOP_OPEN) {
+                int open_fd = -1;
+                if (sys_open(op->path, op->oflag, op->mode, &open_fd) == 0) {
+                    iris_fd_entry_t* fe = iris_fd_get(open_fd);
+                    if (fe && fe->handle != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+                        zx_handle_t dup_h = ZX_HANDLE_INVALID;
+                        if (zx_handle_duplicate(fe->handle, ZX_RIGHT_SAME_RIGHTS, &dup_h) == ZX_OK) {
+                            actions[num_actions].type = IRIS_SPAWN_ACTION_ADD_FD;
+                            actions[num_actions].handle = dup_h;
+                            actions[num_actions].target_fd = op->fd;
+                            num_actions++;
+                        }
+                    }
+                    sys_close(open_fd);
                 }
             }
         }
     }
 
+    static const char* fallback_argv[] = { exec_path, nullptr };
+
     iris_spawn_args_t sargs = {};
     sargs.job = zx_job_default();
-    sargs.name = path;
-    sargs.vmo_executable = ZX_HANDLE_INVALID; // In Phase 4, fetched via VFS
+    sargs.name = exec_path;
+    sargs.vmo_executable = exec_vmo;
     sargs.vmo_vdso = g_vdso_vmo;
-    sargs.argv = const_cast<const char* const*>(argv);
-    sargs.argc = argc;
+    if (!argv || argc == 0) {
+        sargs.argv = fallback_argv;
+        sargs.argc = 1;
+    } else {
+        sargs.argv = const_cast<const char* const*>(argv);
+        sargs.argc = argc;
+    }
     sargs.envp = const_cast<const char* const*>(envp);
     sargs.envc = envc;
     sargs.actions = actions;
@@ -1538,6 +1998,8 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
     zx_handle_t child_proc = ZX_HANDLE_INVALID;
     zx_handle_t child_thread = ZX_HANDLE_INVALID;
     zx_status_t status = iris_spawn(&sargs, &child_proc, &child_thread);
+    zx_handle_close(exec_vmo);
+
     if (status != ZX_OK) {
         for (size_t i = 0; i < num_actions; i++) {
             if (actions[i].handle != ZX_HANDLE_INVALID) {
@@ -1558,7 +2020,6 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
     }
     return 0;
 }
-#endif
 
 int sys_stat(fsfd_target fsfdt, int fd, const char *path, int flags, struct stat *statbuf) {
     (void)flags;
@@ -1577,6 +2038,20 @@ int sys_stat(fsfd_target fsfdt, int fd, const char *path, int flags, struct stat
         return 0;
     }
 
+    char resolved_path[256];
+    resolve_relative_path(path, resolved_path, sizeof(resolved_path));
+
+    if (iris_strcmp(resolved_path, "/") == 0) {
+        if (statbuf) {
+            memset(statbuf, 0, sizeof(*statbuf));
+            statbuf->st_mode = S_IFDIR | 0755;
+            statbuf->st_ino = 2;
+            statbuf->st_nlink = 4;
+            statbuf->st_size = 4096;
+        }
+        return 0;
+    }
+
     zx_handle_t fs_ch = iris_get_fshost_channel();
     if (fs_ch == ZX_HANDLE_INVALID) {
         return ENOENT;
@@ -1584,11 +2059,11 @@ int sys_stat(fsfd_target fsfdt, int fd, const char *path, int flags, struct stat
 
     iris_fs_stat_req_t req = {};
     req.use_handle = 0;
-    size_t plen = strlen(path);
+    size_t plen = strlen(resolved_path);
     if (plen >= sizeof(req.path)) {
         return ENAMETOOLONG;
     }
-    memcpy(req.path, path, plen + 1);
+    memcpy(req.path, resolved_path, plen + 1);
 
     iris_fs_stat_resp_t resp = {};
     int err = vfs_ipc_call(fs_ch, IRIS_FS_OP_STAT, &req, sizeof(req), &resp, sizeof(resp), nullptr);
@@ -1622,6 +2097,383 @@ int sys_clock_getres(int clock, time_t *secs, long *nanos) {
     if (secs) *secs = 0;
     if (nanos) *nanos = 1;
     return 0;
+}
+
+uid_t sys_getuid() {
+    return 0;
+}
+
+uid_t sys_geteuid() {
+    return 0;
+}
+
+gid_t sys_getgid() {
+    return 0;
+}
+
+gid_t sys_getegid() {
+    return 0;
+}
+
+int sys_setuid(uid_t uid) {
+    return (uid == 0) ? 0 : EPERM;
+}
+
+int sys_seteuid(uid_t euid) {
+    return (euid == 0) ? 0 : EPERM;
+}
+
+int sys_setgid(gid_t gid) {
+    return (gid == 0) ? 0 : EPERM;
+}
+
+int sys_setegid(gid_t egid) {
+    return (egid == 0) ? 0 : EPERM;
+}
+
+pid_t sys_getpid() {
+    zx_handle_t self = zx_process_self();
+    if (self != ZX_HANDLE_INVALID) {
+        zx_info_handle_basic_t info = {};
+        if (zx_object_get_info(self, ZX_INFO_HANDLE_BASIC, &info, sizeof(info), nullptr, nullptr) == ZX_OK) {
+            return static_cast<pid_t>(info.koid);
+        }
+    }
+    return 1;
+}
+
+pid_t sys_gettid() {
+    zx_handle_t self = zx_thread_self();
+    if (self != ZX_HANDLE_INVALID) {
+        zx_info_handle_basic_t info = {};
+        if (zx_object_get_info(self, ZX_INFO_HANDLE_BASIC, &info, sizeof(info), nullptr, nullptr) == ZX_OK) {
+            return static_cast<pid_t>(info.koid);
+        }
+    }
+    return sys_getpid();
+}
+
+pid_t sys_getppid() {
+    return 1;
+}
+
+int sys_getpgid(pid_t pid, pid_t *pgid) {
+    if (pgid) *pgid = pid ? pid : sys_getpid();
+    return 0;
+}
+
+int sys_setpgid(pid_t pid, pid_t pgid) {
+    (void)pid;
+    (void)pgid;
+    return 0;
+}
+
+int sys_getsid(pid_t pid, pid_t *sid) {
+    if (sid) *sid = pid ? pid : sys_getpid();
+    return 0;
+}
+
+int sys_getgroups(size_t size, gid_t *list, int *ret) {
+    if (ret) *ret = 1;
+    if (size > 0 && list) {
+        list[0] = 0;
+    }
+    return 0;
+}
+
+void sys_yield() {
+    zx_nanosleep(0);
+}
+
+int sys_sleep(time_t *secs, long *nanos) {
+    if (!secs || !nanos) return EINVAL;
+    zx_duration_t duration = static_cast<zx_duration_t>(*secs) * 1000000000ULL +
+                             static_cast<zx_duration_t>(*nanos);
+    zx_nanosleep(zx_deadline_after(duration));
+    *secs = 0;
+    *nanos = 0;
+    return 0;
+}
+
+int sys_dup(int fd, int flags, int *newfd) {
+    (void)flags;
+    iris_fd_entry_t *src = iris_fd_get(fd);
+    if (!src || src->type == IRIS_FD_CLOSED) {
+        return EBADF;
+    }
+    zx_handle_t new_h = ZX_HANDLE_INVALID;
+    if (src->handle != ZX_HANDLE_INVALID) {
+        zx_status_t status = zx_handle_duplicate(src->handle, ZX_RIGHT_SAME_RIGHTS, &new_h);
+        if (status != ZX_OK) {
+            return EIO;
+        }
+    }
+    int alloc_fd = iris_fd_alloc(new_h, src->type, src->flags);
+    if (alloc_fd < 0) {
+        if (new_h != ZX_HANDLE_INVALID) zx_handle_close(new_h);
+        return EMFILE;
+    }
+    iris_fd_entry_t *dst = iris_fd_get(alloc_fd);
+    if (dst) {
+        dst->vfs_handle = src->vfs_handle;
+        dst->offset = src->offset;
+    }
+    if (newfd) *newfd = alloc_fd;
+    return 0;
+}
+
+int sys_dup2(int fd, int flags, int newfd) {
+    (void)flags;
+    if (newfd < 0 || newfd >= IRIS_MAX_FD) {
+        return EBADF;
+    }
+    iris_fd_entry_t *src = iris_fd_get(fd);
+    if (!src || src->type == IRIS_FD_CLOSED) {
+        return EBADF;
+    }
+    if (fd == newfd) {
+        return 0;
+    }
+    iris_fd_close(newfd);
+
+    zx_handle_t new_h = ZX_HANDLE_INVALID;
+    if (src->handle != ZX_HANDLE_INVALID) {
+        zx_status_t status = zx_handle_duplicate(src->handle, ZX_RIGHT_SAME_RIGHTS, &new_h);
+        if (status != ZX_OK) {
+            return EIO;
+        }
+    }
+    if (iris_fd_bind(newfd, new_h, src->type, src->flags) != 0) {
+        if (new_h != ZX_HANDLE_INVALID) zx_handle_close(new_h);
+        return EIO;
+    }
+    iris_fd_entry_t *dst = iris_fd_get(newfd);
+    if (dst) {
+        dst->vfs_handle = src->vfs_handle;
+        dst->offset = src->offset;
+    }
+    return 0;
+}
+
+int sys_fcntl(int fd, int request, va_list args, int *result) {
+    iris_fd_entry_t *src = iris_fd_get(fd);
+    if (!src || src->type == IRIS_FD_CLOSED) {
+        return EBADF;
+    }
+    if (request == F_GETFD) {
+        if (result) *result = 0;
+        return 0;
+    }
+    if (request == F_SETFD) {
+        return 0;
+    }
+    if (request == F_GETFL) {
+        if (result) *result = src->flags;
+        return 0;
+    }
+    if (request == F_SETFL) {
+        int fl = va_arg(args, int);
+        src->flags = fl;
+        return 0;
+    }
+    if (request == F_DUPFD || request == F_DUPFD_CLOEXEC) {
+        int min_fd = va_arg(args, int);
+        if (min_fd < 0 || min_fd >= IRIS_MAX_FD) return EINVAL;
+        for (int i = min_fd; i < IRIS_MAX_FD; i++) {
+            iris_fd_entry_t *e = iris_fd_get(i);
+            if (!e || e->type == IRIS_FD_CLOSED) {
+                int err = sys_dup2(fd, 0, i);
+                if (err == 0 && result) *result = i;
+                return err;
+            }
+        }
+        return EMFILE;
+    }
+    return EINVAL;
+}
+
+int sys_ioctl(int fd, unsigned long request, void *arg, int *result) {
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) {
+        return ENOTTY;
+    }
+    if (request == 0x5413 /* TIOCGWINSZ */) {
+        if (arg) {
+            struct winsize *ws = static_cast<struct winsize *>(arg);
+            ws->ws_row = 24;
+            ws->ws_col = 80;
+            ws->ws_xpixel = 0;
+            ws->ws_ypixel = 0;
+        }
+        if (result) *result = 0;
+        return 0;
+    }
+    if (result) *result = 0;
+    return 0;
+}
+
+int sys_tcgetattr(int fd, struct termios *attr) {
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) return ENOTTY;
+    if (attr) {
+        memset(attr, 0, sizeof(*attr));
+        attr->c_iflag = ICRNL | IXON;
+        attr->c_oflag = OPOST | ONLCR;
+        attr->c_cflag = CS8 | CREAD;
+        attr->c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
+        attr->c_cc[VEOF]   = 4;
+        attr->c_cc[VINTR]  = 3;
+        attr->c_cc[VERASE] = 127;
+    }
+    return 0;
+}
+
+int sys_tcsetattr(int fd, int optional_actions, const struct termios *attr) {
+    (void)optional_actions;
+    (void)attr;
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) return ENOTTY;
+    return 0;
+}
+
+int sys_tcflow(int fd, int action) {
+    (void)action;
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) return ENOTTY;
+    return 0;
+}
+
+int sys_tcflush(int fd, int queue) {
+    (void)queue;
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) return ENOTTY;
+    return 0;
+}
+
+int sys_tcdrain(int fd) {
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) return ENOTTY;
+    return 0;
+}
+
+int sys_ttyname(int fd, char *buf, size_t size) {
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    if (fe->type != IRIS_FD_PTY) return ENOTTY;
+    const char name[] = "/dev/pts/0";
+    if (size < sizeof(name)) return ERANGE;
+    memcpy(buf, name, sizeof(name));
+    return 0;
+}
+
+int sys_getcwd(char *buffer, size_t size) {
+    if (!buffer || size == 0) return EINVAL;
+    size_t len = strlen(g_cwd);
+    if (len + 1 > size) return ERANGE;
+    memcpy(buffer, g_cwd, len + 1);
+    return 0;
+}
+
+int sys_chdir(const char *path) {
+    if (!path) return EINVAL;
+    char resolved[256];
+    resolve_relative_path(path, resolved, sizeof(resolved));
+    struct stat st;
+    if (sys_stat(fsfd_target::path, -1, resolved, 0, &st) != 0) {
+        return ENOENT;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return ENOTDIR;
+    }
+    size_t len = strlen(resolved);
+    if (len >= sizeof(g_cwd)) return ENAMETOOLONG;
+    memcpy(g_cwd, resolved, len + 1);
+    return 0;
+}
+
+int sys_fchdir(int fd) {
+    iris_fd_entry_t *fe = iris_fd_get(fd);
+    if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
+    return 0;
+}
+
+int sys_kill(int pid, int sig) {
+    (void)pid;
+    (void)sig;
+    return 0;
+}
+
+static mode_t g_umask = 022;
+
+int sys_umask(mode_t mode, mode_t *old) {
+    if (old) *old = g_umask;
+    g_umask = mode & 0777;
+    return 0;
+}
+
+static sigset_t g_proc_sigmask = {};
+
+int sys_sigprocmask(int how, const sigset_t *__restrict set, sigset_t *__restrict retrieve) {
+    if (retrieve) {
+        *retrieve = g_proc_sigmask;
+    }
+    if (set) {
+        size_t nwords = sizeof(g_proc_sigmask.sig) / sizeof(unsigned long);
+        for (size_t i = 0; i < nwords; i++) {
+            if (how == SIG_BLOCK) {
+                g_proc_sigmask.sig[i] |= set->sig[i];
+            } else if (how == SIG_UNBLOCK) {
+                g_proc_sigmask.sig[i] &= ~(set->sig[i]);
+            } else if (how == SIG_SETMASK) {
+                g_proc_sigmask.sig[i] = set->sig[i];
+            }
+        }
+    }
+    return 0;
+}
+
+int sys_sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    (void)signum;
+    (void)act;
+    (void)oldact;
+    return 0;
+}
+
+int sys_gethostname(char *buffer, size_t bufsize) {
+    if (!buffer || bufsize == 0) return EINVAL;
+    const char name[] = "irisOS-dev";
+    if (bufsize < sizeof(name)) return ENAMETOOLONG;
+    memcpy(buffer, name, sizeof(name));
+    return 0;
+}
+
+int sys_readlink(const char *path, void *buffer, size_t max_size, ssize_t *length) {
+    if (!path || !buffer || max_size == 0) return EINVAL;
+    const char *target = nullptr;
+    if (iris_strcmp(path, "/bin") == 0) {
+        target = "/System/Bin";
+    } else if (iris_strcmp(path, "/lib") == 0) {
+        target = "/System/Libraries";
+    }
+    if (target) {
+        size_t tlen = strlen(target);
+        size_t to_copy = (tlen < max_size) ? tlen : max_size;
+        memcpy(buffer, target, to_copy);
+        if (length) *length = static_cast<ssize_t>(to_copy);
+        return 0;
+    }
+    return EINVAL;
+}
+
+int sys_readlinkat(int dirfd, const char *path, void *buffer, size_t max_size, ssize_t *length) {
+    (void)dirfd;
+    return sys_readlink(path, buffer, max_size, length);
 }
 
 } // namespace mlibc

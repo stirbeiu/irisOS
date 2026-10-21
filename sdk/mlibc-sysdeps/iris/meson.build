@@ -19,6 +19,7 @@ rtld_deps += [builtins_dep]
 
 iris_dep = declare_dependency(link_args: ['-L' + lib_dir, '-l:libiris.a'])
 libc_deps += [iris_dep]
+rtld_deps += [iris_dep]
 
 rtld_sources += files(
 	'generic/generic.cpp',

@@ -686,7 +686,28 @@ static zx_status_t resolve_vfs_path(const char* raw_path,
         /* Final leaf component */
         *out_parent_ino = cur_ino;
         snprintf(out_leaf, leaf_max, "%s", p);
-        return ufs2_dir_lookup(disk, cur_ino, p, out_target_ino);
+        ufs_ino_t found_ino = 0;
+        zx_status_t st = ufs2_dir_lookup(disk, cur_ino, p, &found_ino);
+        if (st != ZX_OK) return st;
+
+        union dinodep ldp;
+        if (getinode(disk, &ldp, found_ino) == 0 && (ldp.dp2->di_mode & IFMT) == IFLNK) {
+            const char* sym_target = (const char*)ldp.dp2->di_db;
+            if (sym_target[0] == '/') {
+                return resolve_vfs_path(sym_target, out_mount, out_disk, out_parent_ino,
+                                        out_leaf, leaf_max, out_target_ino);
+            } else {
+                ufs_ino_t resolved_ino = 0;
+                zx_status_t rst = ufs2_dir_lookup(disk, cur_ino, sym_target, &resolved_ino);
+                if (rst != ZX_OK) return rst;
+                *out_target_ino = resolved_ino;
+                snprintf(out_leaf, leaf_max, "%s", sym_target);
+                return ZX_OK;
+            }
+        }
+
+        *out_target_ino = found_ino;
+        return ZX_OK;
     }
 
     return ZX_ERR_NOT_FOUND;
@@ -855,11 +876,21 @@ static void handle_fs_read(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
             chunk = to_read - bytes_copied;
         }
 
-        if (lbn >= UFS_NDADDR) {
+        ufs2_daddr_t frag = 0;
+        if (lbn < UFS_NDADDR) {
+            frag = di.di_db[lbn];
+        } else if (lbn < UFS_NDADDR + 512) {
+            uint32_t ind_idx = lbn - UFS_NDADDR;
+            if (di.di_ib[0] != 0) {
+                ufs2_daddr_t iblk[512];
+                if (bread(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) != -1) {
+                    frag = iblk[ind_idx];
+                }
+            }
+        } else {
             break;
         }
 
-        ufs2_daddr_t frag = di.di_db[lbn];
         if (frag == 0) {
             memset(rep_payload + bytes_copied, 0, chunk);
         } else {
@@ -1028,6 +1059,18 @@ static void handle_fs_stat(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
     const iris_fs_stat_req_t* req = (const iris_fs_stat_req_t*)payload;
     struct uufsd* disk = NULL;
     ufs_ino_t target_ino = 0;
+
+    if (!req->use_handle && (strcmp(req->path, "/") == 0 || req->path[0] == '\0')) {
+        iris_fs_stat_resp_t* resp = (iris_fs_stat_resp_t*)rep_payload;
+        resp->ino       = 2;
+        resp->size      = 4096;
+        resp->mode      = 0040755; /* S_IFDIR | 0755 */
+        resp->nlink     = 4;
+        resp->mtime_sec = 0;
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_stat_resp_t));
+        *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_stat_resp_t);
+        return;
+    }
 
     if (req->use_handle) {
         if (req->vfs_handle == 0 || req->vfs_handle >= MAX_OPEN_FILES ||

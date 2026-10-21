@@ -11,7 +11,7 @@ This document tracks implementation status, completed milestones, verification c
 | **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
 | **Phase 3** | Native SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
 | **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
-| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell | **IN PROGRESS (Step 5.1 COMPLETED)** |
+| **Phase 5** | Root System, PTY Server (`iris_pty`), Toybox Shell & Core Utilities | **IN PROGRESS (Steps 5.1 & 5.2 COMPLETED)** |
 | **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |
 
 ---
@@ -169,11 +169,33 @@ This document tracks implementation status, completed milestones, verification c
     * x86_64: `[PASS] irisOS x86_64 verification succeeded!`
     * aarch64: `[PASS] irisOS aarch64 verification succeeded!`
 
+### Step 5.2: Toybox Shell & Core Utilities Integration (COMPLETED)
+* **Toybox Multicall Userland Fetch & Configuration (`scripts/fetch_toybox.sh`, `build/toybox.config`):**
+  * Created [`scripts/fetch_toybox.sh`](scripts/fetch_toybox.sh) fetching pinned Toybox `0.8.11` into `vendor/toybox/` with shallow clone support.
+  * Formulated [`build/toybox.config`](build/toybox.config) defconfig enabling 15 core utilities (`sh`, `ls`, `cat`, `echo`, `pwd`, `uname`, `clear`, `mkdir`, `cp`, `rm`, `touch`, `wc`, `grep`, `sleep`, `kill`) configured for `posix_spawn()` / no-fork operation (`CONFIG_TOYBOX_FORK=n`, `CONFIG_TOYBOX_NOMMU=y`).
+* **Cross-Compilation & Compatibility Layer (`scripts/build_toybox.sh`, `build/toybox_compat/`):**
+  * Integrated Toybox build orchestrator using Homebrew LLVM (`clang`, `llvm-ar`) linking statically against `mlibc` sysroot (`libc.a`) with PIC/PIE support.
+  * Formulated minimal compatibility headers and stubs in [`build/toybox_compat/`](build/toybox_compat/) bridging missing BSD/Linux-specific symbols (`stubs.c`, `mntent.h`, `termios.h`, `pty.h`).
+  * Built and stripped standalone multi-call binaries for both `x86_64` and `aarch64` (~850 KB - 910 KB) installed to `out/build-<arch>/bin/toybox`.
+* **POSIX Sysdeps Integration (`sdk/mlibc-sysdeps/iris/`):**
+  * **Zircon Socket Stream Pipes:** Refactored `sys_pipe` to allocate duplex Zircon stream sockets (`zx_socket_create(0, &s0, &s1)`) mapped to `IRIS_FD_SOCKET`. Implemented `zx_socket_read` and `zx_socket_write` with `ZX_SOCKET_READABLE` and `ZX_SOCKET_WRITABLE` wait signals, supporting native capability duplication (`zx_handle_duplicate`) required by `dup`, `dup2`, and `posix_spawn` pipe redirection.
+  * **POSIX Spawn File Actions:** Extended `sys_spawn` in [`sdk/mlibc-sysdeps/iris/generic/generic.cpp`](sdk/mlibc-sysdeps/iris/generic/generic.cpp) to process `posix_spawn_file_actions_t` operations (`close`, `dup2`, `open`), dynamically cloning and transferring redirected file descriptors (`PA_HND(PA_FD, fd)`) to child processes.
+  * **Core POSIX Emulation APIs:** Implemented `sys_sigprocmask`, `sys_sigaction`, `sys_gethostname`, `sys_readlink` / `sys_readlinkat`, `sys_getcwd`, `sys_chdir` (with relative path and `.` resolution against `g_cwd`), `sys_fchdir`, `sys_kill`, `sys_umask`, `sys_uname`, `sys_dup`, `sys_dup2`, `sys_fcntl` (`F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`, `F_DUPFD`), `sys_ioctl`, and `sys_tcgetattr` / `sys_tcsetattr`.
+  * **Bootstrap Handle Dispatch:** Updated [`sdk/mlibc-sysdeps/iris/generic/entry.cpp`](sdk/mlibc-sysdeps/iris/generic/entry.cpp) to identify transferred `ZX_OBJ_TYPE_SOCKET` descriptors as `IRIS_FD_SOCKET`.
+  * Guarded `sdk/libiris/src/spawn.c` to reject `ZX_HANDLE_INVALID` entries from handle transfer arrays.
+* **Disk Packaging & Runtime Filesystem Layout (`build/mkimage.sh`, `build/mkufs2_host.c`):**
+  * Updated [`build/mkufs2_host.c`](build/mkufs2_host.c) and [`build/mkimage.sh`](build/mkimage.sh) to format `System_A` and `System_B` with `/System/Bin/toybox` and generate 15 symbolic links (`sh`, `ls`, `cat`, `echo`, `pwd`, `uname`, `clear`, `mkdir`, `cp`, `rm`, `touch`, `wc`, `grep`, `sleep`, `kill`).
+  * Ensured the in-memory symlink `/bin -> /System/Bin` enables running standard scripts via `#!/bin/sh` or `/bin/sh`.
+* **Automated Verification:**
+  * Updated [`apps/tests/its_irisOS/main.c`](apps/tests/its_irisOS/main.c) Step 13:
+    * **Step 13.1:** Creates a socket pipe via `pipe()`, redirects stdout to pipe write fd using `posix_spawn_file_actions_adddup2`, executes `/System/Bin/toybox uname -a`, reads output from pipe read fd, and verifies output contains `"irisOS"`.
+    * **Step 13.2:** Executes `/bin/sh -c "echo 'Toybox execution verified'"` through the PTY channel and verifies exit code 0.
+  * Verified 100% pass on both architectures (`x86_64` and `aarch64`) with zero warnings and clean daemon exit.
+
 * **Immediate Next Steps for Phase 5:**
-  1. **Step 5.2:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
-  2. **Step 5.3:** Compile and package `vendor/toybox` against `mlibc` (providing `sh`, `ls`, `cat`, `echo`, `cp`, `mkdir`, etc. without `fork()`, utilizing `posix_spawn()`).
-  3. **Step 5.4:** Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
-  4. **Release Hostname Configuration:** Switch System Node name from dev default (`irisOS-dev`) to official release name via `IRIS_SYSTEM_NODE` build configuration or runtime configuration when preparing the first full production release.
+  1. **Step 5.3:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
+  2. **Step 5.4:** Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
+  3. **Release Hostname Configuration:** Switch System Node name from dev default (`irisOS-dev`) to official release name via `IRIS_SYSTEM_NODE` build configuration or runtime configuration when preparing the first full production release.
 
 ---
 
@@ -258,6 +280,9 @@ System Node: irisOS-dev (x86_64)
 [ OKAY ] its_irisOS - PTY raw mode immediate pass-through verified ("RAW_INPUT").
 [ OKAY ] its_irisOS - PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
 [ OKAY ] its_irisOS - PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
+[ OKAY ] its_irisOS - Toybox multicall userland verified: /System/Bin/toybox uname -a -> "irisOS".
+Toybox execution verified
+[ OKAY ] its_irisOS - Toybox shell execution verified: /bin/sh -c (exit=0).
 [ OKAY ] its_irisOS - Interactive Test Suite all checks passed.
 [ OKAY ] iris_pty - Daemon exited cleanly.
 [ OKAY ] iris_crypt - Zeroized AES-256-XTS keys and exited cleanly.
@@ -319,6 +344,9 @@ System Node: irisOS-dev (aarch64)
 [ OKAY ] its_irisOS - PTY raw mode immediate pass-through verified ("RAW_INPUT").
 [ OKAY ] its_irisOS - PTY Ctrl+C signal generation (SIGINT=2) and line discard verified.
 [ OKAY ] its_irisOS - PTY Ctrl+D EOF delivery verified (read returned 0 bytes).
+[ OKAY ] its_irisOS - Toybox multicall userland verified: /System/Bin/toybox uname -a -> "irisOS".
+Toybox execution verified
+[ OKAY ] its_irisOS - Toybox shell execution verified: /bin/sh -c (exit=0).
 [ OKAY ] its_irisOS - Interactive Test Suite all checks passed.
 [ OKAY ] iris_pty - Daemon exited cleanly.
 [ OKAY ] iris_crypt - Zeroized AES-256-XTS keys and exited cleanly.

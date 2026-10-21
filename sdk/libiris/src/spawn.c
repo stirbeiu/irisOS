@@ -431,13 +431,17 @@ zx_status_t iris_spawn(const iris_spawn_args_t* args,
             }
             const iris_spawn_action_t* act = &args->actions[i];
             if (act->type == IRIS_SPAWN_ACTION_TRANSFER_HANDLE) {
-                hnd_array[total_handles] = act->handle;
-                info_array[total_handles] = act->handle_info;
-                total_handles++;
+                if (act->handle != ZX_HANDLE_INVALID) {
+                    hnd_array[total_handles] = act->handle;
+                    info_array[total_handles] = act->handle_info;
+                    total_handles++;
+                }
             } else if (act->type == IRIS_SPAWN_ACTION_ADD_FD) {
-                hnd_array[total_handles] = act->handle;
-                info_array[total_handles] = PA_HND(PA_FD, (uint32_t)act->target_fd);
-                total_handles++;
+                if (act->handle != ZX_HANDLE_INVALID) {
+                    hnd_array[total_handles] = act->handle;
+                    info_array[total_handles] = PA_HND(PA_FD, (uint32_t)act->target_fd);
+                    total_handles++;
+                }
             }
         }
     }

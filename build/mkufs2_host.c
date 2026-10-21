@@ -93,11 +93,11 @@ static void build_dir_block(uint8_t block[4096], uint32_t self_ino, uint32_t par
     uint8_t* chunk = block;
     size_t offset = 0;
 
-    dir_item_t all_items[16];
+    dir_item_t all_items[32];
     size_t total = 0;
     all_items[total++] = (dir_item_t){ self_ino, DT_DIR, "." };
     all_items[total++] = (dir_item_t){ parent_ino, DT_DIR, ".." };
-    for (size_t i = 0; i < num_items && total < 16; ++i) {
+    for (size_t i = 0; i < num_items && total < 32; ++i) {
         all_items[total++] = items[i];
     }
 
@@ -136,7 +136,7 @@ static void write_inode_entry(int fd, struct fs* sblock, uint32_t ino, const str
     }
 }
 
-static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname, bool is_system) {
+static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname, bool is_system, const char* toybox_path) {
     const int32_t bsize = 4096;
     const int32_t fsize = 4096;
     const int32_t frag  = 1;
@@ -262,14 +262,43 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
     if (is_system) {
         /* System_A / System_B hierarchy:
          *  ino 2: / (root dir) -> Bin (3), Libraries (4), Servers (5), Resources (6)
-         *  ino 3: /Bin         -> hello.txt (7)
+         *  ino 3: /Bin         -> hello.txt (7), toybox (9), and 15 symlinks (10..24)
          *  ino 4: /Libraries
          *  ino 5: /Servers
          *  ino 6: /Resources   -> release.txt (8)
          *  ino 7: /Bin/hello.txt (regular file)
          *  ino 8: /Resources/release.txt (regular file)
+         *  ino 9: /Bin/toybox (regular executable)
+         *  ino 10..24: symlinks to toybox (sh, ls, cat, echo, pwd, uname, clear, mkdir, cp, rm, touch, wc, grep, sleep, kill)
          */
-        for (uint32_t ino = 2; ino <= 8; ++ino) {
+        static const char* const toybox_tools[] = {
+            "sh", "ls", "cat", "echo", "pwd", "uname", "clear",
+            "mkdir", "cp", "rm", "touch", "wc", "grep", "sleep", "kill"
+        };
+        const size_t num_tools = sizeof(toybox_tools) / sizeof(toybox_tools[0]);
+
+        int tb_fd = -1;
+        off_t tb_size = 0;
+        uint32_t num_tb_blks = 0;
+        uint32_t blk_tb_indirect = 0;
+        uint32_t blk_tb_data_start = 0;
+
+        if (toybox_path != NULL) {
+            tb_fd = open(toybox_path, O_RDONLY);
+            if (tb_fd >= 0) {
+                tb_size = lseek(tb_fd, 0, SEEK_END);
+                lseek(tb_fd, 0, SEEK_SET);
+                num_tb_blks = (uint32_t)((tb_size + 4095) / 4096);
+            } else {
+                fprintf(stderr, "mkufs2: warning: cannot open toybox '%s': %s\n", toybox_path, strerror(errno));
+            }
+        }
+
+        uint32_t max_ino = 8;
+        if (tb_fd >= 0) {
+            max_ino = 8 + 1 + (uint32_t)num_tools; // ino 24
+        }
+        for (uint32_t ino = 2; ino <= max_ino; ++ino) {
             setbit(inosused, ino);
             used_inodes++;
         }
@@ -282,6 +311,14 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         uint32_t blk_res     = next_blk++;
         uint32_t blk_hello   = next_blk++;
         uint32_t blk_release = next_blk++;
+
+        if (tb_fd >= 0) {
+            if (num_tb_blks > 12) {
+                blk_tb_indirect = next_blk++;
+            }
+            blk_tb_data_start = next_blk;
+            next_blk += num_tb_blks;
+        }
 
         for (uint32_t b = 38; b < next_blk; ++b) {
             ffs_clrblock(sblock, blksfree, (int32_t)b);
@@ -297,10 +334,16 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         build_dir_block(dir_blk, 2, 2, root_items, 4);
         pwrite(fd, dir_blk, 4096, (off_t)blk_root * 4096);
 
-        dir_item_t bin_items[] = {
-            { 7, DT_REG, "hello.txt" },
-        };
-        build_dir_block(dir_blk, 3, 2, bin_items, 1);
+        dir_item_t bin_items[32];
+        size_t num_bin_items = 0;
+        bin_items[num_bin_items++] = (dir_item_t){ 7, DT_REG, "hello.txt" };
+        if (tb_fd >= 0) {
+            bin_items[num_bin_items++] = (dir_item_t){ 9, DT_REG, "toybox" };
+            for (size_t i = 0; i < num_tools && num_bin_items < 32; ++i) {
+                bin_items[num_bin_items++] = (dir_item_t){ 10 + (uint32_t)i, DT_LNK, toybox_tools[i] };
+            }
+        }
+        build_dir_block(dir_blk, 3, 2, bin_items, num_bin_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_bin * 4096);
 
         build_dir_block(dir_blk, 4, 2, NULL, 0);
@@ -372,6 +415,61 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         di.di_ctime   = sblock->fs_time;
         di.di_db[0]   = blk_release;
         write_inode_entry(fd, sblock, 8, &di);
+
+        if (tb_fd >= 0) {
+            uint8_t tbuf[4096];
+            for (uint32_t i = 0; i < num_tb_blks; ++i) {
+                memset(tbuf, 0, sizeof(tbuf));
+                ssize_t rd = read(tb_fd, tbuf, sizeof(tbuf));
+                (void)rd;
+                pwrite(fd, tbuf, 4096, (off_t)(blk_tb_data_start + i) * 4096);
+            }
+            if (num_tb_blks > 12) {
+                ufs2_daddr_t iblk[512];
+                memset(iblk, 0, sizeof(iblk));
+                for (uint32_t i = 12; i < num_tb_blks && (i - 12) < 512; ++i) {
+                    iblk[i - 12] = blk_tb_data_start + i;
+                }
+                pwrite(fd, iblk, 4096, (off_t)blk_tb_indirect * 4096);
+            }
+            close(tb_fd);
+
+            /* Write inode 9 (Bin/toybox) */
+            memset(&di, 0, sizeof(di));
+            di.di_mode    = IFREG | 0755;
+            di.di_nlink   = 1;
+            di.di_size    = tb_size;
+            di.di_blocks  = (num_tb_blks + (num_tb_blks > 12 ? 1 : 0)) * 8;
+            di.di_blksize = 4096;
+            di.di_gen     = 1;
+            di.di_mtime   = sblock->fs_time;
+            di.di_atime   = sblock->fs_time;
+            di.di_ctime   = sblock->fs_time;
+            for (uint32_t i = 0; i < 12 && i < num_tb_blks; ++i) {
+                di.di_db[i] = blk_tb_data_start + i;
+            }
+            if (num_tb_blks > 12) {
+                di.di_ib[0] = blk_tb_indirect;
+            }
+            write_inode_entry(fd, sblock, 9, &di);
+
+            /* Write inodes 10..24 (symlinks to toybox) */
+            for (size_t i = 0; i < num_tools; ++i) {
+                uint32_t sym_ino = 10 + (uint32_t)i;
+                memset(&di, 0, sizeof(di));
+                di.di_mode    = IFLNK | 0777;
+                di.di_nlink   = 1;
+                di.di_size    = strlen("toybox");
+                di.di_blocks  = 0;
+                di.di_blksize = 4096;
+                di.di_gen     = 1;
+                di.di_mtime   = sblock->fs_time;
+                di.di_atime   = sblock->fs_time;
+                di.di_ctime   = sblock->fs_time;
+                memcpy(di.di_db, "toybox", strlen("toybox") + 1);
+                write_inode_entry(fd, sblock, sym_ino, &di);
+            }
+        }
     } else {
         /* Encrypted Data partition hierarchy:
          *  ino 2: / (root of Data volume, mounted at /Users) -> admin (3), Applications (4)
@@ -597,6 +695,7 @@ int main(int argc, char* argv[]) {
     uint64_t total_sectors = (uint64_t)strtoull(argv[2], NULL, 10);
     const char* mode = argv[3];
     const char* volname = (argc >= 5) ? argv[4] : "irisOS";
+    const char* toybox_bin = (argc >= 6) ? argv[5] : NULL;
 
     if (strcmp(mode, "system") == 0) {
         int fd = open(out_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
@@ -604,7 +703,7 @@ int main(int argc, char* argv[]) {
             perror("open");
             return 1;
         }
-        if (format_ufs2_file(fd, total_sectors, volname, true) != 0) {
+        if (format_ufs2_file(fd, total_sectors, volname, true, toybox_bin) != 0) {
             close(fd);
             return 1;
         }
@@ -618,7 +717,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         uint64_t logical_sectors = total_sectors - IRIS_CRYPT_HEADER_SECTORS;
-        if (format_ufs2_file(fd, logical_sectors, volname, false) != 0) {
+        if (format_ufs2_file(fd, logical_sectors, volname, false, NULL) != 0) {
             close(fd);
             unlink(tmp_plain);
             return 1;

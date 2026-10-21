@@ -534,29 +534,25 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
 
         zx_handle_t pty_client = ZX_HANDLE_INVALID, pty_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &pty_client, &pty_server);
-        zx_handle_t pty_its_client = ZX_HANDLE_INVALID, pty_its_srv = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &pty_its_client, &pty_its_srv);
         zx_handle_t root_res_pty = ZX_HANDLE_INVALID;
         g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_pty);
         spawn_handle_t pty_hnds[] = {
             { pty_server,   PA_HND(PA_USER0, 0) },
-            { root_res_pty, PA_HND(PA_RESOURCE, 0) },
-            { pty_its_srv,  PA_HND(PA_USER0, 1) }
+            { root_res_pty, PA_HND(PA_RESOURCE, 0) }
         };
-        spawn_elf_binary("iris_pty", "bin/iris_pty", pty_hnds, 3);
-        g_zx_handle_close(pty_server); g_zx_handle_close(pty_its_srv);
+        spawn_elf_binary("iris_pty", "bin/iris_pty", pty_hnds, 2);
+        g_zx_handle_close(pty_server);
         log_status(STATUS_OKAY, "iris_init", "Spawned Pseudo-Terminal Server (bin/iris_pty).");
 
         /* 4. Spawn bin/its_irisOS and pass client channels */
         spawn_handle_t its_hnds[] = {
             { fshost_client,        PA_HND(PA_NS_DIR, 0) },
-            { pty_its_client,       PA_HND(PA_FD, 0) },
             { pty_client,           PA_HND(PA_USER0, 0) },
             { blk_client,           PA_HND(PA_USER1, 0) },
             { crypt_client_for_its, PA_HND(PA_USER2, 0) }
         };
-        spawn_elf_binary("its_irisOS", "bin/its_irisOS", its_hnds, 5);
-        g_zx_handle_close(fshost_client); g_zx_handle_close(pty_its_client);
+        spawn_elf_binary("its_irisOS", "bin/its_irisOS", its_hnds, 4);
+        g_zx_handle_close(fshost_client);
         g_zx_handle_close(pty_client); g_zx_handle_close(blk_client);
         g_zx_handle_close(crypt_client_for_its);
         log_status(STATUS_OKAY, "iris_init", "Spawned Interactive Test Suite (bin/its_irisOS).");

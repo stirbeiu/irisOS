@@ -664,6 +664,16 @@ iris_add_userland_executable(iris_pty
         "${IRIS_ROOT}/servers/drivers/virtio_input/include"
 )
 
+# 6. Toybox Multicall Userland Binary
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/bin/toybox"
+    COMMAND "${IRIS_ROOT}/scripts/build_toybox.sh" "${CMAKE_SYSTEM_PROCESSOR}" "${CMAKE_BINARY_DIR}"
+    DEPENDS mlibc_target iris_static
+    COMMENT "Building Toybox multicall userland for ${CMAKE_SYSTEM_PROCESSOR}..."
+    VERBATIM
+)
+add_custom_target(toybox ALL DEPENDS "${CMAKE_BINARY_DIR}/bin/toybox")
+
 # ==============================================================================
 # Target: Zircon Microkernel Core
 # ==============================================================================

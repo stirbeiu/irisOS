@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <spawn.h>
+#include <sys/wait.h>
 #include <stdarg.h>
 #include <sys/stat.h>
 
@@ -397,6 +398,73 @@ int main(int argc, char** argv) {
         pr = read(0, pty_in, sizeof(pty_in) - 1);
         if (pr == 0) {
             log_status(STATUS_OKAY, "its_irisOS", "PTY Ctrl+D EOF delivery verified (read returned 0 bytes).");
+        }
+    }
+
+    /* 13. Verify Toybox Multicall Userland & Shell (Step 5.2) */
+    /* 13.1 Verify /System/Bin/toybox uname -a via posix_spawn() */
+    int pipe_fds[2] = { -1, -1 };
+    if (pipe(pipe_fds) != 0) {
+        log_status(STATUS_FAIL, "its_irisOS", "pipe() creation failed (errno=%d).", errno);
+        return 9;
+    }
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pipe_fds[1], 1);
+    posix_spawn_file_actions_addclose(&fa, pipe_fds[0]);
+
+    char* tb_argv[] = { "/System/Bin/toybox", "uname", "-a", NULL };
+    pid_t pid = 0;
+    int sp_res = posix_spawn(&pid, "/System/Bin/toybox", &fa, NULL, tb_argv, NULL);
+    posix_spawn_file_actions_destroy(&fa);
+    close(pipe_fds[1]);
+
+    if (sp_res != 0) {
+        log_status(STATUS_FAIL, "its_irisOS", "posix_spawn(\"/System/Bin/toybox\") failed (%d).", sp_res);
+        close(pipe_fds[0]);
+        return 10;
+    }
+
+    char uname_out[256] = {0};
+    ssize_t uname_rd = read(pipe_fds[0], uname_out, sizeof(uname_out) - 1);
+    close(pipe_fds[0]);
+
+    int wstatus = 0;
+    waitpid(pid, &wstatus, 0);
+
+    /* Strip trailing newlines for clean log display */
+    for (ssize_t i = 0; i < uname_rd; ++i) {
+        if (uname_out[i] == '\n' || uname_out[i] == '\r') {
+            uname_out[i] = '\0';
+            break;
+        }
+    }
+
+    if (strstr(uname_out, "irisOS") != NULL) {
+        log_status(STATUS_OKAY, "its_irisOS", "Toybox multicall userland verified: /System/Bin/toybox uname -a -> \"%s\".", uname_out);
+    } else {
+        log_status(STATUS_FAIL, "its_irisOS", "Toybox uname output unexpected: \"%s\".", uname_out);
+        return 11;
+    }
+
+    /* 13.2 Verify /bin/sh -c "echo 'Toybox execution verified'" through PTY channel */
+    if (pty_ch != ZX_HANDLE_INVALID) {
+        posix_spawn_file_actions_t sh_fa;
+        posix_spawn_file_actions_init(&sh_fa);
+
+        char* sh_argv[] = { "/bin/sh", "-c", "echo 'Toybox execution verified'", NULL };
+        pid_t sh_pid = 0;
+        int sh_sp = posix_spawn(&sh_pid, "/bin/sh", &sh_fa, NULL, sh_argv, NULL);
+        posix_spawn_file_actions_destroy(&sh_fa);
+
+        if (sh_sp == 0) {
+            int sh_status = 0;
+            waitpid(sh_pid, &sh_status, 0);
+            log_status(STATUS_OKAY, "its_irisOS", "Toybox shell execution verified: /bin/sh -c (exit=%d).", WEXITSTATUS(sh_status));
+        } else {
+            log_status(STATUS_FAIL, "its_irisOS", "posix_spawn(\"/bin/sh\") failed (%d).", sh_sp);
+            return 12;
         }
     }
 

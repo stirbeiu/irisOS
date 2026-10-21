@@ -33,6 +33,7 @@ typedef enum iris_fd_type {
     IRIS_FD_CHANNEL  = 2, /**< Raw IPC channel to peer/server */
     IRIS_FD_VFS      = 3, /**< VFS file handle routed via iris_fshost (IRIS_PROTO_FS) */
     IRIS_FD_PTY      = 4, /**< Pseudo-terminal channel routed via iris_pty (IRIS_PROTO_PTY) */
+    IRIS_FD_SOCKET   = 5, /**< Zircon stream socket (pipe) */
 } iris_fd_type_t;
 
 /**
