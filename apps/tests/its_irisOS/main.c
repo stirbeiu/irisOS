@@ -426,22 +426,38 @@ int main(int argc, char** argv) {
         return 10;
     }
 
+    /* Read until EOF (all write ends closed): toybox emits uname's fields in several
+     * small writes, so a single read() can return only the first fragment, and closing
+     * the pipe early would make toybox's later writes fail with EPIPE. */
     char uname_out[256] = {0};
-    ssize_t uname_rd = read(pipe_fds[0], uname_out, sizeof(uname_out) - 1);
+    size_t uname_len = 0;
+    for (;;) {
+        ssize_t n = read(pipe_fds[0], uname_out + uname_len, sizeof(uname_out) - 1 - uname_len);
+        if (n <= 0) break;
+        uname_len += (size_t)n;
+        if (uname_len >= sizeof(uname_out) - 1) break;
+    }
     close(pipe_fds[0]);
 
     int wstatus = 0;
     waitpid(pid, &wstatus, 0);
 
     /* Strip trailing newlines for clean log display */
-    for (ssize_t i = 0; i < uname_rd; ++i) {
+    for (size_t i = 0; i < uname_len; ++i) {
         if (uname_out[i] == '\n' || uname_out[i] == '\r') {
             uname_out[i] = '\0';
             break;
         }
     }
 
-    if (strstr(uname_out, "irisOS") != NULL) {
+    char expected[128];
+#if defined(__x86_64__)
+    snprintf(expected, sizeof(expected), "irisOS irisOS-dev 0.1.0 Zircon 1011 (Ring 3 userland) x86_64");
+#else
+    snprintf(expected, sizeof(expected), "irisOS irisOS-dev 0.1.0 Zircon 1011 (Ring 3 userland) aarch64");
+#endif
+
+    if (strstr(uname_out, expected) != NULL && WEXITSTATUS(wstatus) == 0) {
         log_status(STATUS_OKAY, "its_irisOS", "Toybox multicall userland verified: /System/Bin/toybox uname -a -> \"%s\".", uname_out);
     } else {
         log_status(STATUS_FAIL, "its_irisOS", "Toybox uname output unexpected: \"%s\".", uname_out);

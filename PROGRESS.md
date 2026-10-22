@@ -195,7 +195,11 @@ This document tracks implementation status, completed milestones, verification c
 ### Step 5.2a: Raw PTY Console Output (COMPLETED)
 * `iris_pty` terminal output now uses `zx_debug_write()` (raw bytes to kernel console/UART) instead of `zx_debuglog_write()` (one timestamped record per call, which put every echoed character on its own line). Added `zx_debug_write` vDSO wrapper in `sdk/mlibc-sysdeps/iris/generic/generic.cpp`; debuglog remains the fallback and is still used for `[ OKAY ]` daemon logs.
 * Verification: `./iris test all` -> `[PASS]` on x86_64 and aarch64; echo now appears as `Helo\b \b\b \blo World` on a single line.
-* **Next (planned):** Step B (pipe test reads to EOF, checks full `uname -a`), Step C (`iris.mode=test|shell`, persistent `/bin/sh`), Step D (keyboard + serial input, real command testing).
+### Step 5.2b: Pipe Test Hardening (COMPLETED)
+* `its_irisOS` Step 13.1 now reads the `uname -a` pipe until EOF (toybox emits fields in several small writes; the old single `read()` + early `close()` caused toybox `uname: write` / `Failed to flush file` errors) and asserts the full expected string plus exit status 0 per architecture (`irisOS irisOS-dev 0.1.0 Zircon 1011 (Ring 3 userland) <arch>`).
+* Found and removed a stale x86_64 toybox object (`pending_sh.o`) carrying old debug prints (`[GNL]`, `[SH_LINE]`) from an earlier session; clean toybox rebuild verified free of them.
+* Verification: `./iris test all` -> `[PASS]` on x86_64 and aarch64, full `uname -a` line logged, no write/flush errors.
+* **Next (planned):** Step C (`iris.mode=test|shell`, persistent `/bin/sh`), Step D (keyboard + serial input, real command testing).
 
 * **Immediate Next Steps for Phase 5:**
   1. **Step 5.3:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
