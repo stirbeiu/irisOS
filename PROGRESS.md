@@ -192,6 +192,11 @@ This document tracks implementation status, completed milestones, verification c
     * **Step 13.2:** Executes `/bin/sh -c "echo 'Toybox execution verified'"` through the PTY channel and verifies exit code 0.
   * Verified 100% pass on both architectures (`x86_64` and `aarch64`) with zero warnings and clean daemon exit.
 
+### Step 5.2a: Raw PTY Console Output (COMPLETED)
+* `iris_pty` terminal output now uses `zx_debug_write()` (raw bytes to kernel console/UART) instead of `zx_debuglog_write()` (one timestamped record per call, which put every echoed character on its own line). Added `zx_debug_write` vDSO wrapper in `sdk/mlibc-sysdeps/iris/generic/generic.cpp`; debuglog remains the fallback and is still used for `[ OKAY ]` daemon logs.
+* Verification: `./iris test all` -> `[PASS]` on x86_64 and aarch64; echo now appears as `Helo\b \b\b \blo World` on a single line.
+* **Next (planned):** Step B (pipe test reads to EOF, checks full `uname -a`), Step C (`iris.mode=test|shell`, persistent `/bin/sh`), Step D (keyboard + serial input, real command testing).
+
 * **Immediate Next Steps for Phase 5:**
   1. **Step 5.3:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
   2. **Step 5.4:** Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.

@@ -482,6 +482,7 @@ static zx_status_t (*pfn_zx_pmt_unpin)(zx_handle_t pmt) = nullptr;
 static zx_status_t (*pfn_zx_object_wait_one)(zx_handle_t handle, zx_signals_t signals, zx_time_t deadline, zx_signals_t* observed) = nullptr;
 static zx_status_t (*pfn_zx_object_wait_many)(zx_wait_item_t* items, size_t num_items, zx_time_t deadline) = nullptr;
 static zx_status_t (*pfn_zx_debug_read)(zx_handle_t handle, char* buffer, size_t* buffer_size) = nullptr;
+static zx_status_t (*pfn_zx_debug_write)(const char* buffer, size_t buffer_size) = nullptr;
 static zx_status_t (*pfn_zx_object_get_info)(zx_handle_t handle, uint32_t topic, void* buffer, size_t buffer_size, size_t* actual, size_t* avail) = nullptr;
 
 static void* vdso_find(uintptr_t base, const char* name, const char* name_with_underscore) {
@@ -532,6 +533,7 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_object_wait_one       = (decltype(pfn_zx_object_wait_one))vdso_find(base, "zx_object_wait_one", "_zx_object_wait_one");
     pfn_zx_object_wait_many      = (decltype(pfn_zx_object_wait_many))vdso_find(base, "zx_object_wait_many", "_zx_object_wait_many");
     pfn_zx_debug_read            = (decltype(pfn_zx_debug_read))vdso_find(base, "zx_debug_read", "_zx_debug_read");
+    pfn_zx_debug_write           = (decltype(pfn_zx_debug_write))vdso_find(base, "zx_debug_write", "_zx_debug_write");
     pfn_zx_object_get_info       = (decltype(pfn_zx_object_get_info))vdso_find(base, "zx_object_get_info", "_zx_object_get_info");
     pfn_zx_socket_create         = (decltype(pfn_zx_socket_create))vdso_find(base, "zx_socket_create", "_zx_socket_create");
     pfn_zx_socket_write          = (decltype(pfn_zx_socket_write))vdso_find(base, "zx_socket_write", "_zx_socket_write");
@@ -823,6 +825,11 @@ extern "C" zx_status_t zx_object_wait_many(zx_wait_item_t* items, size_t num_ite
 
 extern "C" zx_status_t zx_debug_read(zx_handle_t handle, char* buffer, size_t* buffer_size) {
     if (pfn_zx_debug_read) return pfn_zx_debug_read(handle, buffer, buffer_size);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
+extern "C" zx_status_t zx_debug_write(const char* buffer, size_t buffer_size) {
+    if (pfn_zx_debug_write) return pfn_zx_debug_write(buffer, buffer_size);
     return ZX_ERR_NOT_SUPPORTED;
 }
 

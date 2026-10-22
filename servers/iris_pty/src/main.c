@@ -63,10 +63,15 @@ static void pty_unlock(pty_discipline_t* p) {
 
 void pty_raw_output(const char* buf, size_t len) {
     if (!buf || len == 0) return;
-    if (g_debuglog_handle != ZX_HANDLE_INVALID) {
-        zx_debuglog_write(g_debuglog_handle, 0, buf, len);
-    } else {
-        write(1, buf, len);
+    /* Terminal traffic must be a raw byte stream. zx_debuglog_write() creates one
+     * timestamped log record per call (so each echoed key became its own line);
+     * zx_debug_write() sends the bytes straight to the kernel console/UART. */
+    if (zx_debug_write(buf, len) != ZX_OK) {
+        if (g_debuglog_handle != ZX_HANDLE_INVALID) {
+            zx_debuglog_write(g_debuglog_handle, 0, buf, len);
+        } else {
+            write(1, buf, len);
+        }
     }
 }
 
