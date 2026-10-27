@@ -554,8 +554,14 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
+set(SYSROOT_DIR "${IRIS_ROOT}/out/sysroot")
+set(SYSROOT_INC_DIR "${SYSROOT_DIR}/usr/include")
+set(SYSROOT_LIB_DIR "${SYSROOT_DIR}/usr/lib")
+file(MAKE_DIRECTORY "${SYSROOT_INC_DIR}" "${SYSROOT_LIB_DIR}")
+
 add_library(iris_userland_common INTERFACE)
 target_include_directories(iris_userland_common SYSTEM INTERFACE
+    "${SYSROOT_INC_DIR}"
     "${CMAKE_BINARY_DIR}/mlibc"
     "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/include"
     "${IRIS_ROOT}/sdk/libiris/include"
@@ -573,10 +579,268 @@ target_include_directories(iris_userland_common SYSTEM INTERFACE
 
 target_compile_options(iris_userland_common INTERFACE
     -O2
-    -fPIE
+    -fPIC
     -nostdinc
     -isystem "${CLANG_RESOURCE_DIR}/include"
 )
+
+# ==============================================================================
+# Target: pixman-1 (2D Pixel Manipulation Library - Zone 1 Permissive MIT)
+# ==============================================================================
+set(PIXMAN_ROOT "${IRIS_ROOT}/vendor/pixman")
+if (NOT EXISTS "${PIXMAN_ROOT}/pixman/pixman.c")
+    execute_process(COMMAND bash "${IRIS_ROOT}/scripts/fetch_pixman.sh")
+endif()
+
+if (EXISTS "${PIXMAN_ROOT}/pixman/pixman.c")
+    set(PIXMAN_VERSION_MAJOR 0)
+    set(PIXMAN_VERSION_MINOR 43)
+    set(PIXMAN_VERSION_MICRO 4)
+    set(PIXMAN_GEN_DIR "${CMAKE_BINARY_DIR}/pixman_gen")
+    file(MAKE_DIRECTORY "${PIXMAN_GEN_DIR}")
+
+    configure_file(
+        "${PIXMAN_ROOT}/pixman/pixman-version.h.in"
+        "${PIXMAN_GEN_DIR}/pixman-version.h"
+        @ONLY
+    )
+
+    file(WRITE "${PIXMAN_GEN_DIR}/pixman-config.h"
+        "#ifndef PIXMAN_CONFIG_H\n"
+        "#define PIXMAN_CONFIG_H\n"
+        "#define PACKAGE \"pixman\"\n"
+        "#define SIZEOF_LONG 8\n"
+        "#define HAVE_POSIX_MEMALIGN 1\n"
+        "#define HAVE_UNISTD_H 1\n"
+        "#define HAVE_SYS_MMAN_H 1\n"
+        "#define HAVE_BUILTIN_CLZ 1\n"
+        "#define PIXMAN_NO_TLS 1\n"
+        "#if defined(__x86_64__)\n"
+        "#define USE_SSE2 1\n"
+        "#define USE_SSSE3 1\n"
+        "#endif\n"
+        "#endif /* PIXMAN_CONFIG_H */\n"
+    )
+
+    # Install Pixman public headers into out/sysroot/usr/include/
+    file(MAKE_DIRECTORY "${SYSROOT_INC_DIR}/pixman-1")
+    file(COPY_FILE "${PIXMAN_ROOT}/pixman/pixman.h" "${SYSROOT_INC_DIR}/pixman.h" ONLY_IF_DIFFERENT)
+    file(COPY_FILE "${PIXMAN_GEN_DIR}/pixman-version.h" "${SYSROOT_INC_DIR}/pixman-version.h" ONLY_IF_DIFFERENT)
+    file(COPY_FILE "${PIXMAN_ROOT}/pixman/pixman.h" "${SYSROOT_INC_DIR}/pixman-1/pixman.h" ONLY_IF_DIFFERENT)
+    file(COPY_FILE "${PIXMAN_GEN_DIR}/pixman-version.h" "${SYSROOT_INC_DIR}/pixman-1/pixman-version.h" ONLY_IF_DIFFERENT)
+
+    set(PIXMAN_SRCS
+        "${PIXMAN_ROOT}/pixman/pixman.c"
+        "${PIXMAN_ROOT}/pixman/pixman-access.c"
+        "${PIXMAN_ROOT}/pixman/pixman-access-accessors.c"
+        "${PIXMAN_ROOT}/pixman/pixman-bits-image.c"
+        "${PIXMAN_ROOT}/pixman/pixman-combine32.c"
+        "${PIXMAN_ROOT}/pixman/pixman-combine-float.c"
+        "${PIXMAN_ROOT}/pixman/pixman-conical-gradient.c"
+        "${PIXMAN_ROOT}/pixman/pixman-filter.c"
+        "${PIXMAN_ROOT}/pixman/pixman-x86.c"
+        "${PIXMAN_ROOT}/pixman/pixman-mips.c"
+        "${PIXMAN_ROOT}/pixman/pixman-arm.c"
+        "${PIXMAN_ROOT}/pixman/pixman-ppc.c"
+        "${PIXMAN_ROOT}/pixman/pixman-edge.c"
+        "${PIXMAN_ROOT}/pixman/pixman-edge-accessors.c"
+        "${PIXMAN_ROOT}/pixman/pixman-fast-path.c"
+        "${PIXMAN_ROOT}/pixman/pixman-glyph.c"
+        "${PIXMAN_ROOT}/pixman/pixman-general.c"
+        "${PIXMAN_ROOT}/pixman/pixman-gradient-walker.c"
+        "${PIXMAN_ROOT}/pixman/pixman-image.c"
+        "${PIXMAN_ROOT}/pixman/pixman-implementation.c"
+        "${PIXMAN_ROOT}/pixman/pixman-linear-gradient.c"
+        "${PIXMAN_ROOT}/pixman/pixman-matrix.c"
+        "${PIXMAN_ROOT}/pixman/pixman-noop.c"
+        "${PIXMAN_ROOT}/pixman/pixman-radial-gradient.c"
+        "${PIXMAN_ROOT}/pixman/pixman-region16.c"
+        "${PIXMAN_ROOT}/pixman/pixman-region32.c"
+        "${PIXMAN_ROOT}/pixman/pixman-solid-fill.c"
+        "${PIXMAN_ROOT}/pixman/pixman-timer.c"
+        "${PIXMAN_ROOT}/pixman/pixman-trap.c"
+        "${PIXMAN_ROOT}/pixman/pixman-utils.c"
+    )
+
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+        list(APPEND PIXMAN_SRCS
+            "${PIXMAN_ROOT}/pixman/pixman-sse2.c"
+            "${PIXMAN_ROOT}/pixman/pixman-ssse3.c"
+        )
+        set_source_files_properties("${PIXMAN_ROOT}/pixman/pixman-sse2.c" PROPERTIES COMPILE_OPTIONS "-msse2")
+        set_source_files_properties("${PIXMAN_ROOT}/pixman/pixman-ssse3.c" PROPERTIES COMPILE_OPTIONS "-mssse3")
+    endif()
+
+    add_library(pixman STATIC ${PIXMAN_SRCS})
+    add_dependencies(pixman mlibc_target)
+    target_link_libraries(pixman PRIVATE iris_userland_common)
+
+    target_include_directories(pixman PUBLIC
+        "${PIXMAN_GEN_DIR}"
+        "${PIXMAN_ROOT}/pixman"
+    )
+
+    target_compile_definitions(pixman PRIVATE
+        HAVE_CONFIG_H
+    )
+
+    target_compile_options(pixman PRIVATE
+        -fPIC
+        -O2
+        -Wno-unused-parameter
+        -Wno-unused-function
+        -Wno-unused-local-typedef
+        -Wno-sign-compare
+    )
+
+    set_target_properties(pixman PROPERTIES
+        OUTPUT_NAME "pixman-1"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    )
+
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/lib/libpixman-1.so"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/lib" "${SYSROOT_LIB_DIR}"
+        COMMAND "${CMAKE_C_COMPILER}"
+            "--target=${CMAKE_C_COMPILER_TARGET}"
+            "-Wl,-shared"
+            "-nostdlib"
+            "-fuse-ld=${CMAKE_LINKER}"
+            "-Wl,-soname,libpixman-1.so"
+            "-Wl,--allow-shlib-undefined"
+            $<TARGET_OBJECTS:pixman>
+            "${BUILTINS_LIB}"
+            "-o" "${CMAKE_BINARY_DIR}/lib/libpixman-1.so"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/lib/libpixman-1.a"
+            "${SYSROOT_LIB_DIR}/libpixman-1.a"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/lib/libpixman-1.so"
+            "${SYSROOT_LIB_DIR}/libpixman-1.so"
+        DEPENDS pixman compiler_rt_target
+        COMMENT "Linking dynamic shared library (libpixman-1.so) and installing into sysroot"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+
+    add_custom_target(pixman_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libpixman-1.so")
+endif()
+
+# ==============================================================================
+# Target: freetype (Font Rendering Engine - Zone 1 Permissive FTL)
+# ==============================================================================
+set(FREETYPE_ROOT "${IRIS_ROOT}/vendor/freetype")
+if (NOT EXISTS "${FREETYPE_ROOT}/src/base/ftbase.c")
+    execute_process(COMMAND bash "${IRIS_ROOT}/scripts/fetch_freetype.sh")
+endif()
+
+if (EXISTS "${FREETYPE_ROOT}/src/base/ftbase.c")
+    # Install FreeType public headers into out/sysroot/usr/include/
+    file(COPY_FILE "${FREETYPE_ROOT}/include/ft2build.h" "${SYSROOT_INC_DIR}/ft2build.h" ONLY_IF_DIFFERENT)
+    file(COPY "${FREETYPE_ROOT}/include/freetype" DESTINATION "${SYSROOT_INC_DIR}"
+         PATTERN "internal" EXCLUDE)
+
+    set(FREETYPE_SRCS
+        "${FREETYPE_ROOT}/src/autofit/autofit.c"
+        "${FREETYPE_ROOT}/src/base/ftbase.c"
+        "${FREETYPE_ROOT}/src/base/ftbbox.c"
+        "${FREETYPE_ROOT}/src/base/ftbdf.c"
+        "${FREETYPE_ROOT}/src/base/ftbitmap.c"
+        "${FREETYPE_ROOT}/src/base/ftcid.c"
+        "${FREETYPE_ROOT}/src/base/ftfstype.c"
+        "${FREETYPE_ROOT}/src/base/ftgasp.c"
+        "${FREETYPE_ROOT}/src/base/ftglyph.c"
+        "${FREETYPE_ROOT}/src/base/ftgxval.c"
+        "${FREETYPE_ROOT}/src/base/ftinit.c"
+        "${FREETYPE_ROOT}/src/base/ftmm.c"
+        "${FREETYPE_ROOT}/src/base/ftotval.c"
+        "${FREETYPE_ROOT}/src/base/ftpatent.c"
+        "${FREETYPE_ROOT}/src/base/ftpfr.c"
+        "${FREETYPE_ROOT}/src/base/ftstroke.c"
+        "${FREETYPE_ROOT}/src/base/ftsynth.c"
+        "${FREETYPE_ROOT}/src/base/fttype1.c"
+        "${FREETYPE_ROOT}/src/base/ftwinfnt.c"
+        "${FREETYPE_ROOT}/src/base/ftsystem.c"
+        "${FREETYPE_ROOT}/src/base/ftdebug.c"
+        "${FREETYPE_ROOT}/src/bdf/bdf.c"
+        "${FREETYPE_ROOT}/src/bzip2/ftbzip2.c"
+        "${FREETYPE_ROOT}/src/cache/ftcache.c"
+        "${FREETYPE_ROOT}/src/cff/cff.c"
+        "${FREETYPE_ROOT}/src/cid/type1cid.c"
+        "${FREETYPE_ROOT}/src/gzip/ftgzip.c"
+        "${FREETYPE_ROOT}/src/lzw/ftlzw.c"
+        "${FREETYPE_ROOT}/src/pcf/pcf.c"
+        "${FREETYPE_ROOT}/src/pfr/pfr.c"
+        "${FREETYPE_ROOT}/src/psaux/psaux.c"
+        "${FREETYPE_ROOT}/src/pshinter/pshinter.c"
+        "${FREETYPE_ROOT}/src/psnames/psnames.c"
+        "${FREETYPE_ROOT}/src/raster/raster.c"
+        "${FREETYPE_ROOT}/src/sdf/sdf.c"
+        "${FREETYPE_ROOT}/src/sfnt/sfnt.c"
+        "${FREETYPE_ROOT}/src/smooth/smooth.c"
+        "${FREETYPE_ROOT}/src/svg/svg.c"
+        "${FREETYPE_ROOT}/src/truetype/truetype.c"
+        "${FREETYPE_ROOT}/src/type1/type1.c"
+        "${FREETYPE_ROOT}/src/type42/type42.c"
+        "${FREETYPE_ROOT}/src/winfonts/winfnt.c"
+    )
+
+    add_library(freetype STATIC ${FREETYPE_SRCS})
+    add_dependencies(freetype mlibc_target)
+    target_link_libraries(freetype PRIVATE iris_userland_common)
+
+    target_include_directories(freetype PUBLIC
+        "${FREETYPE_ROOT}/include"
+    )
+
+    # Note: PNG, Bzip2, Brotli, and HarfBuzz are disabled in FreeType's default ftoption.h
+    target_compile_definitions(freetype PRIVATE
+        FT2_BUILD_LIBRARY=1
+    )
+
+    target_compile_options(freetype PRIVATE
+        -fPIC
+        -O2
+        -Wno-unused-parameter
+        -Wno-unused-function
+        -Wno-sign-compare
+    )
+
+    set_target_properties(freetype PROPERTIES
+        OUTPUT_NAME "freetype"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    )
+
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/lib/libfreetype.so"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/lib" "${SYSROOT_LIB_DIR}"
+        COMMAND "${CMAKE_C_COMPILER}"
+            "--target=${CMAKE_C_COMPILER_TARGET}"
+            "-Wl,-shared"
+            "-nostdlib"
+            "-fuse-ld=${CMAKE_LINKER}"
+            "-Wl,-soname,libfreetype.so"
+            "-Wl,--allow-shlib-undefined"
+            $<TARGET_OBJECTS:freetype>
+            "${BUILTINS_LIB}"
+            "-o" "${CMAKE_BINARY_DIR}/lib/libfreetype.so"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/lib/libfreetype.a"
+            "${SYSROOT_LIB_DIR}/libfreetype.a"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/lib/libfreetype.so"
+            "${SYSROOT_LIB_DIR}/libfreetype.so"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MLIBC_LIBC}"
+            "${SYSROOT_LIB_DIR}/libc.a"
+        DEPENDS freetype compiler_rt_target mlibc_target
+        COMMENT "Linking dynamic shared library (libfreetype.so) and installing into sysroot"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+
+    add_custom_target(freetype_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libfreetype.so")
+endif()
 
 function(iris_add_userland_executable TARGET_NAME)
     cmake_parse_arguments(USERLAND "" "" "SOURCES;LIBRARIES;INCLUDES;DEFINITIONS;OPTIONS" ${ARGN})
@@ -642,6 +906,12 @@ iris_add_userland_executable(passphrase
 # 2. VirtIO Block Driver Daemon
 iris_add_userland_executable(virtio_blk
     SOURCES "${IRIS_ROOT}/servers/drivers/virtio_blk/src/main.c"
+)
+
+# 2b. VirtIO GPU 2D Driver Daemon (Step 6.1)
+iris_add_userland_executable(virtio_gpu
+    SOURCES "${IRIS_ROOT}/servers/drivers/virtio_gpu/src/main.c"
+    INCLUDES "${IRIS_ROOT}/servers/drivers/virtio_gpu/include"
 )
 
 # 3. Block Encryption Proxy Daemon

@@ -109,11 +109,13 @@ if [[ "${ARCH_NAME}" == "x86_64" ]]; then
         -m 512M \
         -smp 2 \
         -nic none \
+        -vga none \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
         -device nvme,drive=bootdisk,serial=irisboot,bootindex=0 \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
+        -device virtio-gpu-pci \
         -device virtio-keyboard-pci \
         -device virtio-rng-pci \
         -serial stdio \
@@ -133,12 +135,14 @@ else
         -m 512M \
         -smp 2 \
         -nic none \
+        -vga none \
         -drive if=pflash,format=raw,readonly=on,file="${UEFI_CODE}" \
         -drive if=pflash,format=raw,file="${UEFI_VARS_TMP}" \
         -drive id=bootdisk,file="${ESP_IMAGE}",format=raw,if=none \
         -device nvme,drive=bootdisk,serial=irisboot,bootindex=0 \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
+        -device virtio-gpu-pci \
         -device virtio-keyboard-pci \
         -device virtio-rng-pci \
         ${AARCH64_EXTRA_ARGS[@]+"${AARCH64_EXTRA_ARGS[@]}"} \

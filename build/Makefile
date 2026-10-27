@@ -176,14 +176,14 @@ kernel-aarch64: tools
 	@cp -f $(ZIRCON_DIR)/build-arm64-clang/kernel.zbi $(OUT_DIR)/build-aarch64/kernel/kernel.zbi
 	@echo "    [DONE] $(OUT_DIR)/build-aarch64/kernel/zircon.elf"
 
-build-x86_64: tools kernel-x86_64 fetch-mlibc fetch-mbedtls
+build-x86_64: tools kernel-x86_64 fetch-mlibc fetch-mbedtls fetch-pixman fetch-freetype
 	@mkdir -p $(OUT_DIR)/build-x86_64
 	@cmake -B $(OUT_DIR)/build-x86_64 -S $(BUILD_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/x86_64-iris.cmake \
 		-G Ninja
 	@ninja -C $(OUT_DIR)/build-x86_64
 
-build-aarch64: tools kernel-aarch64 fetch-mlibc fetch-mbedtls
+build-aarch64: tools kernel-aarch64 fetch-mlibc fetch-mbedtls fetch-pixman fetch-freetype
 	@mkdir -p $(OUT_DIR)/build-aarch64
 	@cmake -B $(OUT_DIR)/build-aarch64 -S $(BUILD_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(BUILD_DIR)/toolchains/aarch64-iris.cmake \
@@ -208,6 +208,12 @@ fetch-libufs:
 fetch-toybox:
 	@$(ROOT_DIR)/scripts/fetch_toybox.sh
 
+fetch-pixman:
+	@$(ROOT_DIR)/scripts/fetch_pixman.sh
+
+fetch-freetype:
+	@$(ROOT_DIR)/scripts/fetch_freetype.sh
+
 # ------------------------------------------------------------------------------
 # Sub-Target Aliases (delegating to Ninja)
 # ------------------------------------------------------------------------------
@@ -218,6 +224,14 @@ libufs: libufs-x86_64 libufs-aarch64
 mbedtls-x86_64: build-x86_64
 mbedtls-aarch64: build-aarch64
 mbedtls: mbedtls-x86_64 mbedtls-aarch64
+
+pixman-x86_64: build-x86_64
+pixman-aarch64: build-aarch64
+pixman: pixman-x86_64 pixman-aarch64
+
+freetype-x86_64: build-x86_64
+freetype-aarch64: build-aarch64
+freetype: freetype-x86_64 freetype-aarch64
 
 builtins-x86_64: build-x86_64
 builtins-aarch64: build-aarch64
@@ -236,6 +250,10 @@ its-irisOS: its-irisOS-x86_64 its-irisOS-aarch64
 virtio-blk-x86_64: build-x86_64
 virtio-blk-aarch64: build-aarch64
 virtio-blk: virtio-blk-x86_64 virtio-blk-aarch64
+
+virtio-gpu-x86_64: build-x86_64
+virtio-gpu-aarch64: build-aarch64
+virtio-gpu: virtio-gpu-x86_64 virtio-gpu-aarch64
 
 iris-crypt-x86_64: build-x86_64
 iris-crypt-aarch64: build-aarch64

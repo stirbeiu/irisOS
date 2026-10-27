@@ -196,6 +196,8 @@ bool pci_find_virtio_device(uintptr_t ecam, uint8_t max_buses, uint16_t target_d
                 if (target_dev_id != 0) {
                     if (target_dev_id == VIRTIO_DEV_ID_INPUT || target_dev_id == VIRTIO_DEV_ID_INPUT_TRANS) {
                         is_match = (device_id == VIRTIO_DEV_ID_INPUT || device_id == VIRTIO_DEV_ID_INPUT_TRANS);
+                    } else if (target_dev_id == VIRTIO_DEV_ID_GPU || target_dev_id == VIRTIO_DEV_ID_GPU_TRANS) {
+                        is_match = (device_id == VIRTIO_DEV_ID_GPU || device_id == VIRTIO_DEV_ID_GPU_TRANS);
                     } else if (target_dev_id == VIRTIO_DEV_ID_BLK || target_dev_id == VIRTIO_DEV_ID_BLK_TRANS) {
                         is_match = (device_id == VIRTIO_DEV_ID_BLK || device_id == VIRTIO_DEV_ID_BLK_TRANS);
                     } else {

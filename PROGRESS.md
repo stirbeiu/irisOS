@@ -548,3 +548,30 @@ Following the Adversarial Audit, Remediation Pass 1 implemented genuine filesyst
      * Microkernel (`zircon.elf`), `libzircon.so` vDSO, `mlibc` sysdeps, all ring 3 daemons (`iris_init`, `virtio_blk`, `iris_crypt`, `iris_fshost`, `iris_pty`), and `toybox` compiled with 0 errors and 0 warnings.
      * 128 MB GPT disk image `disk_x86_64.raw` and UEFI NVMe ESP image `esp_x86_64.img` assembled cleanly with existing user data preserved.
    - Ready for manual interactive test by running `./iris run x86_64`.
+
+---
+
+## Phase 6: Zero-Copy Window System (`iris_compositor`) & GUI — IN PROGRESS
+
+1. **Step 6.1: Ring 3 `virtio-gpu-pci` 2D Scanout Driver (COMPLETE & VERIFIED):**
+   - Implemented `servers/drivers/virtio_gpu/src/main.c` and `servers/drivers/virtio_gpu/include/virtio_gpu.h`:
+     * Discovers `virtio-gpu-pci` (`0x1AF4:0x1050`) over PCIe ECAM via `iris_pci_discover_virtio()`, walks vendor-specific PCIe capabilities (`COMMON_CFG`, `NOTIFY_CFG`, `ISR_CFG`, `DEVICE_CFG`), and negotiates `VIRTIO_F_VERSION_1`.
+     * Allocates and pins DMA-safe controlq (`queue 0`) and response buffers via Zircon BTI (`zx_bti_pin`).
+     * Executes the VirtIO GPU 2D scanout initialization sequence: `GET_DISPLAY_INFO`, `RESOURCE_CREATE_2D` (`B8G8R8X8_UNORM`), `RESOURCE_ATTACH_BACKING` (backed by a contiguous pinned framebuffer VMO), `SET_SCANOUT`, `TRANSFER_TO_HOST_2D`, and `RESOURCE_FLUSH`.
+     * Verified on QEMU with `./iris run x86_64 --gui`.
+
+2. **Step 6.2: Fetch & Cross-Compile Pixman and FreeType (COMPLETE):**
+   - **Fetch Scripts:**
+     * Created `scripts/fetch_pixman.sh` to shallow-clone pinned release `pixman-0.43.4` into `vendor/pixman/` (MIT License, Zone 1).
+     * Created `scripts/fetch_freetype.sh` to shallow-clone pinned release `VER-2-13-2` into `vendor/freetype/` (FreeType License / FTL, Zone 1).
+   - **Cross-Compilation & Build Integration (`build/CMakeLists.txt`, `build/Makefile`):**
+     * Configured and cross-compiled `pixman` (`0.43.4`) with Homebrew LLVM targeting `irisOS` against the `mlibc` sysroot, with `USE_SSE2` and `USE_SSSE3` SIMD fast-paths enabled on `x86_64` and GTK/demos/tests disabled, producing both `libpixman-1.a` and `libpixman-1.so`.
+     * Configured and cross-compiled `freetype` (`2.13.2`) with PNG, Bzip2, Brotli, and HarfBuzz disabled, producing both `libfreetype.a` and `libfreetype.so`.
+   - **SDK Headers & Disk Packaging (`out/sysroot/`, `build/mkufs2_host.c`, `build/mkimage.sh`, `servers/iris_fshost/src/main.c`):**
+     * Installed `pixman.h`, `pixman-version.h`, `ft2build.h`, and `freetype/` public headers into `out/sysroot/usr/include/` (and `pixman-1/` subdir) and exposed `out/sysroot/usr/include` in `iris_userland_common` so userland targets can `#include <pixman.h>` and `#include <ft2build.h>`.
+     * Installed `libpixman-1.a`, `libpixman-1.so`, `libfreetype.a`, `libfreetype.so`, and `libc.a` into `out/sysroot/usr/lib/`.
+     * Extended `build/mkufs2_host.c` and `build/mkimage.sh` to package `libzircon.so`, `libiris.so`, `libpixman-1.so`, `libfreetype.so`, `libpixman-1.a`, and `libfreetype.a` directly into `/System/Libraries` on `System_A` and `System_B` UFS2 partitions (with single and double indirect block support in both `mkufs2` and `iris_fshost`).
+   - **Verification:**
+     * Verified clean build via `./iris build x86_64` (exit code 0, zero errors).
+   - **Immediate Next Step (Step 6.3):**
+     * Implement `iris_compositor` and `libiris_gui` for zero-copy VMO shared-memory window surfaces, 2D Pixman compositing, FreeType text rendering, and IPC damage notifications.

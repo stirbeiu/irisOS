@@ -1357,6 +1357,20 @@ static void handle_fs_read(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
                     frag = iblk[ind_idx];
                 }
             }
+        } else if (lbn < UFS_NDADDR + 512 + 512 * 512) {
+            uint32_t dind_off = lbn - (UFS_NDADDR + 512);
+            uint32_t l1_idx   = dind_off / 512;
+            uint32_t l2_idx   = dind_off % 512;
+            if (di.di_ib[1] != 0) {
+                ufs2_daddr_t l1_blk[512];
+                if (bread(disk, fsbtodb(fs, di.di_ib[1]), (char*)l1_blk, 4096) != -1 &&
+                    l1_blk[l1_idx] != 0) {
+                    ufs2_daddr_t l2_blk[512];
+                    if (bread(disk, fsbtodb(fs, l1_blk[l1_idx]), (char*)l2_blk, 4096) != -1) {
+                        frag = l2_blk[l2_idx];
+                    }
+                }
+            }
         } else {
             break;
         }

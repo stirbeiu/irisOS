@@ -421,12 +421,15 @@ typedef struct iris_pty_signal_req {
 #pragma pack(pop)
 
 /**
- * @brief Hardware Driver / Block Storage Protocol Opcodes (IRIS_PROTO_DRIVER)
+ * @brief Hardware Driver / Block Storage & GPU Protocol Opcodes (IRIS_PROTO_DRIVER)
  */
 #define IRIS_BLK_OP_GET_INFO     0x0050u /**< Query block device capacity and sector geometry */
 #define IRIS_BLK_OP_READ         0x0051u /**< Read sector range from block device into memory */
 #define IRIS_BLK_OP_WRITE        0x0052u /**< Write sector range from memory to block device */
 #define IRIS_BLK_OP_FLUSH        0x0053u /**< Flush dirty cache buffers to non-volatile storage */
+
+#define IRIS_GPU_OP_GET_INFO     0x0060u /**< Query framebuffer resolution, pitch, format, and shared VMO */
+#define IRIS_GPU_OP_FLUSH        0x0061u /**< Transfer damaged rectangle to host 2D resource and flush scanout */
 
 #pragma pack(push, 4)
 /**
@@ -447,6 +450,29 @@ typedef struct iris_blk_rw_req {
     uint32_t flags;        /**< Reserved or operation flags */
     /* For WRITE: data bytes (num_sectors * sector_size) immediately follow this struct */
 } iris_blk_rw_req_t;
+
+/**
+ * @brief GPU framebuffer geometry info returned by IRIS_GPU_OP_GET_INFO reply
+ *        (accompanied by duplicated framebuffer VMO handle at handles[0]).
+ */
+typedef struct iris_gpu_info {
+    uint32_t width;        /**< Active scanout horizontal resolution in pixels (e.g. 1024) */
+    uint32_t height;       /**< Active scanout vertical resolution in pixels (e.g. 768) */
+    uint32_t pitch;        /**< Row stride in bytes (width * 4) */
+    uint32_t format;       /**< Pixel format (e.g. VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2) */
+    uint64_t fb_size;      /**< Total byte size of the shared framebuffer VMO */
+} iris_gpu_info_t;
+
+/**
+ * @brief GPU rectangle damage / flush request payload for IRIS_GPU_OP_FLUSH.
+ *        If width == 0 or height == 0, flushes the entire screen.
+ */
+typedef struct iris_gpu_flush_req {
+    uint32_t x;            /**< Top-left X coordinate in pixels */
+    uint32_t y;            /**< Top-left Y coordinate in pixels */
+    uint32_t width;        /**< Damaged rectangle width in pixels (0 = full width) */
+    uint32_t height;       /**< Damaged rectangle height in pixels (0 = full height) */
+} iris_gpu_flush_req_t;
 #pragma pack(pop)
 
 /* ==============================================================================

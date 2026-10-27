@@ -17,6 +17,11 @@
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/log.h>
 
+#ifndef ZX_IOMMU_TYPE_DUMMY
+#define ZX_IOMMU_TYPE_DUMMY 0x1u
+typedef struct { uint8_t reserved; } zx_iommu_desc_dummy_t;
+#endif
+
 #include <iris/ipc.h>
 #include <iris/pci.h>
 #include <servers/drivers/pci/pci.h>
@@ -137,6 +142,9 @@ static zx_status_t (*g_zx_object_wait_one)(zx_handle_t, zx_signals_t, zx_time_t,
 static zx_status_t (*g_zx_nanosleep)(zx_time_t) = NULL;
 static zx_time_t   (*g_zx_deadline_after)(zx_duration_t) = NULL;
 static zx_status_t (*g_zx_vmo_create_physical)(zx_handle_t, uintptr_t, size_t, zx_handle_t*) = NULL;
+static zx_status_t (*g_zx_iommu_create)(zx_handle_t, uint32_t, const void*, size_t, zx_handle_t*) = NULL;
+static zx_status_t (*g_zx_bti_create)(zx_handle_t, uint32_t, uint64_t, zx_handle_t*) = NULL;
+static zx_status_t (*g_zx_interrupt_create)(zx_handle_t, uint32_t, uint32_t, zx_handle_t*) = NULL;
 
 static void vdso_init(uintptr_t base) {
     #define RESOLVE(fn) g_##fn = (void*)vdso_find(base, #fn, "_" #fn)
@@ -147,7 +155,8 @@ static void vdso_init(uintptr_t base) {
     RESOLVE(zx_vmar_map); RESOLVE(zx_vmar_unmap); RESOLVE(zx_vmar_allocate);
     RESOLVE(zx_process_create); RESOLVE(zx_thread_create); RESOLVE(zx_process_start);
     RESOLVE(zx_object_wait_one); RESOLVE(zx_nanosleep); RESOLVE(zx_deadline_after);
-    RESOLVE(zx_vmo_create_physical);
+    RESOLVE(zx_vmo_create_physical); RESOLVE(zx_iommu_create); RESOLVE(zx_bti_create);
+    RESOLVE(zx_interrupt_create);
     #undef RESOLVE
 }
 
@@ -446,6 +455,7 @@ static zx_status_t spawn_process_from_elf(const char* name, const uint8_t* elf, 
     add_handle(hnds, infos, &nh, g_debuglog_handle, PA_HND(PA_FDIO_LOGGER, 0), true);
 
     bool is_daemon = (iris_strcmp(name, "virtio_blk") == 0 ||
+                      iris_strcmp(name, "virtio_gpu") == 0 ||
                       iris_strcmp(name, "iris_crypt") == 0 ||
                       iris_strcmp(name, "iris_fshost") == 0 ||
                       iris_strcmp(name, "iris_pty") == 0);
@@ -841,8 +851,17 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             log_status(STATUS_WARN, "iris_init", "VirtIO Input Device not detected, using UART fallback.");
         }
 
+        virtio_pci_dev_t gpu_dev; iris_memset(&gpu_dev, 0, sizeof(gpu_dev));
+        bool has_gpu = pci_find_virtio_device(ecam_va, 16, VIRTIO_DEV_ID_GPU, &gpu_dev);
+        if (has_gpu) {
+            log_status(STATUS_OKAY, "iris_init", "Discovered VirtIO GPU Device at PCI %02x:%02x.%x (Device: 0x%04x, IRQ: %u).",
+                       gpu_dev.bus, gpu_dev.dev, gpu_dev.func, gpu_dev.device_id, gpu_dev.irq_line);
+        } else {
+            log_status(STATUS_WARN, "iris_init", "VirtIO GPU Device not detected on PCIe bus.");
+        }
+
         /* 3. Spawn core system daemons in dependency order:
-         *    virtio_blk -> iris_crypt -> iris_pty -> [passphrase] -> iris_fshost */
+         *    virtio_blk -> virtio_gpu -> iris_crypt -> iris_pty -> [passphrase] -> iris_fshost */
         zx_handle_t blk_client = ZX_HANDLE_INVALID, blk_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &blk_client, &blk_server);
         zx_handle_t root_res_blk = ZX_HANDLE_INVALID;
@@ -852,6 +871,47 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         spawn_bootfs_binary("virtio_blk", "bin/virtio_blk", 0, NULL, blk_hnds, 2, &proc_blk);
         g_zx_handle_close(blk_server);
         log_status(STATUS_OKAY, "iris_init", "Spawned VirtIO Block Driver (bin/virtio_blk).");
+
+        zx_handle_t gpu_client = ZX_HANDLE_INVALID, gpu_server = ZX_HANDLE_INVALID;
+        zx_handle_t proc_gpu = ZX_HANDLE_INVALID;
+        if (has_gpu) {
+            g_zx_channel_create(0, &gpu_client, &gpu_server);
+            zx_handle_t root_res_gpu = ZX_HANDLE_INVALID;
+            g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_gpu);
+
+            zx_handle_t gpu_bti = ZX_HANDLE_INVALID;
+            if (g_zx_iommu_create && g_zx_bti_create) {
+                zx_iommu_desc_dummy_t dummy_desc = {0};
+                zx_handle_t iommu = ZX_HANDLE_INVALID;
+                if (g_zx_iommu_create(g_root_resource, ZX_IOMMU_TYPE_DUMMY, &dummy_desc, sizeof(dummy_desc), &iommu) == ZX_OK) {
+                    uint64_t bti_id = ((uint64_t)gpu_dev.bus << 8) | ((uint64_t)gpu_dev.dev << 3) | gpu_dev.func;
+                    g_zx_bti_create(iommu, 0, bti_id, &gpu_bti);
+                    g_zx_handle_close(iommu);
+                }
+            }
+
+            zx_handle_t gpu_mmio_vmo = ZX_HANDLE_INVALID;
+            if (gpu_dev.common_bar < 6 && gpu_dev.bars[gpu_dev.common_bar].phys_addr != 0 && g_zx_vmo_create_physical) {
+                g_zx_vmo_create_physical(g_root_resource, gpu_dev.bars[gpu_dev.common_bar].phys_addr, 65536u, &gpu_mmio_vmo);
+            }
+
+            zx_handle_t gpu_irq_hnd = ZX_HANDLE_INVALID;
+            if (gpu_dev.irq_line > 0 && gpu_dev.irq_line != 0xFFu && g_zx_interrupt_create) {
+                g_zx_interrupt_create(g_root_resource, gpu_dev.irq_line, 0, &gpu_irq_hnd);
+            }
+
+            spawn_handle_t gpu_hnds[6];
+            size_t num_gpu_hnds = 0;
+            gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_server,   PA_HND(PA_USER0, 0) };
+            gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ root_res_gpu, PA_HND(PA_RESOURCE, 0) };
+            if (gpu_bti != ZX_HANDLE_INVALID)      gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_bti,      PA_HND(PA_USER1, 0) };
+            if (gpu_mmio_vmo != ZX_HANDLE_INVALID) gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_mmio_vmo, PA_HND(PA_USER2, 0) };
+            if (gpu_irq_hnd != ZX_HANDLE_INVALID)  gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_irq_hnd,  PA_HND(PA_USER2, 1) };
+
+            spawn_bootfs_binary("virtio_gpu", "bin/virtio_gpu", 0, NULL, gpu_hnds, num_gpu_hnds, &proc_gpu);
+            g_zx_handle_close(gpu_server);
+            log_status(STATUS_OKAY, "iris_init", "Spawned VirtIO GPU Driver (bin/virtio_gpu).");
+        }
 
         zx_handle_t blk_for_crypt = ZX_HANDLE_INVALID, blk_srv_crypt = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &blk_for_crypt, &blk_srv_crypt);
@@ -982,6 +1042,14 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             if (proc_blk != ZX_HANDLE_INVALID) {
                 g_zx_object_wait_one(proc_blk, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
                 g_zx_handle_close(proc_blk);
+            }
+            if (gpu_client != ZX_HANDLE_INVALID) {
+                g_zx_handle_close(gpu_client);
+                gpu_client = ZX_HANDLE_INVALID;
+            }
+            if (proc_gpu != ZX_HANDLE_INVALID) {
+                g_zx_object_wait_one(proc_gpu, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
+                g_zx_handle_close(proc_gpu);
             }
 
             log_status(STATUS_OKAY, "iris_init", "All daemons cleanly terminated.");

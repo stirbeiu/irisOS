@@ -136,7 +136,104 @@ static void write_inode_entry(int fd, struct fs* sblock, uint32_t ino, const str
     }
 }
 
-static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname, bool is_system, const char* toybox_path) {
+typedef struct host_file_alloc {
+    int         fd;
+    const char* name;
+    uint32_t    ino;
+    uint16_t    mode;
+    off_t       size;
+    uint32_t    num_data_blks;
+    uint32_t    blk_ind1;
+    uint32_t    blk_ind2_root;
+    uint32_t    blk_ind2_l1_start;
+    uint32_t    num_ind2_l1;
+    uint32_t    blk_data_start;
+    uint32_t    total_meta_and_data_blks;
+} host_file_alloc_t;
+
+static void plan_file_blocks(host_file_alloc_t* fa, uint32_t* io_next_blk) {
+    fa->num_data_blks = (uint32_t)((fa->size + 4095) / 4096);
+    fa->blk_ind1 = 0;
+    fa->blk_ind2_root = 0;
+    fa->blk_ind2_l1_start = 0;
+    fa->num_ind2_l1 = 0;
+    uint32_t meta_blks = 0;
+
+    if (fa->num_data_blks > 12) {
+        fa->blk_ind1 = (*io_next_blk)++;
+        meta_blks++;
+    }
+    if (fa->num_data_blks > 12 + 512) {
+        uint32_t rem = fa->num_data_blks - (12 + 512);
+        fa->num_ind2_l1 = (rem + 511) / 512;
+        fa->blk_ind2_root = (*io_next_blk)++;
+        fa->blk_ind2_l1_start = *io_next_blk;
+        *io_next_blk += fa->num_ind2_l1;
+        meta_blks += 1 + fa->num_ind2_l1;
+    }
+    fa->blk_data_start = *io_next_blk;
+    *io_next_blk += fa->num_data_blks;
+    fa->total_meta_and_data_blks = meta_blks + fa->num_data_blks;
+}
+
+static void write_planned_file(int disk_fd, struct fs* sblock, const host_file_alloc_t* fa) {
+    uint8_t tbuf[4096];
+    lseek(fa->fd, 0, SEEK_SET);
+    for (uint32_t i = 0; i < fa->num_data_blks; ++i) {
+        memset(tbuf, 0, sizeof(tbuf));
+        ssize_t rd = read(fa->fd, tbuf, sizeof(tbuf));
+        (void)rd;
+        pwrite(disk_fd, tbuf, 4096, (off_t)(fa->blk_data_start + i) * 4096);
+    }
+
+    if (fa->blk_ind1 != 0) {
+        ufs2_daddr_t iblk[512];
+        memset(iblk, 0, sizeof(iblk));
+        for (uint32_t i = 12; i < fa->num_data_blks && (i - 12) < 512; ++i) {
+            iblk[i - 12] = fa->blk_data_start + i;
+        }
+        pwrite(disk_fd, iblk, 4096, (off_t)fa->blk_ind1 * 4096);
+    }
+
+    if (fa->blk_ind2_root != 0) {
+        ufs2_daddr_t root_iblk[512];
+        memset(root_iblk, 0, sizeof(root_iblk));
+        for (uint32_t l1 = 0; l1 < fa->num_ind2_l1 && l1 < 512; ++l1) {
+            uint32_t l1_blkno = fa->blk_ind2_l1_start + l1;
+            root_iblk[l1] = l1_blkno;
+
+            ufs2_daddr_t l2_iblk[512];
+            memset(l2_iblk, 0, sizeof(l2_iblk));
+            uint32_t base_idx = 12 + 512 + l1 * 512;
+            for (uint32_t j = 0; j < 512 && (base_idx + j) < fa->num_data_blks; ++j) {
+                l2_iblk[j] = fa->blk_data_start + base_idx + j;
+            }
+            pwrite(disk_fd, l2_iblk, 4096, (off_t)l1_blkno * 4096);
+        }
+        pwrite(disk_fd, root_iblk, 4096, (off_t)fa->blk_ind2_root * 4096);
+    }
+
+    struct ufs2_dinode di;
+    memset(&di, 0, sizeof(di));
+    di.di_mode    = IFREG | fa->mode;
+    di.di_nlink   = 1;
+    di.di_size    = fa->size;
+    di.di_blocks  = (int64_t)fa->total_meta_and_data_blks * 8;
+    di.di_blksize = 4096;
+    di.di_gen     = 1;
+    di.di_mtime   = sblock->fs_time;
+    di.di_atime   = sblock->fs_time;
+    di.di_ctime   = sblock->fs_time;
+    for (uint32_t i = 0; i < 12 && i < fa->num_data_blks; ++i) {
+        di.di_db[i] = fa->blk_data_start + i;
+    }
+    di.di_ib[0] = fa->blk_ind1;
+    di.di_ib[1] = fa->blk_ind2_root;
+    write_inode_entry(disk_fd, sblock, fa->ino, &di);
+}
+
+static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname, bool is_system,
+                            const char* toybox_path, const char* const* lib_paths, size_t num_libs) {
     const int32_t bsize = 4096;
     const int32_t fsize = 4096;
     const int32_t frag  = 1;
@@ -278,27 +375,50 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         };
         const size_t num_tools = sizeof(toybox_tools) / sizeof(toybox_tools[0]);
 
-        int tb_fd = -1;
-        off_t tb_size = 0;
-        uint32_t num_tb_blks = 0;
-        uint32_t blk_tb_indirect = 0;
-        uint32_t blk_tb_data_start = 0;
+        host_file_alloc_t tb_alloc;
+        memset(&tb_alloc, 0, sizeof(tb_alloc));
+        tb_alloc.fd = -1;
 
         if (toybox_path != NULL) {
-            tb_fd = open(toybox_path, O_RDONLY);
-            if (tb_fd >= 0) {
-                tb_size = lseek(tb_fd, 0, SEEK_END);
-                lseek(tb_fd, 0, SEEK_SET);
-                num_tb_blks = (uint32_t)((tb_size + 4095) / 4096);
+            tb_alloc.fd = open(toybox_path, O_RDONLY);
+            if (tb_alloc.fd >= 0) {
+                tb_alloc.name = "toybox";
+                tb_alloc.ino  = 9;
+                tb_alloc.mode = 0755;
+                tb_alloc.size = lseek(tb_alloc.fd, 0, SEEK_END);
+                lseek(tb_alloc.fd, 0, SEEK_SET);
             } else {
                 fprintf(stderr, "mkufs2: warning: cannot open toybox '%s': %s\n", toybox_path, strerror(errno));
             }
         }
 
         uint32_t max_ino = 8;
-        if (tb_fd >= 0) {
-            max_ino = 8 + 1 + (uint32_t)num_tools; // ino 24
+        if (tb_alloc.fd >= 0) {
+            max_ino = 8 + 1 + (uint32_t)num_tools;
         }
+
+        host_file_alloc_t lib_allocs[32];
+        size_t valid_libs = 0;
+        memset(lib_allocs, 0, sizeof(lib_allocs));
+        for (size_t i = 0; i < num_libs && valid_libs < 32; ++i) {
+            if (lib_paths[i] == NULL) continue;
+            int lfd = open(lib_paths[i], O_RDONLY);
+            if (lfd < 0) {
+                fprintf(stderr, "mkufs2: warning: cannot open library '%s': %s\n", lib_paths[i], strerror(errno));
+                continue;
+            }
+            const char* slash = strrchr(lib_paths[i], '/');
+            const char* bname = slash ? (slash + 1) : lib_paths[i];
+            max_ino++;
+            lib_allocs[valid_libs].fd   = lfd;
+            lib_allocs[valid_libs].name = bname;
+            lib_allocs[valid_libs].ino  = max_ino;
+            lib_allocs[valid_libs].mode = 0644;
+            lib_allocs[valid_libs].size = lseek(lfd, 0, SEEK_END);
+            lseek(lfd, 0, SEEK_SET);
+            valid_libs++;
+        }
+
         for (uint32_t ino = 2; ino <= max_ino; ++ino) {
             setbit(inosused, ino);
             used_inodes++;
@@ -313,12 +433,17 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         uint32_t blk_hello   = next_blk++;
         uint32_t blk_release = next_blk++;
 
-        if (tb_fd >= 0) {
-            if (num_tb_blks > 12) {
-                blk_tb_indirect = next_blk++;
-            }
-            blk_tb_data_start = next_blk;
-            next_blk += num_tb_blks;
+        if (tb_alloc.fd >= 0) {
+            plan_file_blocks(&tb_alloc, &next_blk);
+        }
+        for (size_t i = 0; i < valid_libs; ++i) {
+            plan_file_blocks(&lib_allocs[i], &next_blk);
+        }
+
+        if ((int32_t)next_blk > total_blocks) {
+            fprintf(stderr, "mkufs2: error: volume '%s' out of blocks (needed %u, total %d)\n",
+                    volname, next_blk, total_blocks);
+            return -1;
         }
 
         for (uint32_t b = 38; b < next_blk; ++b) {
@@ -338,7 +463,7 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         dir_item_t bin_items[64];
         size_t num_bin_items = 0;
         bin_items[num_bin_items++] = (dir_item_t){ 7, DT_REG, "hello.txt" };
-        if (tb_fd >= 0) {
+        if (tb_alloc.fd >= 0) {
             bin_items[num_bin_items++] = (dir_item_t){ 9, DT_REG, "toybox" };
             for (size_t i = 0; i < num_tools && num_bin_items < 64; ++i) {
                 bin_items[num_bin_items++] = (dir_item_t){ 10 + (uint32_t)i, DT_LNK, toybox_tools[i] };
@@ -347,7 +472,11 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         build_dir_block(dir_blk, 3, 2, bin_items, num_bin_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_bin * 4096);
 
-        build_dir_block(dir_blk, 4, 2, NULL, 0);
+        dir_item_t lib_items[32];
+        for (size_t i = 0; i < valid_libs; ++i) {
+            lib_items[i] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+        }
+        build_dir_block(dir_blk, 4, 2, lib_items, valid_libs);
         pwrite(fd, dir_blk, 4096, (off_t)blk_lib * 4096);
 
         build_dir_block(dir_blk, 5, 2, NULL, 0);
@@ -417,44 +546,11 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         di.di_db[0]   = blk_release;
         write_inode_entry(fd, sblock, 8, &di);
 
-        if (tb_fd >= 0) {
-            uint8_t tbuf[4096];
-            for (uint32_t i = 0; i < num_tb_blks; ++i) {
-                memset(tbuf, 0, sizeof(tbuf));
-                ssize_t rd = read(tb_fd, tbuf, sizeof(tbuf));
-                (void)rd;
-                pwrite(fd, tbuf, 4096, (off_t)(blk_tb_data_start + i) * 4096);
-            }
-            if (num_tb_blks > 12) {
-                ufs2_daddr_t iblk[512];
-                memset(iblk, 0, sizeof(iblk));
-                for (uint32_t i = 12; i < num_tb_blks && (i - 12) < 512; ++i) {
-                    iblk[i - 12] = blk_tb_data_start + i;
-                }
-                pwrite(fd, iblk, 4096, (off_t)blk_tb_indirect * 4096);
-            }
-            close(tb_fd);
+        if (tb_alloc.fd >= 0) {
+            write_planned_file(fd, sblock, &tb_alloc);
+            close(tb_alloc.fd);
 
-            /* Write inode 9 (Bin/toybox) */
-            memset(&di, 0, sizeof(di));
-            di.di_mode    = IFREG | 0755;
-            di.di_nlink   = 1;
-            di.di_size    = tb_size;
-            di.di_blocks  = (num_tb_blks + (num_tb_blks > 12 ? 1 : 0)) * 8;
-            di.di_blksize = 4096;
-            di.di_gen     = 1;
-            di.di_mtime   = sblock->fs_time;
-            di.di_atime   = sblock->fs_time;
-            di.di_ctime   = sblock->fs_time;
-            for (uint32_t i = 0; i < 12 && i < num_tb_blks; ++i) {
-                di.di_db[i] = blk_tb_data_start + i;
-            }
-            if (num_tb_blks > 12) {
-                di.di_ib[0] = blk_tb_indirect;
-            }
-            write_inode_entry(fd, sblock, 9, &di);
-
-            /* Write inodes 10..24 (symlinks to toybox) */
+            /* Write symlinks to toybox */
             for (size_t i = 0; i < num_tools; ++i) {
                 uint32_t sym_ino = 10 + (uint32_t)i;
                 memset(&di, 0, sizeof(di));
@@ -470,6 +566,11 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
                 memcpy(di.di_db, "toybox", strlen("toybox") + 1);
                 write_inode_entry(fd, sblock, sym_ino, &di);
             }
+        }
+
+        for (size_t i = 0; i < valid_libs; ++i) {
+            write_planned_file(fd, sblock, &lib_allocs[i]);
+            close(lib_allocs[i].fd);
         }
     } else {
         /* Encrypted Data partition hierarchy:
@@ -697,6 +798,8 @@ int main(int argc, char* argv[]) {
     const char* mode = argv[3];
     const char* volname = (argc >= 5) ? argv[4] : "irisOS";
     const char* toybox_bin = (argc >= 6) ? argv[5] : NULL;
+    const char* const* lib_paths = (argc >= 7) ? (const char* const*)&argv[6] : NULL;
+    size_t num_libs = (argc >= 7) ? (size_t)(argc - 6) : 0;
 
     if (strcmp(mode, "system") == 0) {
         int fd = open(out_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
@@ -704,7 +807,7 @@ int main(int argc, char* argv[]) {
             perror("open");
             return 1;
         }
-        if (format_ufs2_file(fd, total_sectors, volname, true, toybox_bin) != 0) {
+        if (format_ufs2_file(fd, total_sectors, volname, true, toybox_bin, lib_paths, num_libs) != 0) {
             close(fd);
             return 1;
         }
@@ -718,7 +821,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         uint64_t logical_sectors = total_sectors - IRIS_CRYPT_HEADER_SECTORS;
-        if (format_ufs2_file(fd, logical_sectors, volname, false, NULL) != 0) {
+        if (format_ufs2_file(fd, logical_sectors, volname, false, NULL, NULL, 0) != 0) {
             close(fd);
             unlink(tmp_plain);
             return 1;
