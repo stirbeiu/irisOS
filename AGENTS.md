@@ -243,15 +243,20 @@ irisOS/
 * Build the graphical terminal app running Toybox `sh` inside a desktop window.
 * **Milestone:** irisOS boots into a graphical desktop with a working mouse cursor and an interactive Terminal window.
 
-### Phase 7: Service Supervision
+### Phase 7: Service Supervision & Hardening
 
 * Implement service supervision, daemon health monitoring, and structured IPC lifecycle notifications in `iris_init`.
 * Wire `poweroff` and `reboot` commands to `iris_init` to coordinate orderly reverse-dependency service termination.
+* Enforce blocking terminal input in `apps/sysutils/passphrase` and remove the interactive `IRIS_CRYPT_DEV_PASSPHRASE` fallback.
 * **Milestone:** System services shut down gracefully in reverse dependency order with DMA cleanly unpinned and encryption keys safely zeroed before ACPI hardware poweroff.
 
-### Note: Graceful Shutdown vs. Immediate ACPI Cut-Off
-- Current Behavior (Phase 5): `poweroff` and `reboot` invoke `sync()` followed directly by `zx_system_powerctl()`, immediately cutting ACPI power in QEMU.
-- Target Behavior (Phase 7): Wire `poweroff` to send an IPC request to `iris_init`. `iris_init` will broadcast a shutdown notice, terminate daemons in reverse dependency order (allowing `iris_crypt` to zero keys and `virtio_blk` to unpin DMA), and then trigger hardware poweroff.
+### Technical Debt & Phase 7 Hardening Notes
+- **Graceful Shutdown vs. Immediate ACPI Cut-Off:**
+  - *Current Behavior (Phase 5):* `poweroff` and `reboot` invoke `sync()` followed directly by `zx_system_powerctl()`, immediately cutting ACPI power in QEMU.
+  - *Target Behavior (Phase 7):* Wire `poweroff` to send an IPC request to `iris_init`. `iris_init` will broadcast a shutdown notice, terminate daemons in reverse dependency order (allowing `iris_crypt` to zero keys and `virtio_blk` to unpin DMA), and then trigger hardware poweroff.
+- **Interactive Passphrase Blocking Input & Dev Fallback (`apps/sysutils/passphrase`):**
+  - *Current Behavior (Phase 5):* `apps/sysutils/passphrase` currently falls back to `IRIS_CRYPT_DEV_PASSPHRASE` immediately because `read()` does not block on empty input in raw mode.
+  - *Target Behavior (Phase 7):* Schedule blocking terminal input in raw mode and removal of the interactive `IRIS_CRYPT_DEV_PASSPHRASE` fallback for Phase 7 hardening.
 
 ---
 

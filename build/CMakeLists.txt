@@ -634,6 +634,11 @@ iris_add_userland_executable(iris_shell
     SOURCES "${IRIS_ROOT}/apps/sysutils/iris_shell/main.c"
 )
 
+# 1c. Interactive Disk Passphrase Prompt (Step 5.3)
+iris_add_userland_executable(passphrase
+    SOURCES "${IRIS_ROOT}/apps/sysutils/passphrase/main.c"
+)
+
 # 2. VirtIO Block Driver Daemon
 iris_add_userland_executable(virtio_blk
     SOURCES "${IRIS_ROOT}/servers/drivers/virtio_blk/src/main.c"

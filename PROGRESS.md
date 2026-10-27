@@ -1,6 +1,8 @@
 # irisOS Implementation Progress Tracker
 
-This document tracks implementation status, completed milestones, verification commands, and immediate next steps for **irisOS** across all 6 roadmap phases.
+This document tracks implementation status, completed milestones, verification commands, and immediate next steps for **irisOS** across all 7 roadmap phases.
+
+**Current Milestone:** **Phase 6: VirtIO-GPU & Graphical Framebuffer**
 
 ---
 
@@ -11,8 +13,9 @@ This document tracks implementation status, completed milestones, verification c
 | **Phase 1 & 2** | Toolchain, Pinned Zircon Build, Gigaboot UEFI & `iris_init` Handoff | **COMPLETED (100%)** |
 | **Phase 3** | Native SDK (`libiris`), `mlibc` Sysdeps, FD Table & `posix_spawn` | **COMPLETED (100%)** |
 | **Phase 4** | PCIe Drivers, Storage Encryption & Filesystems (`libufs` / `iris_fshost`) | **COMPLETED (100%)** |
-| **Phase 5** | Root System, PTY Server (`iris_pty`), Toybox Shell & Core Utilities | **IN PROGRESS (Steps 5.1, 5.2 & Remediation Pass 1 COMPLETED)** |
-| **Phase 6** | Zero-Copy Window System (`iris_compositor`), `libiris_gui` & Desktop | Pending |
+| **Phase 5** | Root System, PTY Server (`iris_pty`), Passphrase Unlock, GPT Watchdog & Toybox Shell | **COMPLETED (100%)** |
+| **Phase 6** | VirtIO-GPU & Graphical Framebuffer, `iris_compositor`, `libiris_gui` & Desktop | **IN PROGRESS (Current Milestone)** |
+| **Phase 7** | Service Supervision, Graceful Shutdown & Passphrase Hardening | Pending |
 
 ---
 
@@ -97,7 +100,12 @@ This document tracks implementation status, completed milestones, verification c
 
 ---
 
-## Phase 5: Root System, PTY Server (`iris_pty`), Passphrase Unlock & Toybox Shell (IN PROGRESS)
+## Phase 5: Root System, PTY Server (`iris_pty`), Passphrase Unlock, GPT Watchdog & Toybox Shell (COMPLETED — 100%)
+
+* [x] **Step 5.1:** Input Drivers & Ring 3 Pseudo-Terminal Server (`iris_pty`) (100% Complete)
+* [x] **Step 5.2:** Toybox Shell & Core Utilities Integration (100% Complete)
+* [x] **Step 5.3:** Disk Passphrase Unlock (`apps/sysutils/passphrase`) (100% Complete)
+* [x] **Step 5.4:** GPT A/B Slot Watchdog Confirmation (`boot_successful = 1`) (100% Complete)
 
 ### Step 5.1: Input Drivers & Ring 3 Pseudo-Terminal Server (`iris_pty`) (COMPLETED)
 * **VirtIO Input PCIe Driver (`servers/drivers/virtio_input/` & `sdk/libiris/include/iris/pci.h`):**
@@ -212,10 +220,35 @@ This document tracks implementation status, completed milestones, verification c
   * Implemented VT100 escape sequence parsing in `iris_pty` canonical line discipline for cursor movement (`Left`/`Right`/`Home`/`End`), mid-line insertion/deletion (`Backspace`/`Delete`), and 16-entry command history (`Up`/`Down`), while passing raw sequences directly into `ready_buf` in raw mode.
   * Emits VT100 blinking block cursor sequence (`"\033[1 q\033[?12h"`) via `zx_debug_write` on PTY startup and shell session open.
 
-* **Immediate Next Steps for Phase 5:**
-  1. **Step 5.3:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
-  2. **Step 5.4:** Implement GPT A/B slot watchdog confirmation (`boot_successful = 1`) in `iris_init` upon successful interactive login / shell initialization.
-  3. **Release Hostname Configuration:** Switch System Node name from dev default (`irisOS-dev`) to official release name via `IRIS_SYSTEM_NODE` build configuration or runtime configuration when preparing the first full production release.
+### Step 5.3: Disk Passphrase Unlock (`apps/sysutils/passphrase`) (COMPLETED)
+* **IPC Protocol (`sdk/libiris/include/iris/ipc.h`, `servers/iris_crypt/src/main.c`):**
+  * Defined `iris_crypt_unlock_req_t` (`IRIS_CRYPT_OP_UNLOCK`) and `iris_crypt_status_resp_t` (`IRIS_CRYPT_OP_STATUS`) under `IRIS_PROTO_CRYPT`.
+  * Implemented `unlock_with_passphrase()` in `iris_crypt` to derive the 512-bit KEK via Argon2id (`iris_argon2id_derive`) and unwrap the 512-bit AES-256-XTS Master Key from Sector 0 (`iris_crypt_header_t`), with transparent re-wrapping when migrating from `IRIS_CRYPT_FLAG_DEV_KEY` and `--wait-unlock` CLI flag support for interactive boot.
+* **Passphrase Utility (`apps/sysutils/passphrase/main.c` -> `bin/passphrase`):**
+  * Packaged into BOOTFS (`iris_a.zbi` / `iris_b.zbi`) and spawned by `iris_init` on `iris_pty` prior to `iris_fshost` mounting `/Users` in interactive mode (`iris.mode=shell`), while `iris.mode=test` continues using the automatic dev fallback key.
+  * Prompts `Enter disk passphrase: ` to stdout, disables echoing via `tcsetattr` raw mode (`~(ICANON | ECHO | ECHOE | ECHOK)`), sends `IRIS_CRYPT_OP_UNLOCK` to `iris_crypt`, and zeroizes the passphrase buffer.
+
+### Step 5.4: GPT A/B Slot Watchdog Confirmation (COMPLETED)
+* **GPT Attribute Update (`servers/iris_fshost/src/main.c`, `servers/iris_init/src/main.c`):**
+  * Added `IRIS_FS_OP_CONFIRM_BOOT` (`0x001E`) under `IRIS_PROTO_FS`.
+  * Implemented `confirm_gpt_boot_slot()` and IEEE 802.3 `calc_gpt_crc32()` in `iris_fshost`: reads the Primary GPT Header (LBA 1) and Partition Entry Array (LBA 2..33), sets attribute bit 48 (`boot_successful = 1`) on the active `System_A` partition entry, recalculates `partition_entry_array_crc32` and `header_crc32`, writes LBA 2 and LBA 1 back to `virtio_blk`, and flushes.
+  * `iris_init` sends `IRIS_FS_OP_CONFIRM_BOOT` (`confirm_boot_with_fshost()`) once the interactive shell starts (or when `its_irisOS` tests pass).
+
+### Phase 5 / Phase 7 Technical Debt & Hardening Notes
+* **Interactive Passphrase Blocking Input & Dev Fallback (`apps/sysutils/passphrase`):**
+  * `apps/sysutils/passphrase` currently falls back to `IRIS_CRYPT_DEV_PASSPHRASE` immediately because `read()` does not block on empty input in raw mode.
+  * Blocking terminal input in raw mode and removal of the interactive `IRIS_CRYPT_DEV_PASSPHRASE` fallback are scheduled for **Phase 7 hardening**.
+* **Graceful Shutdown vs. Immediate ACPI Cut-Off:**
+  * `poweroff` and `reboot` currently invoke `sync()` followed directly by `zx_system_powerctl()`. Wiring `poweroff` to send an IPC request to `iris_init` for reverse-dependency daemon termination (allowing `iris_crypt` to zero keys and `virtio_blk` to unpin DMA before ACPI poweroff) is scheduled for **Phase 7**.
+
+---
+
+## Phase 6: VirtIO-GPU & Graphical Framebuffer (CURRENT MILESTONE)
+
+* [ ] **Step 6.1:** Build `virtio-gpu-pci` Ring 3 driver and UEFI GOP Framebuffer fallback.
+* [ ] **Step 6.2:** Cross-compile `vendor/pixman` (MIT) and `vendor/freetype` (FTL) into `/System/Libraries`.
+* [ ] **Step 6.3:** Build `iris_compositor` and `libiris_gui` (zero-copy shared VMO window surfaces + IPC damage notifications at 60 Hz).
+* [ ] **Step 6.4:** Build the graphical Terminal emulator (`apps/terminal`) running Toybox `sh` inside a desktop window with mouse cursor support.
 
 ---
 

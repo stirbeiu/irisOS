@@ -234,6 +234,76 @@ static zx_status_t blk_read_sectors(zx_handle_t ch, uint64_t lba, uint32_t count
     return ZX_OK;
 }
 
+static zx_status_t blk_write_sectors(zx_handle_t ch, uint64_t lba, uint32_t count, const void* in_buf) {
+    static uint32_t txid = 700;
+    uint32_t data_bytes = count * 512u;
+    uint32_t total_msg  = (uint32_t)(sizeof(iris_msg_hdr_t) + sizeof(iris_blk_rw_req_t) + data_bytes);
+    if (total_msg > IRIS_IPC_MAX_MSG_BYTES) return ZX_ERR_INVALID_ARGS;
+
+    static uint8_t req_buf[IRIS_IPC_MAX_MSG_BYTES] __attribute__((aligned(8)));
+    iris_msg_hdr_t* hdr = (iris_msg_hdr_t*)req_buf;
+    iris_blk_rw_req_t* rw = (iris_blk_rw_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+
+    iris_msg_hdr_init(hdr, IRIS_PROTO_DRIVER, IRIS_BLK_OP_WRITE, txid++,
+                      (uint32_t)sizeof(iris_blk_rw_req_t) + data_bytes);
+    rw->start_sector = lba;
+    rw->num_sectors  = count;
+    rw->flags        = 0;
+    memcpy(rw + 1, in_buf, data_bytes);
+
+    zx_status_t st = zx_channel_write(ch, 0, req_buf, total_msg, NULL, 0);
+    if (st != ZX_OK) return st;
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) return ZX_ERR_PEER_CLOSED;
+
+    uint8_t rep_buf[128] __attribute__((aligned(8)));
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t)) return ZX_ERR_IO;
+    const iris_msg_hdr_t* rep_hdr = (const iris_msg_hdr_t*)rep_buf;
+    return rep_hdr->status;
+}
+
+static zx_status_t blk_flush(zx_handle_t ch) {
+    static uint32_t txid = 750;
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_DRIVER, IRIS_BLK_OP_FLUSH, txid++, 0);
+
+    zx_status_t st = zx_channel_write(ch, 0, &req, sizeof(req), NULL, 0);
+    if (st != ZX_OK) return st;
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) return ZX_ERR_PEER_CLOSED;
+
+    uint8_t rep_buf[128] __attribute__((aligned(8)));
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t)) return ZX_ERR_IO;
+    const iris_msg_hdr_t* rep_hdr = (const iris_msg_hdr_t*)rep_buf;
+    return rep_hdr->status;
+}
+
+static uint32_t calc_gpt_crc32(const void* buf, size_t len) {
+    const uint8_t* p = (const uint8_t*)buf;
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= (uint32_t)p[i];
+        for (int b = 0; b < 8; ++b) {
+            if (crc & 1u) {
+                crc = (crc >> 1) ^ 0xEDB88320u;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return ~crc;
+}
+
 /* ==============================================================================
  * GPT Partition Table Parser
  * ============================================================================== */
@@ -316,6 +386,69 @@ static zx_status_t parse_gpt_partitions(void) {
                (unsigned long long)g_part_sys_b.first_lba, (unsigned long long)g_part_sys_b.last_lba,
                (unsigned long long)g_part_data.first_lba,  (unsigned long long)g_part_data.last_lba);
 
+    return ZX_OK;
+}
+
+/**
+ * @brief Confirm active A/B GPT slot boot (`boot_successful = 1`) in GPT partition attributes
+ *        (LBA 2..33 and GPT header at LBA 1) and persist to disk via `virtio_blk`.
+ */
+static zx_status_t confirm_gpt_boot_slot(void) {
+    static uint8_t gpt_hdr_sec[512] __attribute__((aligned(8)));
+    static uint8_t entries_buf[32 * 512] __attribute__((aligned(8)));
+
+    zx_status_t st = blk_read_sectors(g_blk_channel, 1, 1, gpt_hdr_sec);
+    if (st != ZX_OK) return st;
+
+    st = blk_read_sectors(g_blk_channel, 2, 32, entries_buf);
+    if (st != ZX_OK) return st;
+
+    gpt_header_t* gpt = (gpt_header_t*)gpt_hdr_sec;
+    if (memcmp(gpt->signature, "EFI PART", 8) != 0) {
+        return ZX_ERR_IO_DATA_INTEGRITY;
+    }
+
+    gpt_part_entry_t* entries = (gpt_part_entry_t*)entries_buf;
+    bool updated = false;
+
+    for (uint32_t i = 0; i < 16; ++i) {
+        gpt_part_entry_t* e = &entries[i];
+        if (e->first_lba == 0 || e->last_lba < e->first_lba) continue;
+        char name[36];
+        utf16le_to_ascii(e->name, sizeof(name), name);
+        if (strcmp(name, "System_A") == 0) {
+            /* Set attribute bit 48 (and bit 55 for A/B slot boot_successful = 1) */
+            e->attributes |= (1ULL << 48) | (1ULL << 55);
+            g_part_sys_a.attributes = e->attributes;
+            updated = true;
+            break;
+        }
+    }
+
+    if (!updated) {
+        return ZX_ERR_NOT_FOUND;
+    }
+
+    /* Recompute Partition Entry Array CRC32 and Primary GPT Header CRC32 */
+    uint32_t entries_bytes = gpt->num_partition_entries * gpt->sizeof_partition_entry;
+    if (entries_bytes == 0 || entries_bytes > sizeof(entries_buf)) {
+        entries_bytes = sizeof(entries_buf);
+    }
+    gpt->partition_entry_array_crc32 = calc_gpt_crc32(entries_buf, entries_bytes);
+    gpt->header_crc32 = 0;
+    uint32_t hdr_sz = (gpt->header_size >= 92 && gpt->header_size <= 512) ? gpt->header_size : 92u;
+    gpt->header_crc32 = calc_gpt_crc32(gpt_hdr_sec, hdr_sz);
+
+    /* Write updated partition entry sector (LBA 2) and primary GPT header (LBA 1) back to disk */
+    st = blk_write_sectors(g_blk_channel, 2, 1, entries_buf);
+    if (st != ZX_OK) return st;
+
+    st = blk_write_sectors(g_blk_channel, 1, 1, gpt_hdr_sec);
+    if (st != ZX_OK) return st;
+
+    blk_flush(g_blk_channel);
+    log_status(STATUS_OKAY, "iris_fshost", "Confirmed active GPT slot System_A (boot_successful=1, attr=0x%016llx).",
+               (unsigned long long)g_part_sys_a.attributes);
     return ZX_OK;
 }
 
@@ -1862,6 +1995,12 @@ static void dispatch_fs_message(zx_handle_t ch, const uint8_t* req_buf, uint32_t
             iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
             rep_total_len = sizeof(iris_msg_hdr_t);
             break;
+        case IRIS_FS_OP_CONFIRM_BOOT: {
+            zx_status_t bst = confirm_gpt_boot_slot();
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, bst, 0);
+            rep_total_len = sizeof(iris_msg_hdr_t);
+            break;
+        }
         case IRIS_FS_OP_OPEN_CLIENT: {
             zx_handle_t srv = ZX_HANDLE_INVALID;
             zx_handle_t cli = ZX_HANDLE_INVALID;

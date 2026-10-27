@@ -153,6 +153,7 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_FS_OP_SYNC          0x001Bu /**< Flush cached dirty buffers to storage */
 #define IRIS_FS_OP_READLINK      0x001Cu /**< Read symlink target */
 #define IRIS_FS_OP_OPEN_CLIENT   0x001Du /**< Request new VFS client channel endpoint */
+#define IRIS_FS_OP_CONFIRM_BOOT  0x001Eu /**< Confirm active A/B GPT slot boot_successful = 1 */
 
 #pragma pack(push, 4)
 /**
@@ -301,6 +302,25 @@ typedef struct iris_fs_readlink_resp {
 #define IRIS_CRYPT_OP_LOCK       0x0022u /**< Lock Data partition and wipe master key from RAM */
 #define IRIS_CRYPT_OP_READ       0x0023u /**< Read and decrypt sector range from Data partition */
 #define IRIS_CRYPT_OP_WRITE      0x0024u /**< Encrypt and write sector range to Data partition */
+
+#pragma pack(push, 4)
+/**
+ * @brief Request payload for IRIS_CRYPT_OP_UNLOCK.
+ */
+typedef struct iris_crypt_unlock_req {
+    uint32_t passphrase_len; /**< Length of passphrase in bytes (0 to use dev fallback key) */
+    char     passphrase[256];/**< Null-terminated passphrase string */
+} iris_crypt_unlock_req_t;
+
+/**
+ * @brief Reply payload for IRIS_CRYPT_OP_STATUS.
+ */
+typedef struct iris_crypt_status_resp {
+    uint32_t unlocked;        /**< 1 if master key is unlocked, 0 if locked */
+    uint32_t header_valid;    /**< 1 if Sector 0 header is valid on disk */
+    uint64_t logical_sectors; /**< Usable logical 512-byte sectors */
+} iris_crypt_status_resp_t;
+#pragma pack(pop)
 
 /**
  * @brief Window Compositor Protocol Opcodes (IRIS_PROTO_COMPOSITOR)

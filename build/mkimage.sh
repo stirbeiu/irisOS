@@ -65,8 +65,8 @@ fi
 echo "==> Building host mkufs2 formatter (creates /System/Bin symlinks: reboot -> toybox, help -> toybox, poweroff -> toybox, etc.)..."
 make -C "${ROOT_DIR}/build" mkufs2
 
-# 2. Ensure iris_init, its_irisOS, virtio_blk, iris_crypt, iris_fshost, iris_pty, and toybox binaries exist
-if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/iris_shell" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
+# 2. Ensure iris_init, its_irisOS, passphrase, virtio_blk, iris_crypt, iris_fshost, iris_pty, and toybox binaries exist
+if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/iris_shell" || ! -f "${BUILD_DIR}/bin/passphrase" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
     echo "==> Building server binaries for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
 fi
@@ -114,6 +114,7 @@ fi
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
             -e "bin/its_irisOS=${BUILD_DIR}/bin/its_irisOS" \
             -e "bin/iris_shell=${BUILD_DIR}/bin/iris_shell" \
+            -e "bin/passphrase=${BUILD_DIR}/bin/passphrase" \
             -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk" \
             -e "bin/iris_crypt=${BUILD_DIR}/bin/iris_crypt" \
             -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost" \

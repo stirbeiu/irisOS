@@ -336,9 +336,9 @@ static void detect_gpt_data_partition(void) {
 
 /**
  * @brief Initialize or unlock the 4 KB Sector 0 metadata header using Argon2id
- *        and the Phase 4 deterministic development key fallback.
+ *        with either a user-provided passphrase or the deterministic dev key fallback.
  */
-static zx_status_t init_or_unlock_metadata_header(void) {
+static zx_status_t unlock_with_passphrase(const uint8_t* pw, size_t pw_len, bool is_dev_fallback) {
     static iris_crypt_header_t hdr __attribute__((aligned(8)));
     memset(&hdr, 0, sizeof(hdr));
 
@@ -349,8 +349,11 @@ static zx_status_t init_or_unlock_metadata_header(void) {
         return st;
     }
 
-    const uint8_t* dev_pw = (const uint8_t*)IRIS_CRYPT_DEV_PASSPHRASE;
-    size_t dev_pw_len = strlen(IRIS_CRYPT_DEV_PASSPHRASE);
+    if (pw == NULL || pw_len == 0) {
+        pw = (const uint8_t*)IRIS_CRYPT_DEV_PASSPHRASE;
+        pw_len = strlen(IRIS_CRYPT_DEV_PASSPHRASE);
+        is_dev_fallback = true;
+    }
 
     bool need_format = false;
     if (hdr.magic != IRIS_CRYPT_HEADER_MAGIC || hdr.version != IRIS_CRYPT_HEADER_VERSION) {
@@ -364,18 +367,17 @@ static zx_status_t init_or_unlock_metadata_header(void) {
     }
 
     if (need_format) {
-        /* Format new 4 KB Sector 0 metadata header with deterministic test vector */
+        /* Format new 4 KB Sector 0 metadata header */
         memset(&hdr, 0, sizeof(hdr));
         hdr.magic           = IRIS_CRYPT_HEADER_MAGIC;
         hdr.version         = IRIS_CRYPT_HEADER_VERSION;
-        hdr.flags           = IRIS_CRYPT_FLAG_DEV_KEY;
+        hdr.flags           = is_dev_fallback ? IRIS_CRYPT_FLAG_DEV_KEY : 0u;
         hdr.argon2_t_cost   = IRIS_CRYPT_DEFAULT_T_COST;
         hdr.argon2_m_cost   = IRIS_CRYPT_DEFAULT_M_COST;
         hdr.argon2_lanes    = IRIS_CRYPT_DEFAULT_LANES;
         hdr.sector_offset   = IRIS_CRYPT_HEADER_SECTORS;
         hdr.logical_sectors = g_logical_sector_count;
 
-        /* Deterministic 32-byte salt for reproducible automated Phase 4 test vector */
         static const uint8_t k_dev_salt[IRIS_CRYPT_SALT_LEN] = {
             0x49, 0x52, 0x49, 0x53, 0x4F, 0x53, 0x5F, 0x41,
             0x52, 0x47, 0x4F, 0x4E, 0x32, 0x5F, 0x53, 0x41,
@@ -386,7 +388,7 @@ static zx_status_t init_or_unlock_metadata_header(void) {
 
         /* Derive 512-bit (64-byte) Key Encryption Key (KEK) via Argon2id */
         uint8_t kek[IRIS_CRYPT_MASTER_KEY_LEN];
-        if (iris_argon2id_derive(dev_pw, dev_pw_len,
+        if (iris_argon2id_derive(pw, pw_len,
                                  hdr.argon2_salt, IRIS_CRYPT_SALT_LEN,
                                  hdr.argon2_t_cost, hdr.argon2_m_cost, hdr.argon2_lanes,
                                  kek, sizeof(kek)) != 0) {
@@ -432,7 +434,7 @@ static zx_status_t init_or_unlock_metadata_header(void) {
     } else {
         /* Header already present on disk: derive KEK via Argon2id and unwrap Master Key */
         uint8_t kek[IRIS_CRYPT_MASTER_KEY_LEN];
-        if (iris_argon2id_derive(dev_pw, dev_pw_len,
+        if (iris_argon2id_derive(pw, pw_len,
                                  hdr.argon2_salt, IRIS_CRYPT_SALT_LEN,
                                  hdr.argon2_t_cost, hdr.argon2_m_cost, hdr.argon2_lanes,
                                  kek, sizeof(kek)) != 0) {
@@ -456,8 +458,56 @@ static zx_status_t init_or_unlock_metadata_header(void) {
         uint8_t verify_tag[IRIS_CRYPT_SHA256_LEN];
         mbedtls_sha256(g_master_key, IRIS_CRYPT_MASTER_KEY_LEN, verify_tag, 0);
         if (memcmp(verify_tag, hdr.key_verification_tag, IRIS_CRYPT_SHA256_LEN) != 0) {
-            log_status(STATUS_FAIL, "iris_crypt", "Master key verification tag mismatch.");
-            return ZX_ERR_ACCESS_DENIED;
+            /* If user entered a custom passphrase on a partition initially formatted with the dev key
+             * (IRIS_CRYPT_FLAG_DEV_KEY), unwrap with the dev key and re-wrap the Master Key with
+             * the user's passphrase KEK! */
+            bool rewrapped = false;
+            if (!is_dev_fallback && (hdr.flags & IRIS_CRYPT_FLAG_DEV_KEY)) {
+                const uint8_t* dev_pw = (const uint8_t*)IRIS_CRYPT_DEV_PASSPHRASE;
+                size_t dev_pw_len = strlen(IRIS_CRYPT_DEV_PASSPHRASE);
+                uint8_t dev_kek[IRIS_CRYPT_MASTER_KEY_LEN];
+                if (iris_argon2id_derive(dev_pw, dev_pw_len,
+                                         hdr.argon2_salt, IRIS_CRYPT_SALT_LEN,
+                                         hdr.argon2_t_cost, hdr.argon2_m_cost, hdr.argon2_lanes,
+                                         dev_kek, sizeof(dev_kek)) == 0) {
+                    mbedtls_aes_xts_context dev_xts;
+                    mbedtls_aes_xts_init(&dev_xts);
+                    if (mbedtls_aes_xts_setkey_dec(&dev_xts, dev_kek, 512) == 0) {
+                        mbedtls_aes_crypt_xts(&dev_xts, MBEDTLS_AES_DECRYPT, IRIS_CRYPT_MASTER_KEY_LEN,
+                                              zero_tweak, hdr.encrypted_master_key, g_master_key);
+                    }
+                    mbedtls_aes_xts_free(&dev_xts);
+                    mbedtls_platform_zeroize(dev_kek, sizeof(dev_kek));
+
+                    mbedtls_sha256(g_master_key, IRIS_CRYPT_MASTER_KEY_LEN, verify_tag, 0);
+                    if (memcmp(verify_tag, hdr.key_verification_tag, IRIS_CRYPT_SHA256_LEN) == 0) {
+                        /* Re-wrap Master Key with the user's passphrase KEK and persist to Sector 0 */
+                        uint8_t user_kek[IRIS_CRYPT_MASTER_KEY_LEN];
+                        if (iris_argon2id_derive(pw, pw_len,
+                                                 hdr.argon2_salt, IRIS_CRYPT_SALT_LEN,
+                                                 hdr.argon2_t_cost, hdr.argon2_m_cost, hdr.argon2_lanes,
+                                                 user_kek, sizeof(user_kek)) == 0) {
+                            mbedtls_aes_xts_context user_xts;
+                            mbedtls_aes_xts_init(&user_xts);
+                            if (mbedtls_aes_xts_setkey_enc(&user_xts, user_kek, 512) == 0) {
+                                mbedtls_aes_crypt_xts(&user_xts, MBEDTLS_AES_ENCRYPT, IRIS_CRYPT_MASTER_KEY_LEN,
+                                                      zero_tweak, g_master_key, hdr.encrypted_master_key);
+                                hdr.flags &= ~IRIS_CRYPT_FLAG_DEV_KEY;
+                                compute_header_checksum(&hdr, hdr.header_checksum);
+                                downstream_write_sectors(g_part_start_sector, IRIS_CRYPT_HEADER_SECTORS, &hdr);
+                                downstream_flush();
+                                rewrapped = true;
+                            }
+                            mbedtls_aes_xts_free(&user_xts);
+                            mbedtls_platform_zeroize(user_kek, sizeof(user_kek));
+                        }
+                    }
+                }
+            }
+            if (!rewrapped) {
+                log_status(STATUS_FAIL, "iris_crypt", "Master key verification tag mismatch (invalid passphrase).");
+                return ZX_ERR_ACCESS_DENIED;
+            }
         }
 
         log_status(STATUS_OKAY, "iris_crypt", "Verified existing 4 KB Sector 0 header (magic 0x%016llx).",
@@ -465,6 +515,10 @@ static zx_status_t init_or_unlock_metadata_header(void) {
     }
 
     /* Program active AES-256-XTS (512-bit key = 2 x 256-bit keys) contexts */
+    if (g_unlocked) {
+        mbedtls_aes_xts_free(&g_xts_enc);
+        mbedtls_aes_xts_free(&g_xts_dec);
+    }
     mbedtls_aes_xts_init(&g_xts_enc);
     mbedtls_aes_xts_init(&g_xts_dec);
 
@@ -475,7 +529,11 @@ static zx_status_t init_or_unlock_metadata_header(void) {
     }
 
     g_unlocked = true;
-    log_status(STATUS_OKAY, "iris_crypt", "Unlocked AES-256-XTS master key via Argon2id dev key fallback.");
+    if (is_dev_fallback) {
+        log_status(STATUS_OKAY, "iris_crypt", "Unlocked AES-256-XTS master key via Argon2id dev key fallback.");
+    } else {
+        log_status(STATUS_OKAY, "iris_crypt", "Unlocked AES-256-XTS master key via Argon2id passphrase.");
+    }
     return ZX_OK;
 }
 
@@ -492,12 +550,63 @@ static void handle_client_request(zx_handle_t ch, const uint8_t* req_buf, uint32
     }
 
     const iris_msg_hdr_t* req_hdr = (const iris_msg_hdr_t*)req_buf;
-    if (!iris_msg_hdr_is_valid(req_hdr, IRIS_PROTO_DRIVER)) {
+    if (!iris_msg_hdr_is_valid(req_hdr, 0)) {
         return;
     }
 
     iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
     uint32_t rep_total_len = sizeof(iris_msg_hdr_t);
+
+    if (req_hdr->protocol == IRIS_PROTO_CRYPT) {
+        switch (req_hdr->opcode) {
+            case IRIS_CRYPT_OP_STATUS: {
+                iris_crypt_status_resp_t* resp = (iris_crypt_status_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+                resp->unlocked        = g_unlocked ? 1u : 0u;
+                resp->header_valid    = 1u;
+                resp->logical_sectors = g_logical_sector_count;
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_crypt_status_resp_t));
+                rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_status_resp_t);
+                break;
+            }
+            case IRIS_CRYPT_OP_UNLOCK: {
+                const uint8_t* pw = NULL;
+                size_t pw_len = 0;
+                bool is_dev = true;
+                if (req_hdr->payload_len >= sizeof(uint32_t)) {
+                    const iris_crypt_unlock_req_t* ureq = (const iris_crypt_unlock_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                    uint32_t ulen = ureq->passphrase_len;
+                    if (ulen > 0 && ulen < sizeof(ureq->passphrase) &&
+                        req_hdr->payload_len >= sizeof(uint32_t) + ulen) {
+                        pw = (const uint8_t*)ureq->passphrase;
+                        pw_len = (size_t)ulen;
+                        is_dev = false;
+                    }
+                }
+                zx_status_t ust = unlock_with_passphrase(pw, pw_len, is_dev);
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ust, 0);
+                break;
+            }
+            case IRIS_CRYPT_OP_LOCK: {
+                if (g_unlocked) {
+                    mbedtls_aes_xts_free(&g_xts_enc);
+                    mbedtls_aes_xts_free(&g_xts_dec);
+                    mbedtls_platform_zeroize(g_master_key, sizeof(g_master_key));
+                    g_unlocked = false;
+                }
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
+                break;
+            }
+            default:
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
+                break;
+        }
+        zx_channel_write(ch, 0, rep_buf, rep_total_len, NULL, 0);
+        return;
+    }
+
+    if (req_hdr->protocol != IRIS_PROTO_DRIVER) {
+        return;
+    }
 
     switch (req_hdr->opcode) {
         case IRIS_BLK_OP_GET_INFO: {
@@ -732,19 +841,34 @@ int main(int argc, char* argv[]) {
     /* Locate GPT Partition 4 ("Data") if a GPT partition table is present at LBA 1 */
     detect_gpt_data_partition();
 
-    /* 3. Initialize or verify 4 KB Sector 0 metadata header and unlock AES-256-XTS contexts */
-    st = init_or_unlock_metadata_header();
-    if (st != ZX_OK) {
-        log_status(STATUS_FAIL, "iris_crypt", "Metadata header unlock failed (%d).", st);
-        return 1;
+    /* 3. If launched with --wait-unlock (interactive boot), wait for IRIS_CRYPT_OP_UNLOCK
+     *    from apps/sysutils/passphrase; otherwise auto-unlock with deterministic dev key. */
+    bool wait_unlock = false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] && strcmp(argv[i], "--wait-unlock") == 0) {
+            wait_unlock = true;
+            break;
+        }
+    }
+
+    if (!wait_unlock) {
+        st = unlock_with_passphrase(NULL, 0, true);
+        if (st != ZX_OK) {
+            log_status(STATUS_FAIL, "iris_crypt", "Metadata header unlock failed (%d).", st);
+            return 1;
+        }
+    } else {
+        log_status(STATUS_OKAY, "iris_crypt", "Awaiting interactive passphrase unlock (IRIS_CRYPT_OP_UNLOCK).");
     }
 
     /* 4. Run IPC block proxy loop */
     run_proxy_server();
 
     /* 5. Securely wipe master key & AES-256-XTS contexts before exit */
-    mbedtls_aes_xts_free(&g_xts_enc);
-    mbedtls_aes_xts_free(&g_xts_dec);
+    if (g_unlocked) {
+        mbedtls_aes_xts_free(&g_xts_enc);
+        mbedtls_aes_xts_free(&g_xts_dec);
+    }
     mbedtls_platform_zeroize(g_master_key, sizeof(g_master_key));
 
     for (uint32_t i = 0; i < g_num_clients; ++i) {

@@ -718,6 +718,26 @@ static zx_handle_t request_fs_client_channel(zx_handle_t fs_ch) {
     return cli;
 }
 
+static zx_status_t confirm_boot_with_fshost(zx_handle_t fs_ch) {
+    if (fs_ch == ZX_HANDLE_INVALID) return ZX_ERR_BAD_HANDLE;
+    static uint32_t s_confirm_txid = 700;
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_FS, IRIS_FS_OP_CONFIRM_BOOT, ++s_confirm_txid, 0);
+
+    zx_status_t st = g_zx_channel_write(fs_ch, 0, &req, sizeof(req), NULL, 0);
+    if (st != ZX_OK) return st;
+
+    zx_signals_t obs = 0;
+    st = g_zx_object_wait_one(fs_ch, ZX_CHANNEL_READABLE, iris_deadline_after(ZX_SEC(5)), &obs);
+    if (st != ZX_OK) return st;
+
+    iris_msg_hdr_t rep;
+    uint32_t act_b = 0, act_h = 0;
+    st = g_zx_channel_read(fs_ch, 0, &rep, NULL, sizeof(rep), 0, &act_b, &act_h);
+    if (st != ZX_OK || act_b < sizeof(iris_msg_hdr_t)) return ZX_ERR_IO;
+    return rep.status;
+}
+
 /* Boot mode selected by the kernel command line (iris.mode=test|shell). userboot
  * forwards the kernel cmdline to the first process as environment strings in the
  * bootstrap message. Default is "shell" when absent. */
@@ -822,7 +842,7 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         }
 
         /* 3. Spawn core system daemons in dependency order:
-         *    virtio_blk -> iris_crypt -> iris_fshost -> iris_pty */
+         *    virtio_blk -> iris_crypt -> iris_pty -> [passphrase] -> iris_fshost */
         zx_handle_t blk_client = ZX_HANDLE_INVALID, blk_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &blk_client, &blk_server);
         zx_handle_t root_res_blk = ZX_HANDLE_INVALID;
@@ -851,22 +871,15 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             { blk_for_crypt,        PA_HND(PA_USER1, 0) },
             { crypt_srv_for_fshost, PA_HND(PA_USER0, 1) }
         };
+        const char* crypt_argv_wait[] = { "iris_crypt", "--wait-unlock", NULL };
         zx_handle_t proc_crypt = ZX_HANDLE_INVALID;
-        spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 0, NULL, crypt_hnds, 3, &proc_crypt);
+        if (g_test_mode) {
+            spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 0, NULL, crypt_hnds, 3, &proc_crypt);
+        } else {
+            spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 2, crypt_argv_wait, crypt_hnds, 3, &proc_crypt);
+        }
         g_zx_handle_close(crypt_srv_for_its); g_zx_handle_close(crypt_srv_for_fshost); g_zx_handle_close(blk_for_crypt);
         log_status(STATUS_OKAY, "iris_init", "Spawned Storage Encryption Daemon (bin/iris_crypt).");
-
-        zx_handle_t fshost_client = ZX_HANDLE_INVALID, fshost_server = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &fshost_client, &fshost_server);
-        spawn_handle_t fshost_hnds[] = {
-            { fshost_server,           PA_HND(PA_USER0, 0) },
-            { blk_for_fshost,          PA_HND(PA_USER1, 0) },
-            { crypt_client_for_fshost, PA_HND(PA_USER2, 0) }
-        };
-        zx_handle_t proc_fshost = ZX_HANDLE_INVALID;
-        spawn_bootfs_binary("iris_fshost", "bin/iris_fshost", 0, NULL, fshost_hnds, 3, &proc_fshost);
-        g_zx_handle_close(fshost_server); g_zx_handle_close(blk_for_fshost); g_zx_handle_close(crypt_client_for_fshost);
-        log_status(STATUS_OKAY, "iris_init", "Spawned VFS Router & Filesystem Daemon (bin/iris_fshost).");
 
         zx_handle_t pty_client = ZX_HANDLE_INVALID, pty_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &pty_client, &pty_server);
@@ -881,10 +894,53 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         g_zx_handle_close(pty_server);
         log_status(STATUS_OKAY, "iris_init", "Spawned Pseudo-Terminal Server (bin/iris_pty).");
 
+        if (!g_test_mode) {
+            /* Step 5.3: Interactive mode — spawn apps/sysutils/passphrase on iris_pty
+             *           to unlock the Data partition before iris_fshost mounts /Users. */
+            zx_handle_t pw_pty = request_pty_client_channel(pty_client);
+            zx_handle_t pw_fd0 = ZX_HANDLE_INVALID, pw_fd1 = ZX_HANDLE_INVALID, pw_fd2 = ZX_HANDLE_INVALID;
+            if (pw_pty != ZX_HANDLE_INVALID) {
+                g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd0);
+                g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd1);
+                g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd2);
+            }
+            spawn_handle_t pw_hnds[] = {
+                { pw_pty,               PA_HND(PA_USER0, 0) },
+                { pw_fd0,               PA_HND(PA_FD, 0) },
+                { pw_fd1,               PA_HND(PA_FD, 1) },
+                { pw_fd2,               PA_HND(PA_FD, 2) },
+                { crypt_client_for_its, PA_HND(PA_USER2, 0) }
+            };
+            const char* pw_argv[] = { "passphrase", NULL };
+            zx_handle_t proc_pw = ZX_HANDLE_INVALID;
+            zx_status_t pw_st = spawn_bootfs_binary("passphrase", "bin/passphrase", 1, pw_argv, pw_hnds, 5, &proc_pw);
+            if (pw_st == ZX_OK && proc_pw != ZX_HANDLE_INVALID) {
+                log_status(STATUS_OKAY, "iris_init", "Spawned Interactive Disk Passphrase Prompt (bin/passphrase).");
+                zx_signals_t obs = 0;
+                g_zx_object_wait_one(proc_pw, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &obs);
+                g_zx_handle_close(proc_pw);
+            } else {
+                log_status(STATUS_FAIL, "iris_init", "Failed to spawn bin/passphrase (%d).", pw_st);
+            }
+        }
+
+        zx_handle_t fshost_client = ZX_HANDLE_INVALID, fshost_server = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &fshost_client, &fshost_server);
+        spawn_handle_t fshost_hnds[] = {
+            { fshost_server,           PA_HND(PA_USER0, 0) },
+            { blk_for_fshost,          PA_HND(PA_USER1, 0) },
+            { crypt_client_for_fshost, PA_HND(PA_USER2, 0) }
+        };
+        zx_handle_t proc_fshost = ZX_HANDLE_INVALID;
+        spawn_bootfs_binary("iris_fshost", "bin/iris_fshost", 0, NULL, fshost_hnds, 3, &proc_fshost);
+        g_zx_handle_close(fshost_server); g_zx_handle_close(blk_for_fshost); g_zx_handle_close(crypt_client_for_fshost);
+        log_status(STATUS_OKAY, "iris_init", "Spawned VFS Router & Filesystem Daemon (bin/iris_fshost).");
+
         if (g_test_mode) {
             /* 4a. iris.mode=test: spawn the automated Interactive Test Suite */
+            zx_handle_t its_fs_client = request_fs_client_channel(fshost_client);
             spawn_handle_t its_hnds[] = {
-                { fshost_client,        PA_HND(PA_NS_DIR, 0) },
+                { its_fs_client != ZX_HANDLE_INVALID ? its_fs_client : fshost_client, PA_HND(PA_NS_DIR, 0) },
                 { pty_client,           PA_HND(PA_USER0, 0) },
                 { blk_client,           PA_HND(PA_USER1, 0) },
                 { crypt_client_for_its, PA_HND(PA_USER2, 0) }
@@ -900,6 +956,15 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 g_zx_handle_close(proc_its);
             }
             log_status(STATUS_OKAY, "iris_init", "its_irisOS process terminated.");
+
+            /* Step 5.4: Confirm active A/B GPT slot boot (boot_successful = 1) */
+            if (its_fs_client != ZX_HANDLE_INVALID && fshost_client != ZX_HANDLE_INVALID) {
+                if (confirm_boot_with_fshost(fshost_client) == ZX_OK) {
+                    log_status(STATUS_OKAY, "iris_init", "Confirmed active A/B GPT slot (boot_successful=1).");
+                }
+                g_zx_handle_close(fshost_client);
+                fshost_client = ZX_HANDLE_INVALID;
+            }
 
             /* Clean daemon teardown for automated testing */
             if (proc_pty != ZX_HANDLE_INVALID) {
@@ -923,6 +988,7 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             log_status(STATUS_OKAY, "iris_init", "Test run completed cleanly.");
         } else {
             /* 4b. Default boot mode: immediately spawn /System/Bin/toybox (sh -i) attached to iris_pty */
+            bool boot_confirmed = false;
             for (;;) {
                 zx_handle_t shell_pty = request_pty_client_channel(pty_client);
                 zx_handle_t shell_fs  = request_fs_client_channel(fshost_client);
@@ -971,6 +1037,12 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                     sp_st = spawn_bootfs_binary("sh", "bin/toybox", 2, sh_argv, sh_hnds, num_sh_hnds, &proc_shell);
                 }
                 if (sp_st == ZX_OK && proc_shell != ZX_HANDLE_INVALID) {
+                    if (!boot_confirmed && fshost_client != ZX_HANDLE_INVALID) {
+                        if (confirm_boot_with_fshost(fshost_client) == ZX_OK) {
+                            log_status(STATUS_OKAY, "iris_init", "Confirmed active A/B GPT slot (boot_successful=1).");
+                        }
+                        boot_confirmed = true;
+                    }
                     log_status(STATUS_OKAY, "iris_init", "Interactive shell spawned (/System/Bin/toybox sh -i).");
                     zx_signals_t obs = 0;
                     g_zx_object_wait_one(proc_shell, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &obs);
