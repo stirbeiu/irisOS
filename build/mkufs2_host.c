@@ -273,7 +273,8 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
          */
         static const char* const toybox_tools[] = {
             "sh", "ls", "cat", "echo", "pwd", "uname", "clear",
-            "mkdir", "cp", "rm", "touch", "wc", "grep", "sleep", "kill"
+            "mkdir", "cp", "rm", "touch", "wc", "grep", "sleep", "kill",
+            "reboot", "poweroff"
         };
         const size_t num_tools = sizeof(toybox_tools) / sizeof(toybox_tools[0]);
 

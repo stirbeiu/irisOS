@@ -55,9 +55,17 @@ extern "C" {
 #include <stdio.h>
 #include <stdarg.h>
 #include <unistd.h>
+#include <zircon/types.h>
+
+extern zx_status_t zx_debug_write(const char* buffer, size_t buffer_size) __attribute__((weak));
+extern zx_handle_t iris_get_debuglog(void) __attribute__((weak));
+extern zx_status_t zx_debuglog_write(zx_handle_t handle, uint32_t options, const void* buffer, size_t buffer_size) __attribute__((weak));
 
 /**
- * @brief Formats and writes a single atomic systemd-style status line to stdout.
+ * @brief Formats and writes a single atomic systemd-style status line to the console.
+ *
+ * Prefers zx_debuglog_write (which renders cleanly to both gfxconsole and serial UART
+ * without dmesg prefixes thanks to kernel patch), falling back to raw zx_debug_write.
  *
  * @param status Status tag macro (STATUS_OKAY, STATUS_WARN, or STATUS_FAIL).
  * @param unit Subsystem or component name (e.g. "virtio_blk", "iris_crypt", "iris_fshost").
@@ -70,11 +78,27 @@ static inline void log_status(const char* status, const char* unit, const char* 
     vsnprintf(desc, sizeof(desc), fmt, ap);
     va_end(ap);
 
-    char line_buf[512];
-    int len = snprintf(line_buf, sizeof(line_buf), "[%s] %s - %s\n", status, unit, desc);
-    if (len > 0) {
-        size_t wlen = (size_t)len < sizeof(line_buf) ? (size_t)len : sizeof(line_buf) - 1;
-        write(1, line_buf, wlen);
+    zx_handle_t log_h = (iris_get_debuglog != NULL) ? iris_get_debuglog() : ZX_HANDLE_INVALID;
+    if (log_h != ZX_HANDLE_INVALID && zx_debuglog_write != NULL) {
+        char line_buf[512];
+        int len = snprintf(line_buf, sizeof(line_buf), "[%s] %s - %s", status, unit, desc);
+        if (len > 0) {
+            size_t total = (size_t)len < sizeof(line_buf) ? (size_t)len : sizeof(line_buf) - 1;
+            zx_debuglog_write(log_h, 0, line_buf, total);
+        }
+    } else if (zx_debug_write != NULL) {
+        char line_buf[512];
+        int len = snprintf(line_buf, sizeof(line_buf), "[%s] %s - %s\r\n", status, unit, desc);
+        if (len > 0) {
+            size_t total = (size_t)len < sizeof(line_buf) ? (size_t)len : sizeof(line_buf) - 1;
+            const char* p = line_buf;
+            while (total > 0) {
+                size_t n = (total > 256) ? 256 : total;
+                zx_debug_write(p, n);
+                p += n;
+                total -= n;
+            }
+        }
     }
 }
 #endif

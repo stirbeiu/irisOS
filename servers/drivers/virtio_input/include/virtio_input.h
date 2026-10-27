@@ -166,8 +166,14 @@ typedef struct virtio_input_dev {
     uint16_t                           queue_size;
     uint16_t                           last_used_idx;
 
+    bool                               shift_l;
+    bool                               shift_r;
     bool                               shift_down;
+    bool                               ctrl_l;
+    bool                               ctrl_r;
     bool                               ctrl_down;
+    bool                               alt_l;
+    bool                               alt_r;
     bool                               alt_down;
     bool                               caps_lock;
     bool                               active;

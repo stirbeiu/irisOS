@@ -65,11 +65,10 @@ case "${ARCH}" in
         ;;
 esac
 
-# Ensure ESP disk image exists
-if [[ ! -f "${ESP_IMAGE}" ]]; then
-    echo "==> ESP image not found. Building with build/mkimage.sh ${ARCH_NAME}..."
-    "${ROOT_DIR}/build/mkimage.sh" "${ARCH_NAME}"
-fi
+# The boot mode lives in the ZBI kernel command line, so repackage the images in
+# interactive "shell" mode on every launch (./iris test packages "test" mode).
+echo "==> Packaging ${ARCH_NAME} image in shell mode (build/mkimage.sh)..."
+IRIS_MODE=shell "${ROOT_DIR}/build/mkimage.sh" "${ARCH_NAME}" > /dev/null
 
 # Ensure secondary virtual raw disk exists
 DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"

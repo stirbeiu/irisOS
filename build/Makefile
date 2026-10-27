@@ -31,6 +31,15 @@ else ifeq ($(CMD),run)
 run:
 	@$(ROOT_DIR)/scripts/iris.sh run $(RUN_ARGS)
   endif
+else ifeq ($(CMD),test)
+  TEST_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  ifneq ($(TEST_ARGS),)
+    %::
+	@:
+.PHONY: test
+test:
+	@$(ROOT_DIR)/scripts/iris.sh test $(TEST_ARGS)
+  endif
 endif
 
 all: image-x86_64
@@ -251,10 +260,10 @@ toybox: toybox-x86_64 toybox-aarch64
 # ------------------------------------------------------------------------------
 # Image Creation & QEMU Execution
 # ------------------------------------------------------------------------------
-image-x86_64: build-x86_64
+image-x86_64: build-x86_64 toybox-x86_64
 	@$(BUILD_DIR)/mkimage.sh x86_64
 
-image-aarch64: build-aarch64
+image-aarch64: build-aarch64 toybox-aarch64
 	@$(BUILD_DIR)/mkimage.sh aarch64
 
 run: run-x86_64

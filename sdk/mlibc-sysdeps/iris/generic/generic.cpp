@@ -30,8 +30,15 @@
 #include <zircon/types.h>
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/object.h>
+#include <zircon/syscalls/system.h>
 #include <zircon/process.h>
 #include <zircon/processargs.h>
+
+#ifndef RB_AUTOBOOT
+#define RB_AUTOBOOT    0x01234567u
+#define RB_HALT_SYSTEM 0xcdef0123u
+#define RB_POWER_OFF   0x4321fedcu
+#endif
 
 #ifndef PA_FD
 #define PA_FD 0x30u
@@ -64,6 +71,12 @@ static zx_handle_t g_vdso_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_bootfs_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_fshost_channel = ZX_HANDLE_INVALID;
 static zx_handle_t g_pty_channel = ZX_HANDLE_INVALID;
+
+extern "C" zx_handle_t iris_root_resource(void);
+
+extern "C" zx_handle_t iris_get_bootfs_vmo(void) {
+    return g_bootfs_vmo;
+}
 
 extern "C" void iris_set_vmar_root(zx_handle_t handle) {
     g_vmar_root_self = handle;
@@ -484,6 +497,8 @@ static zx_status_t (*pfn_zx_object_wait_many)(zx_wait_item_t* items, size_t num_
 static zx_status_t (*pfn_zx_debug_read)(zx_handle_t handle, char* buffer, size_t* buffer_size) = nullptr;
 static zx_status_t (*pfn_zx_debug_write)(const char* buffer, size_t buffer_size) = nullptr;
 static zx_status_t (*pfn_zx_object_get_info)(zx_handle_t handle, uint32_t topic, void* buffer, size_t buffer_size, size_t* actual, size_t* avail) = nullptr;
+static zx_status_t (*pfn_zx_task_kill)(zx_handle_t handle) = nullptr;
+static zx_status_t (*pfn_zx_system_powerctl)(zx_handle_t rsrc, uint32_t cmd, const zx_system_powerctl_arg_t* arg) = nullptr;
 
 static void* vdso_find(uintptr_t base, const char* name, const char* name_with_underscore) {
     void* ptr = vdso_sym_lookup(base, name_with_underscore);
@@ -538,6 +553,15 @@ extern "C" void iris_vdso_init(uintptr_t base) {
     pfn_zx_socket_create         = (decltype(pfn_zx_socket_create))vdso_find(base, "zx_socket_create", "_zx_socket_create");
     pfn_zx_socket_write          = (decltype(pfn_zx_socket_write))vdso_find(base, "zx_socket_write", "_zx_socket_write");
     pfn_zx_socket_read           = (decltype(pfn_zx_socket_read))vdso_find(base, "zx_socket_read", "_zx_socket_read");
+    pfn_zx_task_kill             = (decltype(pfn_zx_task_kill))vdso_find(base, "zx_task_kill", "_zx_task_kill");
+    pfn_zx_system_powerctl       = (decltype(pfn_zx_system_powerctl))vdso_find(base, "zx_system_powerctl", "_zx_system_powerctl");
+}
+
+extern "C" zx_status_t zx_system_powerctl(zx_handle_t rsrc, uint32_t cmd, const zx_system_powerctl_arg_t* arg) {
+    if (pfn_zx_system_powerctl) {
+        return pfn_zx_system_powerctl(rsrc, cmd, arg);
+    }
+    return ZX_ERR_NOT_SUPPORTED;
 }
 
 /* Exported ABI wrappers dispatching into kernel-registered vDSO */
@@ -838,6 +862,11 @@ extern "C" zx_status_t zx_object_get_info(zx_handle_t handle, uint32_t topic, vo
     return ZX_ERR_NOT_SUPPORTED;
 }
 
+extern "C" zx_status_t zx_task_kill(zx_handle_t handle) {
+    if (pfn_zx_task_kill) return pfn_zx_task_kill(handle);
+    return ZX_ERR_NOT_SUPPORTED;
+}
+
 
 
 /* ==============================================================================
@@ -1122,6 +1151,87 @@ static int pty_ipc_call(zx_handle_t pty_ch, uint32_t opcode,
     return 0;
 }
 
+static zx_handle_t iris_pty_create_client_channel(zx_handle_t pty_ch) {
+    if (pty_ch == ZX_HANDLE_INVALID) return ZX_HANDLE_INVALID;
+
+    static uint32_t s_pty_client_txid = 900;
+    uint32_t txid = ++s_pty_client_txid;
+
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_PTY, IRIS_PTY_OP_OPEN_CLIENT, txid, 0);
+
+    zx_status_t st = zx_channel_write(pty_ch, 0, &req, sizeof(req), nullptr, 0);
+    if (st != ZX_OK) return ZX_HANDLE_INVALID;
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(pty_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) return ZX_HANDLE_INVALID;
+
+    uint8_t rep_buf[sizeof(iris_msg_hdr_t) + 64] __attribute__((aligned(8)));
+    zx_handle_t child_ch = ZX_HANDLE_INVALID;
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(pty_ch, 0, rep_buf, &child_ch, sizeof(rep_buf), 1,
+                         &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) || act_handles < 1) {
+        if (child_ch != ZX_HANDLE_INVALID) zx_handle_close(child_ch);
+        return ZX_HANDLE_INVALID;
+    }
+
+    const iris_msg_hdr_t* rep_hdr = reinterpret_cast<const iris_msg_hdr_t*>(rep_buf);
+    if (!iris_msg_hdr_is_valid(rep_hdr, IRIS_PROTO_PTY) || rep_hdr->txid != txid || rep_hdr->status != ZX_OK) {
+        if (child_ch != ZX_HANDLE_INVALID) zx_handle_close(child_ch);
+        return ZX_HANDLE_INVALID;
+    }
+
+    return child_ch;
+}
+
+static zx_handle_t iris_fshost_create_client_channel(zx_handle_t fs_ch) {
+    if (fs_ch == ZX_HANDLE_INVALID) return ZX_HANDLE_INVALID;
+
+    static uint32_t s_fs_client_txid = 950;
+    uint32_t txid = ++s_fs_client_txid;
+
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_FS, IRIS_FS_OP_OPEN_CLIENT, txid, 0);
+
+    zx_status_t st = zx_channel_write(fs_ch, 0, &req, sizeof(req), nullptr, 0);
+    if (st != ZX_OK) return ZX_HANDLE_INVALID;
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(fs_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) return ZX_HANDLE_INVALID;
+
+    uint8_t rep_buf[sizeof(iris_msg_hdr_t) + 64] __attribute__((aligned(8)));
+    zx_handle_t child_ch = ZX_HANDLE_INVALID;
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(fs_ch, 0, rep_buf, &child_ch, sizeof(rep_buf), 1,
+                         &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) || act_handles < 1) {
+        if (child_ch != ZX_HANDLE_INVALID) zx_handle_close(child_ch);
+        return ZX_HANDLE_INVALID;
+    }
+
+    const iris_msg_hdr_t* rep_hdr = reinterpret_cast<const iris_msg_hdr_t*>(rep_buf);
+    if (!iris_msg_hdr_is_valid(rep_hdr, IRIS_PROTO_FS) || rep_hdr->txid != txid || rep_hdr->status != ZX_OK) {
+        if (child_ch != ZX_HANDLE_INVALID) zx_handle_close(child_ch);
+        return ZX_HANDLE_INVALID;
+    }
+
+    return child_ch;
+}
+
+static void raw_debug_write(const char* buf, size_t count) {
+    while (count > 0) {
+        size_t n = (count > 256) ? 256 : count;
+        zx_debug_write(buf, n);
+        buf += n;
+        count -= n;
+    }
+}
+
 int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
     iris_fd_entry_t* entry = iris_fd_get(fd);
     if (!entry || entry->type == IRIS_FD_CLOSED) {
@@ -1146,31 +1256,16 @@ int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
                                req_buf, static_cast<uint32_t>(sizeof(iris_pty_write_req_t) + chunk),
                                &resp, sizeof(resp), nullptr);
         if (err != 0) {
-            if (g_debuglog_handle != ZX_HANDLE_INVALID) {
-                zx_debuglog_write(g_debuglog_handle, 0, buf, count);
-                *bytes_written = static_cast<ssize_t>(count);
-                return 0;
-            }
-            return err;
+            raw_debug_write(reinterpret_cast<const char*>(buf), count);
+            *bytes_written = static_cast<ssize_t>(count);
+            return 0;
         }
         *bytes_written = static_cast<ssize_t>(resp.bytes_written);
         return 0;
     }
 
     if (entry->type == IRIS_FD_DEBUGLOG) {
-        if (entry->handle == ZX_HANDLE_INVALID) {
-            entry->handle = g_debuglog_handle;
-            if (entry->handle == ZX_HANDLE_INVALID) {
-                entry->handle = zx_take_startup_handle(PA_HND(PA_FDIO_LOGGER, 0));
-                if (entry->handle == ZX_HANDLE_INVALID) {
-                    entry->handle = zx_take_startup_handle(PA_HND(PA_FD, 1));
-                }
-                g_debuglog_handle = entry->handle;
-            }
-        }
-        if (entry->handle != ZX_HANDLE_INVALID) {
-            zx_debuglog_write(entry->handle, 0, buf, count);
-        }
+        raw_debug_write(reinterpret_cast<const char*>(buf), count);
         *bytes_written = (ssize_t)count;
         return 0;
     }
@@ -1232,8 +1327,8 @@ int sys_write(int fd, const void *buf, size_t count, ssize_t *bytes_written) {
     if (entry->type == IRIS_FD_CHANNEL) {
         if (entry->handle != ZX_HANDLE_INVALID) {
             zx_status_t st = zx_channel_write(entry->handle, 0, buf, (uint32_t)count, nullptr, 0);
-            if (st != ZX_OK && g_debuglog_handle != ZX_HANDLE_INVALID) {
-                zx_debuglog_write(g_debuglog_handle, 0, buf, count);
+            if (st != ZX_OK) {
+                raw_debug_write(reinterpret_cast<const char*>(buf), count);
             }
         }
         *bytes_written = (ssize_t)count;
@@ -1405,37 +1500,96 @@ static char* iris_strchr(const char* s, int c) {
 
 static char g_cwd[256] = "/";
 
+static void canonicalize_path(const char* raw, char* out, size_t out_size) {
+    if (!raw || !out || out_size == 0) return;
+
+    char temp[512];
+    size_t rlen = strlen(raw);
+    if (rlen >= sizeof(temp)) rlen = sizeof(temp) - 1;
+    memcpy(temp, raw, rlen);
+    temp[rlen] = '\0';
+
+    const char* parts[32];
+    size_t num_parts = 0;
+
+    char* p = temp;
+    while (*p != '\0') {
+        while (*p == '/') p++;
+        if (*p == '\0') break;
+        char* start = p;
+        while (*p != '\0' && *p != '/') p++;
+        if (*p != '\0') {
+            *p = '\0';
+            p++;
+        }
+        if (iris_strcmp(start, ".") == 0) {
+            continue;
+        } else if (iris_strcmp(start, "..") == 0) {
+            if (num_parts > 0) {
+                num_parts--;
+            }
+        } else {
+            if (num_parts < 32) {
+                parts[num_parts++] = start;
+            }
+        }
+    }
+
+    if (num_parts == 0) {
+        if (out_size >= 2) {
+            out[0] = '/';
+            out[1] = '\0';
+        }
+        return;
+    }
+
+    size_t o = 0;
+    for (size_t i = 0; i < num_parts; i++) {
+        if (o + 1 < out_size) out[o++] = '/';
+        size_t plen = strlen(parts[i]);
+        for (size_t k = 0; k < plen && o + 1 < out_size; k++) {
+            out[o++] = parts[i][k];
+        }
+    }
+    out[o] = '\0';
+}
+
 static void resolve_relative_path(const char* in_path, char* out_buf, size_t out_size) {
     if (!in_path || out_size == 0) return;
+
     if (in_path[0] == '/') {
-        size_t len = strlen(in_path);
-        if (len >= out_size) len = out_size - 1;
-        memcpy(out_buf, in_path, len);
-        out_buf[len] = '\0';
+        canonicalize_path(in_path, out_buf, out_size);
         return;
     }
-    if (iris_strcmp(in_path, ".") == 0 || iris_strcmp(in_path, "./") == 0) {
-        size_t len = strlen(g_cwd);
-        if (len >= out_size) len = out_size - 1;
-        memcpy(out_buf, g_cwd, len);
-        out_buf[len] = '\0';
-        return;
-    }
+
+    char combined[512];
     size_t clen = strlen(g_cwd);
     size_t plen = strlen(in_path);
-    size_t idx = 0;
-    while (idx < clen && idx + 1 < out_size) {
-        out_buf[idx] = g_cwd[idx];
-        idx++;
+    size_t o = 0;
+    while (o < clen && o + 1 < sizeof(combined)) {
+        combined[o] = g_cwd[o];
+        o++;
     }
-    if (idx > 0 && out_buf[idx - 1] != '/' && idx + 1 < out_size) {
-        out_buf[idx++] = '/';
+    if (o > 0 && combined[o - 1] != '/' && o + 1 < sizeof(combined)) {
+        combined[o++] = '/';
     }
-    size_t pidx = 0;
-    while (pidx < plen && idx + 1 < out_size) {
-        out_buf[idx++] = in_path[pidx++];
+    size_t p = 0;
+    while (p < plen && o + 1 < sizeof(combined)) {
+        combined[o++] = in_path[p++];
     }
-    out_buf[idx] = '\0';
+    combined[o] = '\0';
+
+    canonicalize_path(combined, out_buf, out_size);
+}
+
+extern "C" void iris_set_cwd(const char* path) {
+    if (!path || path[0] == '\0') return;
+    char resolved[256];
+    canonicalize_path(path, resolved, sizeof(resolved));
+    size_t len = strlen(resolved);
+    if (len >= sizeof(g_cwd)) len = sizeof(g_cwd) - 1;
+    memcpy(g_cwd, resolved, len);
+    g_cwd[len] = '\0';
 }
 
 int sys_open(const char *path, int flags, mode_t mode, int *fd) {
@@ -1517,17 +1671,125 @@ int sys_close(int fd) {
         return EBADF;
     }
     if (entry->type == IRIS_FD_VFS) {
-        iris_fs_close_req_t req = { entry->vfs_handle, 0 };
-        vfs_ipc_call(entry->handle, IRIS_FS_OP_CLOSE, &req, sizeof(req), nullptr, 0, nullptr);
+        uint32_t vfs_h = entry->vfs_handle;
+        zx_handle_t ch = entry->handle;
         entry->handle     = ZX_HANDLE_INVALID;
         entry->vfs_handle = 0;
         entry->flags      = 0;
         entry->offset     = 0;
         entry->type       = IRIS_FD_CLOSED;
+
+        /* Reference counting: only send CLOSE to iris_fshost if no other open FD still references vfs_h */
+        bool still_referenced = false;
+        for (int i = 0; i < IRIS_MAX_FD; i++) {
+            if (g_fd_table[i].type == IRIS_FD_VFS && g_fd_table[i].vfs_handle == vfs_h) {
+                still_referenced = true;
+                break;
+            }
+        }
+        if (!still_referenced && ch != ZX_HANDLE_INVALID && vfs_h != 0) {
+            iris_fs_close_req_t req = { vfs_h, 0 };
+            vfs_ipc_call(ch, IRIS_FS_OP_CLOSE, &req, sizeof(req), nullptr, 0, nullptr);
+        }
         return 0;
     }
     if (iris_fd_close(fd) != 0) {
         return EBADF;
+    }
+    return 0;
+}
+
+int sys_open_dir(const char *path, int *handle) {
+    return sys_open(path, O_RDONLY | O_DIRECTORY, 0, handle);
+}
+
+int sys_read_entries(int handle, void *buffer, size_t max_size, size_t *bytes_read) {
+    iris_fd_entry_t* entry = iris_fd_get(handle);
+    if (!entry || entry->type == IRIS_FD_CLOSED) {
+        return EBADF;
+    }
+    if (entry->type != IRIS_FD_VFS) {
+        return ENOTDIR;
+    }
+    uint32_t chunk = (max_size > IRIS_IPC_MAX_PAYLOAD) ? IRIS_IPC_MAX_PAYLOAD : static_cast<uint32_t>(max_size);
+    iris_fs_readdir_req_t req = { entry->vfs_handle, chunk };
+    uint32_t act_read = 0;
+    int err = vfs_ipc_call(entry->handle, IRIS_FS_OP_READDIR, &req, sizeof(req), buffer, chunk, &act_read);
+    if (err != 0) {
+        return err;
+    }
+    if (bytes_read) {
+        *bytes_read = act_read;
+    }
+    return 0;
+}
+
+int sys_mkdir(const char *path, mode_t mode) {
+    if (!path) return EINVAL;
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch == ZX_HANDLE_INVALID) return ENOENT;
+
+    char resolved_path[256];
+    resolve_relative_path(path, resolved_path, sizeof(resolved_path));
+
+    iris_fs_mkdir_req_t req = {};
+    req.mode = static_cast<uint32_t>(mode);
+    size_t plen = strlen(resolved_path);
+    if (plen >= sizeof(req.path)) return ENAMETOOLONG;
+    memcpy(req.path, resolved_path, plen + 1);
+
+    return vfs_ipc_call(fs_ch, IRIS_FS_OP_MKDIR, &req, sizeof(req), nullptr, 0, nullptr);
+}
+
+int sys_mkdirat(int dirfd, const char *path, mode_t mode) {
+    (void)dirfd;
+    return sys_mkdir(path, mode);
+}
+
+int sys_unlink(const char *path) {
+    if (!path) return EINVAL;
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch == ZX_HANDLE_INVALID) return ENOENT;
+
+    char resolved_path[256];
+    resolve_relative_path(path, resolved_path, sizeof(resolved_path));
+
+    iris_fs_unlink_req_t req = {};
+    size_t plen = strlen(resolved_path);
+    if (plen >= sizeof(req.path)) return ENAMETOOLONG;
+    memcpy(req.path, resolved_path, plen + 1);
+
+    return vfs_ipc_call(fs_ch, IRIS_FS_OP_UNLINK, &req, sizeof(req), nullptr, 0, nullptr);
+}
+
+int sys_unlinkat(int fd, const char *path, int flags) {
+    (void)fd;
+    (void)flags;
+    return sys_unlink(path);
+}
+
+int sys_rmdir(const char *path) {
+    return sys_unlink(path);
+}
+
+int sys_faccessat(int dirfd, const char *pathname, int mode, int flags) {
+    (void)dirfd;
+    (void)flags;
+    if (!pathname) return EINVAL;
+
+    struct stat st;
+    int err = sys_stat(fsfd_target::path, -1, pathname, 0, &st);
+    if (err != 0) return err;
+    if (mode == 0 /* F_OK */) return 0;
+
+    if ((mode & 2 /* W_OK */) != 0) {
+        char resolved_path[256];
+        resolve_relative_path(pathname, resolved_path, sizeof(resolved_path));
+        if (iris_strncmp(resolved_path, "/System", 7) == 0 ||
+            iris_strncmp(resolved_path, "/bin", 4) == 0 ||
+            iris_strncmp(resolved_path, "/lib", 4) == 0) {
+            return EROFS;
+        }
     }
     return 0;
 }
@@ -1537,7 +1799,8 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
     if (!entry || entry->type == IRIS_FD_CLOSED) {
         return EBADF;
     }
-    if (entry->type == IRIS_FD_DEBUGLOG) {
+    if (entry->type == IRIS_FD_DEBUGLOG || entry->type == IRIS_FD_PTY ||
+        entry->type == IRIS_FD_SOCKET) {
         return ESPIPE;
     }
     if (entry->type == IRIS_FD_VFS) {
@@ -1557,9 +1820,6 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
             *new_offset = entry->offset;
         }
         return 0;
-    }
-    if (entry->type == IRIS_FD_SOCKET) {
-        return ESPIPE;
     }
 
     if (entry->type == IRIS_FD_CHANNEL) {
@@ -1644,13 +1904,101 @@ int sys_uname(struct utsname *buf) {
     return 0;
 }
 
+struct child_proc_entry {
+    pid_t pid;
+    zx_handle_t handle;
+    bool in_use;
+};
+
+#define MAX_TRACKED_CHILDREN 64
+static child_proc_entry g_child_table[MAX_TRACKED_CHILDREN];
+
 int sys_waitpid(pid_t pid, int *status, int flags, struct rusage *ru, pid_t *ret_pid) {
     (void)ru;
+
+    zx_time_t deadline = (flags & WNOHANG) ? 0 : ZX_TIME_INFINITE;
+
     if (pid <= 0) {
+        // Wait on ANY tracked child process (pid == -1 or pid == 0)
+        zx_wait_item_t items[MAX_TRACKED_CHILDREN];
+        int item_to_child_idx[MAX_TRACKED_CHILDREN];
+        uint32_t active_count = 0;
+
+        for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
+            if (g_child_table[i].in_use && g_child_table[i].handle != ZX_HANDLE_INVALID) {
+                items[active_count].handle  = g_child_table[i].handle;
+                items[active_count].waitfor = ZX_PROCESS_TERMINATED;
+                items[active_count].pending = 0;
+                item_to_child_idx[active_count] = i;
+                active_count++;
+            }
+        }
+
+        if (active_count == 0) {
+            return ECHILD;
+        }
+
+        zx_status_t zstatus = zx_object_wait_many(items, active_count, deadline);
+        if (zstatus == ZX_ERR_TIMED_OUT) {
+            if (flags & WNOHANG) {
+                if (ret_pid) *ret_pid = 0;
+                return 0;
+            }
+            return ECHILD;
+        }
+        if (zstatus != ZX_OK) {
+            return ECHILD;
+        }
+
+        for (uint32_t i = 0; i < active_count; i++) {
+            if (items[i].pending & ZX_PROCESS_TERMINATED) {
+                int child_idx = item_to_child_idx[i];
+                zx_handle_t proc_handle = g_child_table[child_idx].handle;
+                pid_t terminated_pid = g_child_table[child_idx].pid;
+
+                zx_info_process_t info = {};
+                zx_status_t istatus = zx_object_get_info(proc_handle, ZX_INFO_PROCESS, &info, sizeof(info), nullptr, nullptr);
+                if (istatus == ZX_OK && info.exited) {
+                    if (status) {
+                        *status = static_cast<int>((info.return_code & 0xff) << 8);
+                    }
+                } else {
+                    if (status) *status = 0;
+                }
+
+                zx_handle_close(proc_handle);
+                g_child_table[child_idx].handle = ZX_HANDLE_INVALID;
+                g_child_table[child_idx].in_use = false;
+                g_child_table[child_idx].pid    = 0;
+
+                if (ret_pid) *ret_pid = terminated_pid;
+                return 0;
+            }
+        }
+
+        if (flags & WNOHANG) {
+            if (ret_pid) *ret_pid = 0;
+            return 0;
+        }
         return ECHILD;
     }
-    zx_handle_t proc_handle = static_cast<zx_handle_t>(pid);
-    zx_time_t deadline = (flags & WNOHANG) ? 0 : ZX_TIME_INFINITE;
+
+    // Specific child PID wait
+    int child_idx = -1;
+    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
+        if (g_child_table[i].in_use && g_child_table[i].pid == pid) {
+            child_idx = i;
+            break;
+        }
+    }
+
+    zx_handle_t proc_handle = ZX_HANDLE_INVALID;
+    if (child_idx >= 0) {
+        proc_handle = g_child_table[child_idx].handle;
+    } else {
+        proc_handle = static_cast<zx_handle_t>(pid);
+    }
+
     zx_signals_t observed = 0;
     zx_status_t zstatus = zx_object_wait_one(proc_handle, ZX_PROCESS_TERMINATED, deadline, &observed);
     if (zstatus == ZX_ERR_TIMED_OUT) {
@@ -1675,6 +2023,12 @@ int sys_waitpid(pid_t pid, int *status, int flags, struct rusage *ru, pid_t *ret
     }
 
     zx_handle_close(proc_handle);
+    if (child_idx >= 0) {
+        g_child_table[child_idx].handle = ZX_HANDLE_INVALID;
+        g_child_table[child_idx].in_use = false;
+        g_child_table[child_idx].pid    = 0;
+    }
+
     if (ret_pid) *ret_pid = pid;
     return 0;
 }
@@ -1871,7 +2225,14 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
         if (entry && entry->type != IRIS_FD_CLOSED && entry->type != IRIS_FD_VFS &&
             entry->handle != ZX_HANDLE_INVALID) {
             zx_handle_t child_h = ZX_HANDLE_INVALID;
-            if (zx_handle_duplicate(entry->handle, ZX_RIGHT_SAME_RIGHTS, &child_h) == ZX_OK) {
+            if (entry->type == IRIS_FD_PTY) {
+                if (fd >= 3) {
+                    child_h = iris_pty_create_client_channel(entry->handle);
+                }
+            } else if (zx_handle_duplicate(entry->handle, ZX_RIGHT_SAME_RIGHTS, &child_h) == ZX_OK) {
+                // Sockets, debuglog, etc. duplicated successfully
+            }
+            if (child_h != ZX_HANDLE_INVALID) {
                 actions[num_actions].type = IRIS_SPAWN_ACTION_ADD_FD;
                 actions[num_actions].handle = child_h;
                 actions[num_actions].target_fd = fd;
@@ -1883,8 +2244,8 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
     // Propagate iris_fshost channel as PA_NS_DIR if available
     zx_handle_t fs_ch = iris_get_fshost_channel();
     if (fs_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
-        zx_handle_t child_fs = ZX_HANDLE_INVALID;
-        if (zx_handle_duplicate(fs_ch, ZX_RIGHT_SAME_RIGHTS, &child_fs) == ZX_OK) {
+        zx_handle_t child_fs = iris_fshost_create_client_channel(fs_ch);
+        if (child_fs != ZX_HANDLE_INVALID) {
             actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
             actions[num_actions].handle = child_fs;
             actions[num_actions].handle_info = PA_HND(PA_NS_DIR, 0);
@@ -1895,11 +2256,35 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
     // Propagate iris_pty channel as PA_USER0 if available
     zx_handle_t pty_ch = iris_get_pty_channel();
     if (pty_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
-        zx_handle_t child_pty = ZX_HANDLE_INVALID;
-        if (zx_handle_duplicate(pty_ch, ZX_RIGHT_SAME_RIGHTS, &child_pty) == ZX_OK) {
+        zx_handle_t child_pty = iris_pty_create_client_channel(pty_ch);
+        if (child_pty != ZX_HANDLE_INVALID) {
             actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
             actions[num_actions].handle = child_pty;
             actions[num_actions].handle_info = PA_HND(PA_USER0, 0);
+            num_actions++;
+        }
+    }
+
+    // Propagate debuglog handle as PA_FDIO_LOGGER if available
+    zx_handle_t log_ch = iris_get_debuglog();
+    if (log_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+        zx_handle_t child_log = ZX_HANDLE_INVALID;
+        if (zx_handle_duplicate(log_ch, ZX_RIGHT_SAME_RIGHTS, &child_log) == ZX_OK) {
+            actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
+            actions[num_actions].handle = child_log;
+            actions[num_actions].handle_info = PA_HND(PA_FDIO_LOGGER, 0);
+            num_actions++;
+        }
+    }
+
+    // Propagate root resource as PA_RESOURCE if available
+    zx_handle_t rsrc = iris_root_resource();
+    if (rsrc != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+        zx_handle_t child_rsrc = ZX_HANDLE_INVALID;
+        if (zx_handle_duplicate(rsrc, ZX_RIGHT_SAME_RIGHTS, &child_rsrc) == ZX_OK) {
+            actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
+            actions[num_actions].handle = child_rsrc;
+            actions[num_actions].handle_info = PA_HND(PA_RESOURCE, 0);
             num_actions++;
         }
     }
@@ -1997,8 +2382,35 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
         sargs.argv = const_cast<const char* const*>(argv);
         sargs.argc = argc;
     }
-    sargs.envp = const_cast<const char* const*>(envp);
-    sargs.envc = envc;
+    // Pass current working directory PWD=<g_cwd> in child's environment
+    char pwd_buf[256];
+    pwd_buf[0] = '\0';
+    size_t cwd_len = strlen(g_cwd);
+    if (cwd_len + 5 < sizeof(pwd_buf)) {
+        memcpy(pwd_buf, "PWD=", 4);
+        memcpy(pwd_buf + 4, g_cwd, cwd_len + 1);
+    }
+
+    const char* child_env[64];
+    uint32_t c_envc = 0;
+    bool has_pwd = false;
+    for (uint32_t i = 0; i < envc && c_envc < 62; i++) {
+        if (envp && envp[i]) {
+            if (iris_strncmp(envp[i], "PWD=", 4) == 0) {
+                child_env[c_envc++] = pwd_buf;
+                has_pwd = true;
+            } else {
+                child_env[c_envc++] = envp[i];
+            }
+        }
+    }
+    if (!has_pwd && pwd_buf[0] != '\0' && c_envc < 62) {
+        child_env[c_envc++] = pwd_buf;
+    }
+    child_env[c_envc] = nullptr;
+
+    sargs.envp = child_env;
+    sargs.envc = c_envc;
     sargs.actions = actions;
     sargs.num_actions = num_actions;
 
@@ -2022,8 +2434,21 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
         zx_handle_close(child_thread);
     }
 
+    zx_info_handle_basic_t basic_info = {};
+    zx_object_get_info(child_proc, ZX_INFO_HANDLE_BASIC, &basic_info, sizeof(basic_info), nullptr, nullptr);
+    pid_t child_pid = static_cast<pid_t>(basic_info.koid);
+
+    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
+        if (!g_child_table[i].in_use) {
+            g_child_table[i].pid = child_pid;
+            g_child_table[i].handle = child_proc;
+            g_child_table[i].in_use = true;
+            break;
+        }
+    }
+
     if (res) {
-        *res = static_cast<pid_t>(child_proc);
+        *res = child_pid;
     }
     return 0;
 }
@@ -2210,20 +2635,29 @@ int sys_dup(int fd, int flags, int *newfd) {
     }
     zx_handle_t new_h = ZX_HANDLE_INVALID;
     if (src->handle != ZX_HANDLE_INVALID) {
-        zx_status_t status = zx_handle_duplicate(src->handle, ZX_RIGHT_SAME_RIGHTS, &new_h);
-        if (status != ZX_OK) {
-            return EIO;
+        if (src->type == IRIS_FD_CHANNEL || src->type == IRIS_FD_SOCKET) {
+            zx_status_t status = zx_handle_duplicate(src->handle, ZX_RIGHT_SAME_RIGHTS, &new_h);
+            if (status != ZX_OK) {
+                return EIO;
+            }
+        } else {
+            new_h = src->handle;
         }
     }
     int alloc_fd = iris_fd_alloc(new_h, src->type, src->flags);
     if (alloc_fd < 0) {
-        if (new_h != ZX_HANDLE_INVALID) zx_handle_close(new_h);
+        if (new_h != ZX_HANDLE_INVALID && (src->type == IRIS_FD_CHANNEL || src->type == IRIS_FD_SOCKET)) {
+            zx_handle_close(new_h);
+        }
         return EMFILE;
     }
     iris_fd_entry_t *dst = iris_fd_get(alloc_fd);
     if (dst) {
         dst->vfs_handle = src->vfs_handle;
         dst->offset = src->offset;
+        dst->flags = src->flags;
+        dst->type = src->type;
+        dst->handle = new_h;
     }
     if (newfd) *newfd = alloc_fd;
     return 0;
@@ -2241,23 +2675,33 @@ int sys_dup2(int fd, int flags, int newfd) {
     if (fd == newfd) {
         return 0;
     }
-    iris_fd_close(newfd);
+    // Cleanly close newfd if open (invoking VFS close / channel close if needed)
+    sys_close(newfd);
 
     zx_handle_t new_h = ZX_HANDLE_INVALID;
     if (src->handle != ZX_HANDLE_INVALID) {
-        zx_status_t status = zx_handle_duplicate(src->handle, ZX_RIGHT_SAME_RIGHTS, &new_h);
-        if (status != ZX_OK) {
-            return EIO;
+        if (src->type == IRIS_FD_CHANNEL || src->type == IRIS_FD_SOCKET) {
+            zx_status_t status = zx_handle_duplicate(src->handle, ZX_RIGHT_SAME_RIGHTS, &new_h);
+            if (status != ZX_OK) {
+                return EIO;
+            }
+        } else {
+            new_h = src->handle;
         }
     }
     if (iris_fd_bind(newfd, new_h, src->type, src->flags) != 0) {
-        if (new_h != ZX_HANDLE_INVALID) zx_handle_close(new_h);
+        if (new_h != ZX_HANDLE_INVALID && (src->type == IRIS_FD_CHANNEL || src->type == IRIS_FD_SOCKET)) {
+            zx_handle_close(new_h);
+        }
         return EIO;
     }
     iris_fd_entry_t *dst = iris_fd_get(newfd);
     if (dst) {
         dst->vfs_handle = src->vfs_handle;
         dst->offset = src->offset;
+        dst->flags = src->flags;
+        dst->type = src->type;
+        dst->handle = new_h;
     }
     return 0;
 }
@@ -2324,26 +2768,51 @@ int sys_tcgetattr(int fd, struct termios *attr) {
     iris_fd_entry_t *fe = iris_fd_get(fd);
     if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
     if (fe->type != IRIS_FD_PTY) return ENOTTY;
-    if (attr) {
-        memset(attr, 0, sizeof(*attr));
-        attr->c_iflag = ICRNL | IXON;
-        attr->c_oflag = OPOST | ONLCR;
-        attr->c_cflag = CS8 | CREAD;
-        attr->c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
-        attr->c_cc[VEOF]   = 4;
-        attr->c_cc[VINTR]  = 3;
-        attr->c_cc[VERASE] = 127;
+    if (!attr) return EINVAL;
+
+    memset(attr, 0, sizeof(*attr));
+    attr->c_iflag = ICRNL | IXON;
+    attr->c_oflag = OPOST | ONLCR;
+    attr->c_cflag = CS8 | CREAD;
+    attr->c_lflag = ISIG;
+    attr->c_cc[VEOF]   = 4;
+    attr->c_cc[VINTR]  = 3;
+    attr->c_cc[VERASE] = 127;
+
+    iris_pty_mode_t mode_resp = {};
+    int err = pty_ipc_call(fe->handle, IRIS_PTY_OP_GET_MODE, nullptr, 0,
+                           &mode_resp, sizeof(mode_resp), nullptr);
+    if (err == 0) {
+        if (mode_resp.flags & IRIS_PTY_MODE_CANONICAL) {
+            attr->c_lflag |= ICANON;
+        }
+        if (mode_resp.flags & IRIS_PTY_MODE_ECHO) {
+            attr->c_lflag |= ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
+        }
+    } else {
+        attr->c_lflag |= ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
     }
     return 0;
 }
 
 int sys_tcsetattr(int fd, int optional_actions, const struct termios *attr) {
     (void)optional_actions;
-    (void)attr;
     iris_fd_entry_t *fe = iris_fd_get(fd);
     if (!fe || fe->type == IRIS_FD_CLOSED) return EBADF;
     if (fe->type != IRIS_FD_PTY) return ENOTTY;
-    return 0;
+    if (!attr) return EINVAL;
+
+    uint32_t flags = 0;
+    if (attr->c_lflag & ICANON) {
+        flags |= IRIS_PTY_MODE_CANONICAL;
+    }
+    if (attr->c_lflag & ECHO) {
+        flags |= IRIS_PTY_MODE_ECHO;
+    }
+
+    iris_pty_mode_t mode_req = { flags };
+    return pty_ipc_call(fe->handle, IRIS_PTY_OP_SET_MODE,
+                        &mode_req, sizeof(mode_req), nullptr, 0, nullptr);
 }
 
 int sys_tcflow(int fd, int action) {
@@ -2410,9 +2879,71 @@ int sys_fchdir(int fd) {
     return 0;
 }
 
+int sys_reboot(int cmd) {
+    zx_handle_t rsrc = iris_root_resource();
+    uint32_t zx_cmd = ZX_SYSTEM_POWERCTL_REBOOT;
+    uint32_t ucmd = static_cast<uint32_t>(cmd);
+    if (ucmd == RB_POWER_OFF) {
+        zx_cmd = ZX_SYSTEM_POWERCTL_SHUTDOWN;
+    } else if (ucmd == RB_AUTOBOOT) {
+        zx_cmd = ZX_SYSTEM_POWERCTL_REBOOT;
+    } else if (ucmd == RB_HALT_SYSTEM) {
+        zx_cmd = ZX_SYSTEM_POWERCTL_SHUTDOWN;
+    }
+    zx_system_powerctl_arg_t arg = {};
+    if (pfn_zx_system_powerctl && rsrc != ZX_HANDLE_INVALID) {
+        pfn_zx_system_powerctl(rsrc, zx_cmd, &arg);
+    }
+    return 0;
+}
+
 int sys_kill(int pid, int sig) {
-    (void)pid;
-    (void)sig;
+    if (pid <= 0) {
+        return EINVAL;
+    }
+
+    /* PID 1 (iris_init) signals for system halt / reboot */
+    if (pid == 1) {
+        if (sig == SIGTERM || sig == SIGINT) {
+            return sys_reboot(RB_AUTOBOOT);
+        } else if (sig == SIGUSR1 || sig == SIGUSR2 || sig == 30 /* SIGPWR */) {
+            return sys_reboot(RB_POWER_OFF);
+        }
+    }
+
+    int child_idx = -1;
+    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
+        if (g_child_table[i].in_use && g_child_table[i].pid == pid) {
+            child_idx = i;
+            break;
+        }
+    }
+
+    zx_handle_t proc_handle = ZX_HANDLE_INVALID;
+    if (child_idx >= 0) {
+        proc_handle = g_child_table[child_idx].handle;
+    } else if (pid == sys_getpid()) {
+        proc_handle = zx_process_self();
+    }
+
+    if (proc_handle == ZX_HANDLE_INVALID) {
+        return ESRCH;
+    }
+
+    if (sig == 0) {
+        zx_signals_t obs = 0;
+        zx_status_t st = zx_object_wait_one(proc_handle, ZX_PROCESS_TERMINATED, 0, &obs);
+        if (st == ZX_OK && (obs & ZX_PROCESS_TERMINATED)) {
+            return ESRCH;
+        }
+        return 0;
+    }
+
+    if (sig == SIGKILL || sig == SIGTERM || sig == SIGINT || sig == SIGHUP || sig == SIGQUIT) {
+        zx_task_kill(proc_handle);
+        return 0;
+    }
+
     return 0;
 }
 
@@ -2475,7 +3006,27 @@ int sys_readlink(const char *path, void *buffer, size_t max_size, ssize_t *lengt
         if (length) *length = static_cast<ssize_t>(to_copy);
         return 0;
     }
-    return EINVAL;
+
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch == ZX_HANDLE_INVALID) return ENOENT;
+
+    char resolved_path[256];
+    resolve_relative_path(path, resolved_path, sizeof(resolved_path));
+
+    iris_fs_readlink_req_t req = {};
+    size_t plen = strlen(resolved_path);
+    if (plen >= sizeof(req.path)) return ENAMETOOLONG;
+    memcpy(req.path, resolved_path, plen + 1);
+
+    iris_fs_readlink_resp_t resp = {};
+    int err = vfs_ipc_call(fs_ch, IRIS_FS_OP_READLINK, &req, sizeof(req), &resp, sizeof(resp), nullptr);
+    if (err != 0) return err;
+
+    size_t tlen = resp.target_len;
+    size_t to_copy = (tlen < max_size) ? tlen : max_size;
+    memcpy(buffer, resp.target, to_copy);
+    if (length) *length = static_cast<ssize_t>(to_copy);
+    return 0;
 }
 
 int sys_readlinkat(int dirfd, const char *path, void *buffer, size_t max_size, ssize_t *length) {
@@ -2484,3 +3035,7 @@ int sys_readlinkat(int dirfd, const char *path, void *buffer, size_t max_size, s
 }
 
 } // namespace mlibc
+
+extern "C" int sys_reboot(int cmd) {
+    return mlibc::sys_reboot(cmd);
+}

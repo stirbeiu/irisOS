@@ -151,6 +151,8 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_FS_OP_RENAME        0x0019u /**< Rename or move file path */
 #define IRIS_FS_OP_TRUNCATE      0x001Au /**< Truncate file to specified size */
 #define IRIS_FS_OP_SYNC          0x001Bu /**< Flush cached dirty buffers to storage */
+#define IRIS_FS_OP_READLINK      0x001Cu /**< Read symlink target */
+#define IRIS_FS_OP_OPEN_CLIENT   0x001Du /**< Request new VFS client channel endpoint */
 
 #pragma pack(push, 4)
 /**
@@ -238,6 +240,57 @@ typedef struct iris_fs_stat_resp {
     uint32_t nlink;      /**< Hard link count */
     uint64_t mtime_sec;  /**< Modification time in seconds since epoch */
 } iris_fs_stat_resp_t;
+
+#pragma pack(push, 1)
+/**
+ * @brief Directory entry structure for IRIS_FS_OP_READDIR (matches POSIX struct dirent ABI).
+ */
+typedef struct iris_dirent {
+    uint64_t d_ino;      /**< Inode number */
+    uint64_t d_off;      /**< Directory offset / cookie */
+    uint16_t d_reclen;   /**< Record length to next entry */
+    uint8_t  d_type;     /**< DT_REG, DT_DIR, DT_LNK, etc. */
+    char     d_name[256];/**< Null-terminated entry name */
+} iris_dirent_t;
+#pragma pack(pop)
+
+/**
+ * @brief Request payload for IRIS_FS_OP_READDIR.
+ */
+typedef struct iris_fs_readdir_req {
+    uint32_t vfs_handle; /**< Server-side open directory handle */
+    uint32_t max_bytes;  /**< Maximum bytes of packed dirents to return */
+} iris_fs_readdir_req_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_MKDIR.
+ */
+typedef struct iris_fs_mkdir_req {
+    uint32_t mode;       /**< Directory permission mode bits (e.g. 0755) */
+    char     path[256];  /**< Absolute VFS path */
+} iris_fs_mkdir_req_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_UNLINK.
+ */
+typedef struct iris_fs_unlink_req {
+    char     path[256];  /**< Absolute VFS path to unlink */
+} iris_fs_unlink_req_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_READLINK.
+ */
+typedef struct iris_fs_readlink_req {
+    char     path[256];  /**< Absolute VFS path to symlink */
+} iris_fs_readlink_req_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_READLINK.
+ */
+typedef struct iris_fs_readlink_resp {
+    uint32_t target_len; /**< Length of symlink target */
+    char     target[256];/**< Symlink target string */
+} iris_fs_readlink_resp_t;
 #pragma pack(pop)
 
 /**
@@ -269,6 +322,7 @@ typedef struct iris_fs_stat_resp {
 #define IRIS_PTY_OP_DRAIN        0x0044u /**< Flush and drain pending terminal buffers */
 #define IRIS_PTY_OP_SIGNAL       0x0045u /**< Send or query POSIX signal (SIGINT, SIGWINCH, etc.) */
 #define IRIS_PTY_OP_SET_MODE     0x0046u /**< Set canonical / raw / echo terminal line mode */
+#define IRIS_PTY_OP_SET_ATTR     0x0046u /**< Alias for IRIS_PTY_OP_SET_MODE */
 #define IRIS_PTY_OP_GET_MODE     0x0047u /**< Query current terminal line mode flags */
 #define IRIS_PTY_OP_INJECT       0x0048u /**< Inject raw/synthetic input bytes into PTY stream */
 #define IRIS_PTY_OP_OPEN_CLIENT  0x0049u /**< Request new PTY client session channel endpoint */

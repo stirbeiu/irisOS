@@ -23,6 +23,11 @@ ZIRCON_DIR="${ROOT_DIR}/kernel/zircon"
 
 ARCH="${1:-x86_64}"
 
+# Boot mode (kernel cmdline iris.mode=): "shell" (interactive /bin/sh, default for
+# ./iris run) or "test" (automated its_irisOS suite, used by ./iris test).
+IRIS_MODE="${IRIS_MODE:-shell}"
+case "${IRIS_MODE}" in shell|test) ;; *) echo "Error: IRIS_MODE must be 'shell' or 'test'."; exit 1 ;; esac
+
 case "${ARCH}" in
     x86_64)
         ARCH_NAME="x86_64"
@@ -32,7 +37,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTX64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-x64-clang"
         BUILD_DIR="${OUT_DIR}/build-x86_64"
-        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy gfxconsole.early=true"
+        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy kernel.debug_uart_poll=true kernel.smp.maxcpus=1 gfxconsole.early=true iris.mode=${IRIS_MODE}"
         ;;
     aarch64)
         ARCH_NAME="aarch64"
@@ -42,7 +47,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTAA64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-arm64-clang"
         BUILD_DIR="${OUT_DIR}/build-aarch64"
-        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy gfxconsole.early=true"
+        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy kernel.debug_uart_poll=true kernel.smp.maxcpus=1 gfxconsole.early=true iris.mode=${IRIS_MODE}"
         ;;
     *)
         echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'aarch64'."
@@ -50,7 +55,7 @@ case "${ARCH}" in
         ;;
 esac
 
-echo "==> [mkimage] Packaging irisOS 4-partition GPT disk image for ${ARCH_NAME}..."
+echo "==> [mkimage] Packaging irisOS 4-partition GPT disk image for ${ARCH_NAME} (iris.mode=${IRIS_MODE})..."
 
 # 1. Ensure host tools (zbi, mkufs2) exist
 if [[ ! -x "${HOST_TOOLS}/zbi" ]]; then
@@ -63,14 +68,12 @@ if [[ ! -x "${HOST_TOOLS}/mkufs2" ]]; then
 fi
 
 # 2. Ensure iris_init, its_irisOS, virtio_blk, iris_crypt, iris_fshost, iris_pty, and toybox binaries exist
-if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
+if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/iris_shell" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
     echo "==> Building server binaries for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
 fi
-if [[ ! -f "${BUILD_DIR}/bin/toybox" ]]; then
-    echo "==> Building Toybox userland for ${ARCH_NAME}..."
-    "${ROOT_DIR}/scripts/build_toybox.sh" "${ARCH_NAME}" "${BUILD_DIR}"
-fi
+echo "==> Building Toybox userland for ${ARCH_NAME}..."
+"${ROOT_DIR}/scripts/build_toybox.sh" "${ARCH_NAME}" "${BUILD_DIR}"
 
 # 3. Ensure Zircon kernel ZBI exists
 if [[ ! -f "${ZIRCON_BUILD}/kernel.zbi" ]]; then
@@ -112,10 +115,12 @@ fi
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
             -e "bin/its_irisOS=${BUILD_DIR}/bin/its_irisOS" \
+            -e "bin/iris_shell=${BUILD_DIR}/bin/iris_shell" \
             -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk" \
             -e "bin/iris_crypt=${BUILD_DIR}/bin/iris_crypt" \
             -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost" \
-            -e "bin/iris_pty=${BUILD_DIR}/bin/iris_pty"
+            -e "bin/iris_pty=${BUILD_DIR}/bin/iris_pty" \
+            -e "bin/toybox=${BUILD_DIR}/bin/toybox"
 
 cp -f "${IRIS_ZBI_A}" "${IRIS_ZBI_B}"
 

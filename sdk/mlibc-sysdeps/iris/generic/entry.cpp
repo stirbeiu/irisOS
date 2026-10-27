@@ -14,6 +14,7 @@
 #include <bits/ensure.h>
 #include <mlibc/tcb.hpp>
 #include <mlibc/all-sysdeps.hpp>
+#include <mlibc/elf/startup.h>
 
 #include <zircon/types.h>
 #include <zircon/processargs.h>
@@ -36,9 +37,11 @@ extern "C" zx_handle_t iris_get_debuglog(void);
 extern "C" void iris_set_vdso_vmo(zx_handle_t handle);
 extern "C" void iris_set_bootfs_vmo(zx_handle_t handle);
 extern "C" void iris_set_root_resource(zx_handle_t handle);
+extern "C" void iris_set_cwd(const char* path);
 extern "C" void iris_set_process_handles(zx_handle_t proc, zx_handle_t thrd, zx_handle_t vmar, zx_handle_t job);
 
 extern "C" [[gnu::weak]] void __dlapi_enter(uintptr_t *);
+extern "C" [[gnu::weak]] uintptr_t *entryStack;
 
 #include <elf.h>
 
@@ -121,7 +124,7 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
 
     /* 2. Process bootstrap channel if valid */
     int argc = 1;
-    static char app_name[] = "iris_app";
+    static char app_name[] = "sh";
     static char* default_argv[] = { app_name, nullptr };
     char** argv = default_argv;
 
@@ -177,7 +180,13 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         parsed_argv[a] = nullptr;
                         argc = static_cast<int>(a);
                         argv = parsed_argv;
+                    } else {
+                        argc = 1;
+                        argv = default_argv;
                     }
+                } else {
+                    argc = 1;
+                    argv = default_argv;
                 }
 
                 /* Unpack environment strings */
@@ -206,6 +215,14 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                     if (e > 0) {
                         parsed_env[e] = nullptr;
                         environ = parsed_env;
+
+                        /* Extract PWD to initialize current working directory */
+                        for (uint32_t i = 0; i < e; i++) {
+                            if (strncmp(parsed_env[i], "PWD=", 4) == 0) {
+                                iris_set_cwd(parsed_env[i] + 4);
+                                break;
+                            }
+                        }
                     }
                 }
 
@@ -218,6 +235,14 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                 zx_handle_t job_def   = ZX_HANDLE_INVALID;
 
                 iris_fd_table_init();
+
+                bool has_ns_dir = false;
+                for (uint32_t i = 0; i < act_handles; i++) {
+                    if (info_table[i] == PA_HND(PA_NS_DIR, 0)) {
+                        has_ns_dir = true;
+                        break;
+                    }
+                }
 
                 /* First pass: extract system capabilities */
                 for (uint32_t i = 0; i < act_handles; i++) {
@@ -243,7 +268,9 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                     } else if (info == PA_HND(PA_NS_DIR, 0)) {
                         iris_set_fshost_channel(h);
                     } else if (info == PA_HND(PA_USER0, 0)) {
-                        iris_set_pty_channel(h);
+                        if (has_ns_dir) {
+                            iris_set_pty_channel(h);
+                        }
                     }
                 }
 
@@ -257,6 +284,7 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                 }
 
                 /* Second pass: bind file descriptors */
+                bool fd_explicitly_bound[3] = { false, false, false };
                 for (uint32_t i = 0; i < act_handles; i++) {
                     uint32_t info = info_table[i];
                     zx_handle_t h = handles[i];
@@ -264,6 +292,9 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
 
                     if (htype == PA_FD) {
                         int target_fd = static_cast<int>(PA_HND_ARG(info));
+                        if (target_fd >= 0 && target_fd < 3) {
+                            fd_explicitly_bound[target_fd] = true;
+                        }
                         iris_fd_type_t ftype = IRIS_FD_CHANNEL;
                         zx_info_handle_basic_t basic = {};
                         zx_status_t st = zx_object_get_info(h, ZX_INFO_HANDLE_BASIC, &basic, sizeof(basic), nullptr, nullptr);
@@ -274,8 +305,11 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                                     iris_set_debuglog(h);
                                 }
                             } else if (basic.type == ZX_OBJ_TYPE_CHANNEL) {
-                                if (pty_koid != 0 && basic.koid == pty_koid) {
+                                if (target_fd < 3 || (pty_koid != 0 && basic.koid == pty_koid)) {
                                     ftype = IRIS_FD_PTY;
+                                    if (iris_get_pty_channel() == ZX_HANDLE_INVALID) {
+                                        iris_set_pty_channel(h);
+                                    }
                                 } else {
                                     ftype = IRIS_FD_CHANNEL;
                                 }
@@ -290,8 +324,7 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                 /* Initialize standard streams (0, 1, 2) if not explicitly bound */
                 zx_handle_t log_h = iris_get_debuglog();
                 for (int fd = 0; fd < 3; fd++) {
-                    iris_fd_entry_t* cur = iris_fd_get(fd);
-                    if (!cur || cur->type == IRIS_FD_CLOSED) {
+                    if (!fd_explicitly_bound[fd]) {
                         if (pty_ch != ZX_HANDLE_INVALID) {
                             iris_fd_bind(fd, pty_ch, IRIS_FD_PTY, (fd == 0) ? O_RDONLY : O_WRONLY);
                         } else if (log_h != ZX_HANDLE_INVALID) {
@@ -305,19 +338,108 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
         zx_handle_close(bstrap);
     }
 
-    /* 3. Setup initial thread control block (TCB) for TLS / thread safety */
-    static Tcb initial_tcb;
-    initial_tcb.selfPointer = &initial_tcb;
-    initial_tcb.tid = 1;
-    mlibc::sys_tcb_set(&initial_tcb);
+    /* 3. Setup initial thread control block (TCB) and static TLS area */
+    constexpr size_t STATIC_TLS_SIZE = 4096;
 
-    /* 4. Execute global initializers / C++ constructors (.init_array) */
+#if defined(__x86_64__)
+    // Variant II: [ TLS data (STATIC_TLS_SIZE) ] [ Tcb ]
+    struct alignas(64) InitialThreadStorage {
+        uint8_t tls_data[STATIC_TLS_SIZE];
+        Tcb tcb;
+    };
+    static InitialThreadStorage initial_storage;
+    Tcb* init_tcb = &initial_storage.tcb;
+#elif defined(__aarch64__)
+    // Variant I: [ Tcb ] [ 16 bytes reserved ] [ TLS data (STATIC_TLS_SIZE) ]
+    struct alignas(64) InitialThreadStorage {
+        Tcb tcb;
+        uint8_t reserved[16];
+        uint8_t tls_data[STATIC_TLS_SIZE];
+    };
+    static InitialThreadStorage initial_storage;
+    Tcb* init_tcb = &initial_storage.tcb;
+#else
+    static Tcb initial_tcb;
+    Tcb* init_tcb = &initial_tcb;
+#endif
+
+    init_tcb->selfPointer = init_tcb;
+    init_tcb->tid = 1;
+
+    /* Initialize static TLS data from PT_TLS if present in ELF header */
+    uintptr_t base_addr = reinterpret_cast<uintptr_t>(__ehdr_start);
+    if (base_addr) {
+        const Elf64_Ehdr* ehdr = reinterpret_cast<const Elf64_Ehdr*>(base_addr);
+        if (ehdr->e_ident[0] == 0x7f && ehdr->e_ident[1] == 'E' &&
+            ehdr->e_ident[2] == 'L' && ehdr->e_ident[3] == 'F' && ehdr->e_phoff != 0) {
+            const Elf64_Phdr* phdr = reinterpret_cast<const Elf64_Phdr*>(base_addr + ehdr->e_phoff);
+            for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+                if (phdr[i].p_type == 7 /* PT_TLS */) {
+                    uintptr_t tls_src = base_addr + phdr[i].p_vaddr;
+                    size_t filesz = phdr[i].p_filesz;
+                    size_t memsz = phdr[i].p_memsz;
+                    if (filesz > STATIC_TLS_SIZE) filesz = STATIC_TLS_SIZE;
+                    if (memsz > STATIC_TLS_SIZE) memsz = STATIC_TLS_SIZE;
+#if defined(__x86_64__)
+                    void* tls_dst = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(init_tcb) - memsz);
+                    if (filesz > 0) memcpy(tls_dst, reinterpret_cast<const void*>(tls_src), filesz);
+                    if (memsz > filesz) memset(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(tls_dst) + filesz), 0, memsz - filesz);
+#elif defined(__aarch64__)
+                    void* tls_dst = initial_storage.tls_data;
+                    if (filesz > 0) memcpy(tls_dst, reinterpret_cast<const void*>(tls_src), filesz);
+                    if (memsz > filesz) memset(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(tls_dst) + filesz), 0, memsz - filesz);
+#endif
+                    break;
+                }
+            }
+        }
+    }
+
+    mlibc::sys_tcb_set(init_tcb);
+
+    /* 4. Construct initial ELF execution stack for mlibc runtime */
+    alignas(16) static uintptr_t exec_stack[128];
+    size_t si = 0;
+    exec_stack[si++] = static_cast<uintptr_t>(argc);
+    for (int i = 0; i < argc; i++) {
+        exec_stack[si++] = reinterpret_cast<uintptr_t>(argv[i]);
+    }
+    exec_stack[si++] = 0; // Terminate argv
+
+    // Environment vector
+    if (environ && environ[0] != nullptr) {
+        for (size_t i = 0; environ[i] != nullptr; i++) {
+            exec_stack[si++] = reinterpret_cast<uintptr_t>(environ[i]);
+        }
+    }
+    exec_stack[si++] = 0; // Terminate envp (envp[0] = NULL)
+
+    // Auxiliary vector (Elf64_auxv_t: a_type, a_val):
+    exec_stack[si++] = 6;     // AT_PAGESZ
+    exec_stack[si++] = 4096;  // 4096
+    exec_stack[si++] = 0;     // AT_NULL
+    exec_stack[si++] = 0;     // 0
+
+    // Set entryStack before global initializers run so init_libc() does not fault
+    if (&entryStack) {
+        entryStack = exec_stack;
+    }
+    if (__dlapi_enter) {
+        __dlapi_enter(exec_stack);
+    }
+
+    mlibc::entry_stack.argc = argc;
+    mlibc::entry_stack.argv = argv;
+    mlibc::entry_stack.envp = environ;
+    mlibc::set_startup_data(argc, argv, environ);
+
+    /* 5. Execute global initializers / C++ constructors (.init_array) */
     run_init_array();
 
-    /* 5. Execute application entry point */
+    /* 6. Execute application entry point */
     int result = main_fn(argc, argv, environ);
 
-    /* 6. Clean process termination */
+    /* 7. Clean process termination */
     fflush(nullptr);
     mlibc::sys_exit(result);
 }
@@ -326,8 +448,15 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
  * Compatibility fallback for standard mlibc __mlibc_entry.
  */
 extern "C" void __mlibc_entry(uintptr_t *entry_stack, int (*main_fn)(int argc, char *argv[], char *env[])) {
-    if (__dlapi_enter) {
+    if (&entryStack && entry_stack) {
+        entryStack = entry_stack;
+    }
+    if (__dlapi_enter && entry_stack) {
         __dlapi_enter(entry_stack);
+    }
+    if (entry_stack) {
+        mlibc::parse_exec_stack(entry_stack, &mlibc::entry_stack);
+        mlibc::set_startup_data(mlibc::entry_stack.argc, mlibc::entry_stack.argv, mlibc::entry_stack.envp);
     }
     __iris_start(nullptr, nullptr, main_fn);
 }

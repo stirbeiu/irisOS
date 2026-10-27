@@ -48,8 +48,17 @@ static pty_discipline_t   g_pty;
 static volatile bool      g_shutdown = false;
 
 /* Client channels connected to PTY */
-static zx_handle_t        g_client_channels[PTY_MAX_CLIENTS];
+typedef struct {
+    zx_handle_t    ch;
+    bool           has_pending_read;
+    iris_msg_hdr_t pending_req_hdr;
+    uint32_t       pending_req_count;
+} pty_client_state_t;
+
+static pty_client_state_t g_clients[PTY_MAX_CLIENTS];
 static uint32_t           g_num_clients = 0;
+
+static void pty_try_fulfill_pending_reads(void);
 
 static void pty_lock(pty_discipline_t* p) {
     while (__atomic_test_and_set(&p->lock, __ATOMIC_ACQUIRE)) {
@@ -63,15 +72,12 @@ static void pty_unlock(pty_discipline_t* p) {
 
 void pty_raw_output(const char* buf, size_t len) {
     if (!buf || len == 0) return;
-    /* Terminal traffic must be a raw byte stream. zx_debuglog_write() creates one
-     * timestamped log record per call (so each echoed key became its own line);
-     * zx_debug_write() sends the bytes straight to the kernel console/UART. */
-    if (zx_debug_write(buf, len) != ZX_OK) {
-        if (g_debuglog_handle != ZX_HANDLE_INVALID) {
-            zx_debuglog_write(g_debuglog_handle, 0, buf, len);
-        } else {
-            write(1, buf, len);
-        }
+    const size_t CHUNK = 256;
+    while (len > 0) {
+        size_t n = (len > CHUNK) ? CHUNK : len;
+        zx_debug_write(buf, n);
+        buf += n;
+        len -= n;
     }
 }
 
@@ -126,12 +132,13 @@ void pty_feed_char(pty_discipline_t* p, char c) {
             return;
         }
 
-        /* 3. Handle Backspace ('\b' or 0x7F DEL) */
-        if (c == '\b' || c == 0x7F) {
+        /* 3. Handle Backspace (0x08 / '\b' or 0x7F DEL) */
+        if (c == '\b' || (uint8_t)c == 0x08 || (uint8_t)c == 0x7F) {
             if (p->line_len > 0) {
                 p->line_len--;
                 if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
-                    pty_raw_output("\b \b", 3);
+                    const char erase_seq[3] = { '\b', ' ', '\b' };
+                    pty_raw_output(erase_seq, 3);
                 }
             }
             pty_unlock(p);
@@ -170,6 +177,59 @@ void pty_feed_char(pty_discipline_t* p, char c) {
     }
 
     pty_unlock(p);
+    pty_try_fulfill_pending_reads();
+}
+
+/**
+ * @brief Deliver buffered characters or EOF to any client channel with a pending read.
+ */
+static void pty_try_fulfill_pending_reads(void) {
+    pty_lock(&g_pty);
+    if (g_pty.ready_count == 0 && !g_pty.eof_pending) {
+        pty_unlock(&g_pty);
+        return;
+    }
+
+    for (uint32_t i = 0; i < g_num_clients; i++) {
+        if (!g_clients[i].has_pending_read) {
+            continue;
+        }
+        if (g_pty.ready_count == 0 && !g_pty.eof_pending) {
+            break;
+        }
+
+        uint32_t req_count = g_clients[i].pending_req_count;
+        if (req_count == 0 || req_count > 4096) req_count = 4096;
+
+        uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t) + 4096] __attribute__((aligned(8)));
+        iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
+        iris_pty_read_resp_t* resp = (iris_pty_read_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+        char* out_data = (char*)(rep_buf + sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t));
+
+        uint32_t copied = 0;
+        if (g_pty.ready_count > 0) {
+            while (g_pty.ready_count > 0 && copied < req_count) {
+                out_data[copied++] = ready_pop(&g_pty);
+            }
+            resp->bytes_read = copied;
+        } else if (g_pty.eof_pending) {
+            g_pty.eof_pending = false;
+            resp->bytes_read = 0; /* EOF */
+        }
+
+        g_clients[i].has_pending_read = false;
+        zx_handle_t ch = g_clients[i].ch;
+        iris_msg_hdr_t req_hdr = g_clients[i].pending_req_hdr;
+
+        pty_unlock(&g_pty);
+
+        uint32_t rep_payload = (uint32_t)(sizeof(iris_pty_read_resp_t) + resp->bytes_read);
+        iris_msg_hdr_init_reply(rep_hdr, &req_hdr, ZX_OK, rep_payload);
+        zx_channel_write(ch, 0, rep_buf, sizeof(iris_msg_hdr_t) + rep_payload, NULL, 0);
+
+        pty_lock(&g_pty);
+    }
+    pty_unlock(&g_pty);
 }
 
 /**
@@ -177,12 +237,15 @@ void pty_feed_char(pty_discipline_t* p, char c) {
  */
 static void uart_rx_thread_entry(uintptr_t arg) {
     zx_handle_t rsrc = (zx_handle_t)arg;
+    char rx_buf[64];
     while (!g_shutdown) {
-        char c = 0;
-        size_t len = 1;
-        zx_status_t st = zx_debug_read(rsrc, &c, &len);
-        if (st == ZX_OK && len == 1) {
-            pty_feed_char(&g_pty, c);
+        size_t len = sizeof(rx_buf);
+        zx_status_t st = zx_debug_read(rsrc, rx_buf, &len);
+        if (st == ZX_OK && len > 0) {
+            for (size_t i = 0; i < len; i++) {
+                pty_feed_char(&g_pty, rx_buf[i]);
+            }
+            pty_try_fulfill_pending_reads();
         } else {
             zx_nanosleep(zx_deadline_after(ZX_MSEC(10)));
         }
@@ -299,29 +362,40 @@ static bool handle_pty_message(zx_handle_t ch) {
                 req_count = 4096;
             }
 
-            uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t) + 4096] __attribute__((aligned(8)));
-            iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
-            iris_pty_read_resp_t* resp = (iris_pty_read_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
-            char* out_data = (char*)(rep_buf + sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t));
-
             pty_lock(&g_pty);
-            uint32_t copied = 0;
-            if (g_pty.ready_count > 0) {
-                while (g_pty.ready_count > 0 && copied < req_count) {
-                    out_data[copied++] = ready_pop(&g_pty);
-                }
-                resp->bytes_read = copied;
-            } else if (g_pty.eof_pending) {
-                g_pty.eof_pending = false;
-                resp->bytes_read = 0; /* EOF */
-            } else {
-                resp->bytes_read = 0;
-            }
-            pty_unlock(&g_pty);
+            if (g_pty.ready_count > 0 || g_pty.eof_pending) {
+                uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t) + 4096] __attribute__((aligned(8)));
+                iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
+                iris_pty_read_resp_t* resp = (iris_pty_read_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+                char* out_data = (char*)(rep_buf + sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t));
 
-            uint32_t rep_payload = (uint32_t)(sizeof(iris_pty_read_resp_t) + resp->bytes_read);
-            iris_msg_hdr_init_reply(rep_hdr, req, ZX_OK, rep_payload);
-            zx_channel_write(ch, 0, rep_buf, sizeof(iris_msg_hdr_t) + rep_payload, NULL, 0);
+                uint32_t copied = 0;
+                if (g_pty.ready_count > 0) {
+                    while (g_pty.ready_count > 0 && copied < req_count) {
+                        out_data[copied++] = ready_pop(&g_pty);
+                    }
+                    resp->bytes_read = copied;
+                } else if (g_pty.eof_pending) {
+                    g_pty.eof_pending = false;
+                    resp->bytes_read = 0; /* EOF */
+                }
+                pty_unlock(&g_pty);
+
+                uint32_t rep_payload = (uint32_t)(sizeof(iris_pty_read_resp_t) + resp->bytes_read);
+                iris_msg_hdr_init_reply(rep_hdr, req, ZX_OK, rep_payload);
+                zx_channel_write(ch, 0, rep_buf, sizeof(iris_msg_hdr_t) + rep_payload, NULL, 0);
+            } else {
+                /* Input buffer is empty and no EOF: queue pending read request without replying */
+                for (uint32_t i = 0; i < g_num_clients; i++) {
+                    if (g_clients[i].ch == ch) {
+                        g_clients[i].has_pending_read = true;
+                        g_clients[i].pending_req_hdr = *req;
+                        g_clients[i].pending_req_count = req_count;
+                        break;
+                    }
+                }
+                pty_unlock(&g_pty);
+            }
             break;
         }
 
@@ -348,8 +422,17 @@ static bool handle_pty_message(zx_handle_t ch) {
         case IRIS_PTY_OP_SET_MODE: {
             if (payload_len >= sizeof(iris_pty_mode_t)) {
                 pty_lock(&g_pty);
+                uint32_t old_mode = g_pty.mode_flags;
                 g_pty.mode_flags = ((const iris_pty_mode_t*)payload)->flags;
+                if ((old_mode & IRIS_PTY_MODE_CANONICAL) && !(g_pty.mode_flags & IRIS_PTY_MODE_CANONICAL)) {
+                    /* Switching from canonical to raw mode: flush uncommitted line buffer immediately into ready queue */
+                    for (size_t i = 0; i < g_pty.line_len; i++) {
+                        ready_push(&g_pty, g_pty.line_buf[i]);
+                    }
+                    g_pty.line_len = 0;
+                }
                 pty_unlock(&g_pty);
+                pty_try_fulfill_pending_reads();
             }
             iris_msg_hdr_t rep;
             iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
@@ -429,6 +512,7 @@ static bool handle_pty_message(zx_handle_t ch) {
                 for (uint32_t i = 0; i < count; i++) {
                     pty_feed_char(&g_pty, data[i]);
                 }
+                pty_try_fulfill_pending_reads();
             }
 
             uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_pty_inject_resp_t)] __attribute__((aligned(8)));
@@ -447,7 +531,12 @@ static bool handle_pty_message(zx_handle_t ch) {
             zx_status_t cr_st = zx_channel_create(0, &srv, &cli);
 
             if (cr_st == ZX_OK && g_num_clients < PTY_MAX_CLIENTS) {
-                g_client_channels[g_num_clients++] = srv;
+                pty_lock(&g_pty);
+                g_clients[g_num_clients].ch = srv;
+                g_clients[g_num_clients].has_pending_read = false;
+                g_clients[g_num_clients].pending_req_count = 0;
+                g_num_clients++;
+                pty_unlock(&g_pty);
                 iris_msg_hdr_t rep;
                 iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
                 zx_channel_write(ch, 0, &rep, sizeof(rep), &cli, 1);
@@ -494,7 +583,10 @@ int main(int argc, char** argv) {
             if (g_server_channel == ZX_HANDLE_INVALID) {
                 g_server_channel = h;
             }
-            g_client_channels[g_num_clients++] = h;
+            g_clients[g_num_clients].ch = h;
+            g_clients[g_num_clients].has_pending_read = false;
+            g_clients[g_num_clients].pending_req_count = 0;
+            g_num_clients++;
         }
     }
 
@@ -530,16 +622,19 @@ int main(int argc, char** argv) {
         }
     }
 
-    /* 4. Start UART serial console input worker only as fallback when VirtIO input is absent */
-    if (!g_has_virtio_input) {
-        init_uart_fallback();
-        log_status(STATUS_OKAY, "iris_pty", "UART serial console worker initialized.");
+    /* 4. Start UART serial console input worker (always multiplexed with virtio-input-pci) */
+    init_uart_fallback();
+    if (g_has_virtio_input) {
+        log_status(STATUS_OKAY, "iris_pty", "Multiplexing input from virtio-input-pci and UART serial console.");
     } else {
-        log_status(STATUS_OKAY, "iris_pty", "Primary input active via virtio-input-pci.");
+        log_status(STATUS_OKAY, "iris_pty", "Input active via UART serial console.");
     }
 
     log_status(STATUS_OKAY, "iris_pty", "Line discipline initialized (canonical cooked mode, echoing enabled).");
     log_status(STATUS_OKAY, "iris_pty", "IPC server listening on control channel.");
+
+    /* Emit VT100 sequence to enable blinking block cursor */
+    pty_raw_output("\033[1 q\033[?12h", 11);
 
     /* 5. Main Server Event Loop */
     while (!g_shutdown && g_num_clients > 0) {
@@ -548,42 +643,52 @@ int main(int argc, char** argv) {
             char kbuf[32];
             size_t nchars = 0;
             virtio_input_poll(&g_input_dev, kbuf, sizeof(kbuf), &nchars);
-            for (size_t i = 0; i < nchars; i++) {
-                pty_feed_char(&g_pty, kbuf[i]);
+            if (nchars > 0) {
+                for (size_t i = 0; i < nchars; i++) {
+                    pty_feed_char(&g_pty, kbuf[i]);
+                }
+                pty_try_fulfill_pending_reads();
             }
         }
 
+        /* Check if any pending read can be fulfilled */
+        pty_try_fulfill_pending_reads();
+
         /* Wait on client channels */
         zx_wait_item_t wait_items[PTY_MAX_CLIENTS];
-        for (uint32_t i = 0; i < g_num_clients; i++) {
-            wait_items[i].handle = g_client_channels[i];
+        uint32_t cur_clients = g_num_clients;
+        for (uint32_t i = 0; i < cur_clients; i++) {
+            wait_items[i].handle = g_clients[i].ch;
             wait_items[i].waitfor = ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED;
             wait_items[i].pending = 0;
         }
 
-        zx_status_t wait_st = zx_object_wait_many(wait_items, g_num_clients,
+        zx_status_t wait_st = zx_object_wait_many(wait_items, cur_clients,
                                                   zx_deadline_after(ZX_MSEC(10)));
         if (wait_st != ZX_OK && wait_st != ZX_ERR_TIMED_OUT) {
             break;
         }
 
-        for (uint32_t i = 0; i < g_num_clients; i++) {
+        for (uint32_t i = 0; i < cur_clients; i++) {
             if (wait_items[i].pending & ZX_CHANNEL_READABLE) {
-                handle_pty_message(g_client_channels[i]);
+                handle_pty_message(g_clients[i].ch);
             }
             if (wait_items[i].pending & ZX_CHANNEL_PEER_CLOSED) {
                 /* If main server channel closes, shut down */
-                if (g_client_channels[i] == g_server_channel) {
+                if (g_clients[i].ch == g_server_channel) {
                     g_shutdown = true;
                     break;
                 }
-                zx_handle_close(g_client_channels[i]);
+                pty_lock(&g_pty);
+                zx_handle_close(g_clients[i].ch);
                 /* Remove client channel from array */
-                for (uint32_t j = i; j < g_num_clients - 1; j++) {
-                    g_client_channels[j] = g_client_channels[j + 1];
+                for (uint32_t j = i; j + 1 < g_num_clients; j++) {
+                    g_clients[j] = g_clients[j + 1];
                 }
                 g_num_clients--;
+                pty_unlock(&g_pty);
                 i--;
+                cur_clients--;
             }
         }
     }
@@ -594,8 +699,8 @@ int main(int argc, char** argv) {
     }
 
     for (uint32_t i = 0; i < g_num_clients; i++) {
-        if (g_client_channels[i] != ZX_HANDLE_INVALID) {
-            zx_handle_close(g_client_channels[i]);
+        if (g_clients[i].ch != ZX_HANDLE_INVALID) {
+            zx_handle_close(g_clients[i].ch);
         }
     }
 

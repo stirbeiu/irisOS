@@ -42,6 +42,8 @@ int virtio_input_translate_key(uint16_t code, bool shift, bool ctrl, bool caps) 
             case KEY_F: return 6;
             case KEY_G: return 7;
             case KEY_H: return 8;  /* Backspace */
+            case KEY_BACKSPACE: return 8;
+            case KEY_DELETE: return 0x7F;
             case KEY_I: return '\t';
             case KEY_J: return '\n';
             case KEY_K: return 11;
@@ -82,6 +84,7 @@ int virtio_input_translate_key(uint16_t code, bool shift, bool ctrl, bool caps) 
         case KEY_MINUS: return shift ? '_' : '-';
         case KEY_EQUAL: return shift ? '+' : '=';
         case KEY_BACKSPACE: return '\b';
+        case KEY_DELETE: return 0x7F;
         case KEY_TAB: return '\t';
         case KEY_Q: return (shift ^ caps) ? 'Q' : 'q';
         case KEY_W: return (shift ^ caps) ? 'W' : 'w';
@@ -335,18 +338,50 @@ zx_status_t virtio_input_poll(virtio_input_dev_t* dev, char* out_chars, size_t m
             dev->dma_vaddr + id * sizeof(virtio_input_event_t));
 
         if (ev->type == EV_KEY) {
-            if (ev->code == KEY_LEFTSHIFT || ev->code == KEY_RIGHTSHIFT) {
-                dev->shift_down = (ev->value != 0);
-            } else if (ev->code == KEY_LEFTCTRL || ev->code == KEY_RIGHTCTRL) {
-                dev->ctrl_down = (ev->value != 0);
-            } else if (ev->code == KEY_LEFTALT || ev->code == KEY_RIGHTALT) {
-                dev->alt_down = (ev->value != 0);
+            if (ev->code == KEY_LEFTSHIFT) {
+                dev->shift_l = (ev->value != 0);
+                dev->shift_down = (dev->shift_l || dev->shift_r);
+            } else if (ev->code == KEY_RIGHTSHIFT) {
+                dev->shift_r = (ev->value != 0);
+                dev->shift_down = (dev->shift_l || dev->shift_r);
+            } else if (ev->code == KEY_LEFTCTRL) {
+                dev->ctrl_l = (ev->value != 0);
+                dev->ctrl_down = (dev->ctrl_l || dev->ctrl_r);
+            } else if (ev->code == KEY_RIGHTCTRL) {
+                dev->ctrl_r = (ev->value != 0);
+                dev->ctrl_down = (dev->ctrl_l || dev->ctrl_r);
+            } else if (ev->code == KEY_LEFTALT) {
+                dev->alt_l = (ev->value != 0);
+                dev->alt_down = (dev->alt_l || dev->alt_r);
+            } else if (ev->code == KEY_RIGHTALT) {
+                dev->alt_r = (ev->value != 0);
+                dev->alt_down = (dev->alt_l || dev->alt_r);
             } else if (ev->code == KEY_CAPSLOCK && ev->value == 1) {
                 dev->caps_lock = !dev->caps_lock;
             } else if (ev->value == 1 || ev->value == 2) {
-                int ch = virtio_input_translate_key(ev->code, dev->shift_down, dev->ctrl_down, dev->caps_lock);
-                if (ch >= 0 && count < max_chars) {
-                    out_chars[count++] = (char)ch;
+                /* Check for multi-byte VT100 / ANSI escape sequences (Arrow keys, navigation) */
+                const char* seq = NULL;
+                switch (ev->code) {
+                    case KEY_UP:       seq = "\033[A"; break;
+                    case KEY_DOWN:     seq = "\033[B"; break;
+                    case KEY_RIGHT:    seq = "\033[C"; break;
+                    case KEY_LEFT:     seq = "\033[D"; break;
+                    case KEY_HOME:     seq = "\033[H"; break;
+                    case KEY_END:      seq = "\033[F"; break;
+                    case KEY_PAGEUP:   seq = "\033[5~"; break;
+                    case KEY_PAGEDOWN: seq = "\033[6~"; break;
+                    case KEY_INSERT:   seq = "\033[2~"; break;
+                    default:           seq = NULL; break;
+                }
+                if (seq) {
+                    while (*seq && count < max_chars) {
+                        out_chars[count++] = *seq++;
+                    }
+                } else {
+                    int ch = virtio_input_translate_key(ev->code, dev->shift_down, dev->ctrl_down, dev->caps_lock);
+                    if (ch >= 0 && count < max_chars) {
+                        out_chars[count++] = (char)ch;
+                    }
                 }
             }
         }

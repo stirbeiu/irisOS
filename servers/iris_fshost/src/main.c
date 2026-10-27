@@ -80,7 +80,7 @@ typedef ino_t ufs_ino_t;
  * Constants & Structures
  * ============================================================================== */
 
-#define MAX_FSHOST_CLIENTS 8
+#define MAX_FSHOST_CLIENTS 32
 #define MAX_OPEN_FILES     64
 
 #define DEV_ID_SYSTEM_A    1
@@ -137,6 +137,7 @@ typedef struct gpt_part_info {
 
 typedef enum vfs_mount_id {
     VFS_MOUNT_NONE = 0,
+    VFS_MOUNT_ROOT,
     VFS_MOUNT_SYSTEM_RO,
     VFS_MOUNT_DATA_RW,
 } vfs_mount_id_t;
@@ -579,6 +580,297 @@ static zx_status_t ufs2_create_file(struct uufsd* disk, ufs_ino_t dir_ino,
     return ZX_OK;
 }
 
+/**
+ * @brief Create a new directory in `parent_ino` on a writable UFS2 volume.
+ */
+static zx_status_t ufs2_mkdir(struct uufsd* disk, ufs_ino_t parent_ino,
+                              const char* name, uint32_t mode, ufs_ino_t* out_ino) {
+    struct fs* fs = &disk->d_fs;
+    if (cgread1(disk, 0) <= 0) {
+        return ZX_ERR_IO;
+    }
+    struct cg* cg = &disk->d_cg;
+    uint8_t* inosused = cg_inosused(cg);
+
+    ufs_ino_t new_ino = 0;
+    for (uint32_t ino = 10; ino < (uint32_t)fs->fs_ipg; ++ino) {
+        if (isclr(inosused, ino)) {
+            setbit(inosused, ino);
+            cg->cg_cs.cs_nifree--;
+            cg->cg_cs.cs_ndir++;
+            fs->fs_cstotal.cs_nifree--;
+            fs->fs_cstotal.cs_ndir++;
+            new_ino = (ufs_ino_t)ino;
+            break;
+        }
+    }
+    if (new_ino == 0) {
+        return ZX_ERR_NO_SPACE;
+    }
+
+    ufs2_daddr_t new_block = 0;
+    zx_status_t st = ufs2_alloc_block(disk, &new_block);
+    if (st != ZX_OK) {
+        clrbit(inosused, new_ino);
+        cg->cg_cs.cs_nifree++;
+        cg->cg_cs.cs_ndir--;
+        fs->fs_cstotal.cs_nifree++;
+        fs->fs_cstotal.cs_ndir++;
+        cgwrite1(disk, 0);
+        return st;
+    }
+
+    if (cgwrite1(disk, 0) == -1 || sbwrite(disk, 0) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    /* Initialize new directory block with "." and ".." */
+    uint8_t dir_blk[4096] __attribute__((aligned(8)));
+    memset(dir_blk, 0, sizeof(dir_blk));
+
+    struct direct* de_dot = (struct direct*)dir_blk;
+    de_dot->d_ino    = (uint32_t)new_ino;
+    de_dot->d_reclen = 12; /* DIRECTSIZ(1) */
+    de_dot->d_type   = DT_DIR;
+    de_dot->d_namlen = 1;
+    de_dot->d_name[0] = '.';
+    de_dot->d_name[1] = '\0';
+
+    struct direct* de_dotdot = (struct direct*)(dir_blk + 12);
+    de_dotdot->d_ino    = (uint32_t)parent_ino;
+    de_dotdot->d_reclen = (uint16_t)(DIRBLKSIZ - 12);
+    de_dotdot->d_type   = DT_DIR;
+    de_dotdot->d_namlen = 2;
+    de_dotdot->d_name[0] = '.';
+    de_dotdot->d_name[1] = '.';
+    de_dotdot->d_name[2] = '\0';
+
+    if (bwrite(disk, fsbtodb(fs, new_block), dir_blk, sizeof(dir_blk)) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    /* Initialize new directory dinode */
+    union dinodep dp;
+    if (getinode(disk, &dp, new_ino) == -1) {
+        return ZX_ERR_IO;
+    }
+    memset(dp.dp2, 0, sizeof(struct ufs2_dinode));
+    dp.dp2->di_mode    = (uint16_t)(IFDIR | (mode ? (mode & 0777u) : 0755u));
+    dp.dp2->di_nlink   = 2;
+    dp.dp2->di_size    = 4096;
+    dp.dp2->di_blocks  = btodb(4096);
+    dp.dp2->di_blksize = 4096;
+    dp.dp2->di_db[0]   = new_block;
+    if (putinode(disk) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    /* Insert new directory entry into parent directory */
+    if (getinode(disk, &dp, parent_ino) == -1) {
+        return ZX_ERR_IO;
+    }
+    ufs2_daddr_t parent_frag = dp.dp2->di_db[0];
+    if (parent_frag == 0) {
+        return ZX_ERR_IO;
+    }
+
+    uint8_t pblk_buf[4096] __attribute__((aligned(8)));
+    if (bread(disk, fsbtodb(fs, parent_frag), pblk_buf, sizeof(pblk_buf)) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    size_t name_len = strlen(name);
+    uint16_t needed_len = (uint16_t)DIRECTSIZ(name_len);
+    bool inserted = false;
+
+    for (uint32_t chunk = 0; chunk < sizeof(pblk_buf) && !inserted; chunk += DIRBLKSIZ) {
+        uint32_t off = 0;
+        while (off < DIRBLKSIZ) {
+            struct direct* de = (struct direct*)(pblk_buf + chunk + off);
+            if (de->d_reclen == 0) {
+                break;
+            }
+            uint16_t actual_len = (de->d_ino == 0) ? 0 : (uint16_t)DIRECTSIZ(de->d_namlen);
+            if (de->d_reclen - actual_len >= needed_len) {
+                if (de->d_ino == 0) {
+                    de->d_ino    = (uint32_t)new_ino;
+                    de->d_type   = DT_DIR;
+                    de->d_namlen = (uint8_t)name_len;
+                    memcpy(de->d_name, name, name_len + 1);
+                } else {
+                    uint16_t rem_len = de->d_reclen - actual_len;
+                    de->d_reclen = actual_len;
+                    struct direct* next_de = (struct direct*)((uint8_t*)de + actual_len);
+                    next_de->d_ino    = (uint32_t)new_ino;
+                    next_de->d_reclen = rem_len;
+                    next_de->d_type   = DT_DIR;
+                    next_de->d_namlen = (uint8_t)name_len;
+                    memcpy(next_de->d_name, name, name_len + 1);
+                }
+                inserted = true;
+                break;
+            }
+            off += de->d_reclen;
+        }
+    }
+
+    if (!inserted) {
+        return ZX_ERR_NO_SPACE;
+    }
+
+    if (bwrite(disk, fsbtodb(fs, parent_frag), pblk_buf, sizeof(pblk_buf)) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    /* Increment parent inode's di_nlink for ".." */
+    if (getinode(disk, &dp, parent_ino) == -1) {
+        return ZX_ERR_IO;
+    }
+    dp.dp2->di_nlink++;
+    if (putinode(disk) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    if (out_ino) *out_ino = new_ino;
+    return ZX_OK;
+}
+
+/**
+ * @brief Unlink/delete a file or directory entry from parent_ino on a writable UFS2 volume.
+ */
+static zx_status_t ufs2_unlink(struct uufsd* disk, ufs_ino_t parent_ino,
+                               const char* name, ufs_ino_t target_ino) {
+    struct fs* fs = &disk->d_fs;
+
+    /* 1. Remove directory entry from parent_ino */
+    union dinodep dp;
+    if (getinode(disk, &dp, parent_ino) == -1) {
+        return ZX_ERR_IO;
+    }
+    ufs2_daddr_t parent_frag = dp.dp2->di_db[0];
+    if (parent_frag == 0) {
+        return ZX_ERR_IO;
+    }
+
+    uint8_t pblk_buf[4096] __attribute__((aligned(8)));
+    if (bread(disk, fsbtodb(fs, parent_frag), pblk_buf, sizeof(pblk_buf)) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    size_t name_len = strlen(name);
+    bool found = false;
+
+    for (uint32_t chunk = 0; chunk < sizeof(pblk_buf) && !found; chunk += DIRBLKSIZ) {
+        uint32_t off = 0;
+        struct direct* prev_de = NULL;
+        while (off < DIRBLKSIZ) {
+            struct direct* de = (struct direct*)(pblk_buf + chunk + off);
+            if (de->d_reclen == 0) {
+                break;
+            }
+            if (de->d_ino == (uint32_t)target_ino && de->d_namlen == name_len &&
+                memcmp(de->d_name, name, name_len) == 0) {
+                if (prev_de != NULL) {
+                    prev_de->d_reclen += de->d_reclen;
+                } else {
+                    de->d_ino = 0;
+                }
+                found = true;
+                break;
+            }
+            prev_de = de;
+            off += de->d_reclen;
+        }
+    }
+
+    if (!found) {
+        return ZX_ERR_NOT_FOUND;
+    }
+
+    if (bwrite(disk, fsbtodb(fs, parent_frag), pblk_buf, sizeof(pblk_buf)) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    /* 2. Decrement target dinode link count */
+    if (getinode(disk, &dp, target_ino) == -1) {
+        return ZX_ERR_IO;
+    }
+    struct ufs2_dinode target_di = *dp.dp2;
+    if (target_di.di_nlink > 0) {
+        target_di.di_nlink--;
+    }
+
+    bool is_dir = ((target_di.di_mode & IFMT) == IFDIR);
+    if (is_dir) {
+        if (getinode(disk, &dp, parent_ino) == 0 && dp.dp2->di_nlink > 2) {
+            dp.dp2->di_nlink--;
+            putinode(disk);
+        }
+    }
+
+    if (target_di.di_nlink == 0) {
+        if (cgread1(disk, 0) > 0) {
+            struct cg* cg = &disk->d_cg;
+            uint8_t* blksfree = cg_blksfree(cg);
+            uint8_t* inosused = cg_inosused(cg);
+
+            for (int b = 0; b < UFS_NDADDR; ++b) {
+                ufs2_daddr_t frag = target_di.di_db[b];
+                if (frag != 0) {
+                    for (int32_t f = 0; f < 8; ++f) {
+                        setbit(blksfree, frag + f);
+                    }
+                    cg->cg_cs.cs_nbfree++;
+                    fs->fs_cstotal.cs_nbfree++;
+                    target_di.di_db[b] = 0;
+                }
+            }
+            if (target_di.di_ib[0] != 0) {
+                ufs2_daddr_t iblk[512];
+                if (bread(disk, fsbtodb(fs, target_di.di_ib[0]), (char*)iblk, 4096) != -1) {
+                    for (int ind = 0; ind < 512; ++ind) {
+                        if (iblk[ind] != 0) {
+                            for (int32_t f = 0; f < 8; ++f) {
+                                setbit(blksfree, iblk[ind] + f);
+                            }
+                            cg->cg_cs.cs_nbfree++;
+                            fs->fs_cstotal.cs_nbfree++;
+                        }
+                    }
+                }
+                for (int32_t f = 0; f < 8; ++f) {
+                    setbit(blksfree, target_di.di_ib[0] + f);
+                }
+                cg->cg_cs.cs_nbfree++;
+                fs->fs_cstotal.cs_nbfree++;
+                target_di.di_ib[0] = 0;
+            }
+
+            clrbit(inosused, target_ino);
+            cg->cg_cs.cs_nifree++;
+            fs->fs_cstotal.cs_nifree--;
+            if (is_dir) {
+                cg->cg_cs.cs_ndir--;
+                fs->fs_cstotal.cs_ndir--;
+            }
+
+            cgwrite1(disk, 0);
+            sbwrite(disk, 0);
+        }
+        memset(&target_di, 0, sizeof(target_di));
+    }
+
+    if (getinode(disk, &dp, target_ino) == -1) {
+        return ZX_ERR_IO;
+    }
+    *dp.dp2 = target_di;
+    if (putinode(disk) == -1) {
+        return ZX_ERR_IO;
+    }
+
+    return ZX_OK;
+}
+
 /* ==============================================================================
  * VFS Symlink Expansion & Path Resolution
  * ============================================================================== */
@@ -739,6 +1031,42 @@ static void handle_fs_open(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
                                       leaf, sizeof(leaf), &target_ino);
 
     bool wants_write = (req->flags & VFS_ANY_WRITE_MASK) != 0;
+
+    /* Handle virtual root directory */
+    if (strcmp(safe_path, "/") == 0 || safe_path[0] == '\0') {
+        if (wants_write) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, IRIS_ERR_READ_ONLY, 0);
+            return;
+        }
+        uint32_t slot = 0;
+        for (uint32_t i = 1; i < MAX_OPEN_FILES; ++i) {
+            if (!g_open_files[i].in_use) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot == 0) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NO_RESOURCES, 0);
+            return;
+        }
+        g_open_files[slot].in_use   = true;
+        g_open_files[slot].mount_id = VFS_MOUNT_ROOT;
+        g_open_files[slot].writable = false;
+        g_open_files[slot].ino      = 2;
+        g_open_files[slot].flags    = req->flags;
+        g_open_files[slot].offset   = 0;
+        g_open_files[slot].size     = 4096;
+        g_open_files[slot].is_dir   = true;
+
+        iris_fs_open_resp_t* resp = (iris_fs_open_resp_t*)rep_payload;
+        resp->vfs_handle = slot;
+        resp->is_dir     = 1u;
+        resp->size       = 4096;
+
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_open_resp_t));
+        *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_open_resp_t);
+        return;
+    }
 
     /* Enforce EROFS (IRIS_ERR_READ_ONLY) on /System write/create/truncate attempts */
     if (mount_id == VFS_MOUNT_SYSTEM_RO && wants_write) {
@@ -955,25 +1283,68 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
             chunk = req->count - bytes_written;
         }
 
-        if (lbn >= UFS_NDADDR) {
-            break;
-        }
+        ufs2_daddr_t frag = 0;
+        if (lbn < UFS_NDADDR) {
+            frag = di.di_db[lbn];
+            if (frag == 0) {
+                zx_status_t st = ufs2_alloc_block(disk, &frag);
+                if (st != ZX_OK) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+                    return;
+                }
+                di.di_db[lbn]  = frag;
+                di.di_blocks  += btodb(4096);
+                memset(blk_buf, 0, sizeof(blk_buf));
+            } else if (blk_off != 0 || chunk < 4096u) {
+                if (bread(disk, fsbtodb(fs, frag), blk_buf, 4096) == -1) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                    return;
+                }
+            }
+        } else if (lbn < UFS_NDADDR + 512) {
+            uint32_t ind_idx = lbn - UFS_NDADDR;
+            ufs2_daddr_t iblk[512];
+            if (di.di_ib[0] == 0) {
+                zx_status_t st = ufs2_alloc_block(disk, &di.di_ib[0]);
+                if (st != ZX_OK) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+                    return;
+                }
+                di.di_blocks += btodb(4096);
+                memset(iblk, 0, sizeof(iblk));
+                if (bwrite(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) == -1) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                    return;
+                }
+            } else {
+                if (bread(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) == -1) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                    return;
+                }
+            }
 
-        ufs2_daddr_t frag = di.di_db[lbn];
-        if (frag == 0) {
-            zx_status_t st = ufs2_alloc_block(disk, &frag);
-            if (st != ZX_OK) {
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
-                return;
+            frag = iblk[ind_idx];
+            if (frag == 0) {
+                zx_status_t st = ufs2_alloc_block(disk, &frag);
+                if (st != ZX_OK) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+                    return;
+                }
+                iblk[ind_idx] = frag;
+                di.di_blocks += btodb(4096);
+                if (bwrite(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) == -1) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                    return;
+                }
+                memset(blk_buf, 0, sizeof(blk_buf));
+            } else if (blk_off != 0 || chunk < 4096u) {
+                if (bread(disk, fsbtodb(fs, frag), blk_buf, 4096) == -1) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                    return;
+                }
             }
-            di.di_db[lbn]  = frag;
-            di.di_blocks  += btodb(4096);
-            memset(blk_buf, 0, sizeof(blk_buf));
-        } else if (blk_off != 0 || chunk < 4096u) {
-            if (bread(disk, fsbtodb(fs, frag), blk_buf, 4096) == -1) {
-                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
-                return;
-            }
+        } else {
+            break;
         }
 
         memcpy(blk_buf + blk_off, src_data + bytes_written, chunk);
@@ -1079,6 +1450,17 @@ static void handle_fs_stat(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
             return;
         }
         vfs_open_file_t* f = &g_open_files[req->vfs_handle];
+        if (f->mount_id == VFS_MOUNT_ROOT) {
+            iris_fs_stat_resp_t* resp = (iris_fs_stat_resp_t*)rep_payload;
+            resp->ino       = 2;
+            resp->size      = 4096;
+            resp->mode      = 0040755; /* S_IFDIR | 0755 */
+            resp->nlink     = 4;
+            resp->mtime_sec = 0;
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_stat_resp_t));
+            *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_stat_resp_t);
+            return;
+        }
         disk       = (f->mount_id == VFS_MOUNT_SYSTEM_RO) ? &g_ufs_system : &g_ufs_data;
         target_ino = f->ino;
     } else {
@@ -1112,6 +1494,299 @@ static void handle_fs_stat(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
 
     iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_stat_resp_t));
     *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_stat_resp_t);
+}
+
+static void handle_fs_readdir(const iris_msg_hdr_t* req_hdr, const uint8_t* payload,
+                              iris_msg_hdr_t* rep_hdr, uint8_t* rep_payload, uint32_t* out_rep_len) {
+    if (req_hdr->payload_len < sizeof(iris_fs_readdir_req_t)) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+        return;
+    }
+    const iris_fs_readdir_req_t* req = (const iris_fs_readdir_req_t*)payload;
+    if (req->vfs_handle == 0 || req->vfs_handle >= MAX_OPEN_FILES ||
+        !g_open_files[req->vfs_handle].in_use) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BAD_HANDLE, 0);
+        return;
+    }
+
+    vfs_open_file_t* f = &g_open_files[req->vfs_handle];
+    if (!f->is_dir) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_DIR, 0);
+        return;
+    }
+
+    uint32_t max_bytes = req->max_bytes;
+    if (max_bytes > IRIS_IPC_MAX_PAYLOAD) {
+        max_bytes = IRIS_IPC_MAX_PAYLOAD;
+    }
+
+    uint32_t bytes_packed = 0;
+    uint64_t current_entry_index = 0;
+
+    if (f->mount_id == VFS_MOUNT_ROOT) {
+        static const struct {
+            const char* name;
+            uint8_t type;
+            uint64_t ino;
+        } root_entries[] = {
+            { ".",            DT_DIR, 2 },
+            { "..",           DT_DIR, 2 },
+            { "System",       DT_DIR, 2 },
+            { "Users",        DT_DIR, 2 },
+            { "Applications", DT_DIR, 2 },
+            { "bin",          DT_LNK, 2 },
+            { "lib",          DT_LNK, 2 },
+        };
+        uint64_t total_root = sizeof(root_entries) / sizeof(root_entries[0]);
+
+        while (f->offset < total_root) {
+            const char* name = root_entries[f->offset].name;
+            size_t name_len = strlen(name);
+            uint16_t reclen = (uint16_t)((19 + name_len + 1 + 7) & ~7);
+
+            if (bytes_packed + reclen > max_bytes) {
+                break;
+            }
+
+            iris_dirent_t* dent = (iris_dirent_t*)(rep_payload + bytes_packed);
+            dent->d_ino    = root_entries[f->offset].ino;
+            dent->d_off    = (uint64_t)(f->offset + 1);
+            dent->d_reclen = reclen;
+            dent->d_type   = root_entries[f->offset].type;
+            memcpy(dent->d_name, name, name_len + 1);
+
+            bytes_packed += reclen;
+            f->offset++;
+        }
+
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, bytes_packed);
+        *out_rep_len = sizeof(iris_msg_hdr_t) + bytes_packed;
+        return;
+    }
+
+    struct uufsd* disk = (f->mount_id == VFS_MOUNT_SYSTEM_RO) ? &g_ufs_system : &g_ufs_data;
+    struct fs* fs = &disk->d_fs;
+
+    union dinodep dp;
+    if (getinode(disk, &dp, f->ino) == -1) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+        return;
+    }
+    struct ufs2_dinode dir_di = *dp.dp2;
+
+    uint8_t blk_buf[4096] __attribute__((aligned(8)));
+
+    for (int b = 0; b < UFS_NDADDR; ++b) {
+        ufs2_daddr_t frag = dir_di.di_db[b];
+        if (frag == 0) {
+            continue;
+        }
+        if (bread(disk, fsbtodb(fs, frag), blk_buf, fs->fs_bsize) == -1) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+            return;
+        }
+
+        for (uint32_t chunk = 0; chunk < (uint32_t)fs->fs_bsize; chunk += DIRBLKSIZ) {
+            uint32_t off = 0;
+            while (off < DIRBLKSIZ) {
+                const struct direct* de = (const struct direct*)(blk_buf + chunk + off);
+                if (de->d_reclen == 0) {
+                    break;
+                }
+                if (de->d_ino != 0) {
+                    if (current_entry_index >= f->offset) {
+                        uint16_t reclen = (uint16_t)((19 + de->d_namlen + 1 + 7) & ~7);
+                        if (bytes_packed + reclen > max_bytes) {
+                            goto done_readdir;
+                        }
+
+                        iris_dirent_t* dent = (iris_dirent_t*)(rep_payload + bytes_packed);
+                        dent->d_ino    = (uint64_t)de->d_ino;
+                        dent->d_off    = (uint64_t)(current_entry_index + 1);
+                        dent->d_reclen = reclen;
+                        dent->d_type   = de->d_type;
+                        memcpy(dent->d_name, de->d_name, de->d_namlen);
+                        dent->d_name[de->d_namlen] = '\0';
+
+                        bytes_packed += reclen;
+                        f->offset++;
+                    }
+                    current_entry_index++;
+                }
+                off += de->d_reclen;
+            }
+        }
+    }
+
+done_readdir:
+    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, bytes_packed);
+    *out_rep_len = sizeof(iris_msg_hdr_t) + bytes_packed;
+}
+
+static void handle_fs_mkdir(const iris_msg_hdr_t* req_hdr, const uint8_t* payload,
+                            iris_msg_hdr_t* rep_hdr) {
+    if (req_hdr->payload_len < sizeof(iris_fs_mkdir_req_t)) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+        return;
+    }
+    const iris_fs_mkdir_req_t* req = (const iris_fs_mkdir_req_t*)payload;
+    char safe_path[256];
+    memcpy(safe_path, req->path, sizeof(safe_path) - 1);
+    safe_path[sizeof(safe_path) - 1] = '\0';
+
+    vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
+    struct uufsd* disk = NULL;
+    ufs_ino_t parent_ino = 0;
+    ufs_ino_t target_ino = 0;
+    char leaf[128] = {0};
+
+    zx_status_t st = resolve_vfs_path(safe_path, &mount_id, &disk, &parent_ino,
+                                      leaf, sizeof(leaf), &target_ino);
+
+    if (mount_id == VFS_MOUNT_SYSTEM_RO) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, IRIS_ERR_READ_ONLY, 0);
+        return;
+    }
+    if (st == ZX_OK) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ALREADY_EXISTS, 0);
+        return;
+    }
+    if (st != ZX_ERR_NOT_FOUND || mount_id != VFS_MOUNT_DATA_RW || leaf[0] == '\0') {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+        return;
+    }
+
+    st = ufs2_mkdir(disk, parent_ino, leaf, req->mode, &target_ino);
+    iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+}
+
+static void handle_fs_unlink(const iris_msg_hdr_t* req_hdr, const uint8_t* payload,
+                             iris_msg_hdr_t* rep_hdr) {
+    if (req_hdr->payload_len < sizeof(iris_fs_unlink_req_t)) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+        return;
+    }
+    const iris_fs_unlink_req_t* req = (const iris_fs_unlink_req_t*)payload;
+    char safe_path[256];
+    memcpy(safe_path, req->path, sizeof(safe_path) - 1);
+    safe_path[sizeof(safe_path) - 1] = '\0';
+
+    vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
+    struct uufsd* disk = NULL;
+    ufs_ino_t parent_ino = 0;
+    ufs_ino_t target_ino = 0;
+    char leaf[128] = {0};
+
+    zx_status_t st = resolve_vfs_path(safe_path, &mount_id, &disk, &parent_ino,
+                                      leaf, sizeof(leaf), &target_ino);
+    if (st != ZX_OK) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+        return;
+    }
+
+    if (mount_id == VFS_MOUNT_SYSTEM_RO) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, IRIS_ERR_READ_ONLY, 0);
+        return;
+    }
+
+    st = ufs2_unlink(disk, parent_ino, leaf, target_ino);
+    iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+}
+
+static void handle_fs_readlink(const iris_msg_hdr_t* req_hdr, const uint8_t* payload,
+                               iris_msg_hdr_t* rep_hdr, uint8_t* rep_payload, uint32_t* out_rep_len) {
+    if (req_hdr->payload_len < sizeof(iris_fs_readlink_req_t)) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+        return;
+    }
+    const iris_fs_readlink_req_t* req = (const iris_fs_readlink_req_t*)payload;
+    char safe_path[256];
+    memcpy(safe_path, req->path, sizeof(safe_path) - 1);
+    safe_path[sizeof(safe_path) - 1] = '\0';
+
+    iris_fs_readlink_resp_t* resp = (iris_fs_readlink_resp_t*)rep_payload;
+    memset(resp, 0, sizeof(*resp));
+
+    if (strcmp(safe_path, "/bin") == 0) {
+        const char* target = "/System/Bin";
+        resp->target_len = (uint32_t)strlen(target);
+        memcpy(resp->target, target, resp->target_len + 1);
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(*resp));
+        *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(*resp);
+        return;
+    }
+    if (strcmp(safe_path, "/lib") == 0) {
+        const char* target = "/System/Libraries";
+        resp->target_len = (uint32_t)strlen(target);
+        memcpy(resp->target, target, resp->target_len + 1);
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(*resp));
+        *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(*resp);
+        return;
+    }
+
+    char path_copy[256];
+    snprintf(path_copy, sizeof(path_copy), "%s", safe_path);
+    char* last_slash = strrchr(path_copy, '/');
+    if (!last_slash) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+        return;
+    }
+    *last_slash = '\0';
+    const char* leaf_name = last_slash + 1;
+    const char* parent_path = (last_slash == path_copy) ? "/" : path_copy;
+
+    vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
+    struct uufsd* disk = NULL;
+    ufs_ino_t parent_ino = 0;
+    ufs_ino_t target_ino = 0;
+    char leaf[128] = {0};
+
+    zx_status_t st = resolve_vfs_path(parent_path, &mount_id, &disk, &parent_ino,
+                                      leaf, sizeof(leaf), &target_ino);
+    if (st != ZX_OK) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+        return;
+    }
+
+    ufs_ino_t sym_ino = 0;
+    st = ufs2_dir_lookup(disk, target_ino, leaf_name, &sym_ino);
+    if (st != ZX_OK) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+        return;
+    }
+
+    union dinodep dp;
+    if (getinode(disk, &dp, sym_ino) == -1) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+        return;
+    }
+
+    if ((dp.dp2->di_mode & IFMT) != IFLNK) {
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_FILE, 0);
+        return;
+    }
+
+    uint64_t sym_len = dp.dp2->di_size;
+    if (sym_len >= sizeof(resp->target)) {
+        sym_len = sizeof(resp->target) - 1;
+    }
+
+    if (sym_len < 60) {
+        memcpy(resp->target, dp.dp2->di_db, sym_len);
+    } else {
+        ufs2_daddr_t frag = dp.dp2->di_db[0];
+        uint8_t blk[4096];
+        if (bread(disk, fsbtodb(&disk->d_fs, frag), blk, sizeof(blk)) == -1) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+            return;
+        }
+        memcpy(resp->target, blk, sym_len);
+    }
+    resp->target[sym_len] = '\0';
+    resp->target_len = (uint32_t)sym_len;
+
+    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(*resp));
+    *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(*resp);
 }
 
 /* ==============================================================================
@@ -1154,6 +1829,48 @@ static void dispatch_fs_message(zx_handle_t ch, const uint8_t* req_buf, uint32_t
         case IRIS_FS_OP_STAT:
             handle_fs_stat(req_hdr, req_payload, rep_hdr, rep_payload, &rep_total_len);
             break;
+        case IRIS_FS_OP_READDIR:
+            handle_fs_readdir(req_hdr, req_payload, rep_hdr, rep_payload, &rep_total_len);
+            break;
+        case IRIS_FS_OP_MKDIR:
+            handle_fs_mkdir(req_hdr, req_payload, rep_hdr);
+            break;
+        case IRIS_FS_OP_UNLINK:
+            handle_fs_unlink(req_hdr, req_payload, rep_hdr);
+            break;
+        case IRIS_FS_OP_READLINK:
+            handle_fs_readlink(req_hdr, req_payload, rep_hdr, rep_payload, &rep_total_len);
+            break;
+        case IRIS_FS_OP_OPEN_CLIENT: {
+            zx_handle_t srv = ZX_HANDLE_INVALID;
+            zx_handle_t cli = ZX_HANDLE_INVALID;
+            zx_status_t cr_st = zx_channel_create(0, &srv, &cli);
+
+            int slot = -1;
+            for (uint32_t i = 0; i < g_num_clients; i++) {
+                if (g_client_channels[i] == ZX_HANDLE_INVALID) {
+                    slot = (int)i;
+                    break;
+                }
+            }
+            if (slot == -1 && g_num_clients < MAX_FSHOST_CLIENTS) {
+                slot = (int)g_num_clients++;
+            }
+
+            if (cr_st == ZX_OK && slot != -1) {
+                g_client_channels[slot] = srv;
+                iris_msg_hdr_t rep;
+                iris_msg_hdr_init_reply(&rep, req_hdr, ZX_OK, 0);
+                zx_channel_write(ch, 0, &rep, sizeof(rep), &cli, 1);
+            } else {
+                if (srv != ZX_HANDLE_INVALID) zx_handle_close(srv);
+                if (cli != ZX_HANDLE_INVALID) zx_handle_close(cli);
+                iris_msg_hdr_t rep;
+                iris_msg_hdr_init_reply(&rep, req_hdr, ZX_ERR_NO_RESOURCES, 0);
+                zx_channel_write(ch, 0, &rep, sizeof(rep), NULL, 0);
+            }
+            return;
+        }
         default:
             iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
             break;
@@ -1244,6 +1961,17 @@ int main(int argc, char* argv[]) {
 
     /* 4. Serve IRIS_PROTO_FS requests */
     run_vfs_server();
+
+    /* 5. Clean teardown: close open disk channels and log */
+    if (g_blk_channel != ZX_HANDLE_INVALID) {
+        zx_handle_close(g_blk_channel);
+        g_blk_channel = ZX_HANDLE_INVALID;
+    }
+    if (g_crypt_channel != ZX_HANDLE_INVALID) {
+        zx_handle_close(g_crypt_channel);
+        g_crypt_channel = ZX_HANDLE_INVALID;
+    }
+    log_status(STATUS_OKAY, "iris_fshost", "Cleanly unmounted filesystems and exited.");
 
     return 0;
 }

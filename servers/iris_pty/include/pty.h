@@ -23,7 +23,7 @@ extern "C" {
 
 #define PTY_LINE_BUF_MAX   4096
 #define PTY_READY_BUF_MAX  16384
-#define PTY_MAX_CLIENTS    16
+#define PTY_MAX_CLIENTS    32
 
 /**
  * @brief Terminal line discipline state.

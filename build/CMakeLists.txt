@@ -406,10 +406,18 @@ set(CRT1_OBJ "${MLIBC_DIR}/sysdeps/iris/crt1.o")
 set(CRTI_OBJ "${MLIBC_DIR}/sysdeps/iris/crti.o")
 set(CRTN_OBJ "${MLIBC_DIR}/sysdeps/iris/crtn.o")
 
+file(GLOB_RECURSE MLIBC_SYSDEPS_DEPS
+    "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/*.cpp"
+    "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/*.c"
+    "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/*.S"
+    "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/*.h"
+    "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/*.hpp"
+)
+
 add_custom_command(
     OUTPUT "${MLIBC_LIBC}" "${CRT1_OBJ}" "${CRTI_OBJ}" "${CRTN_OBJ}"
     COMMAND bash "${IRIS_ROOT}/scripts/build_mlibc.sh" "${CMAKE_SYSTEM_PROCESSOR}" "${CMAKE_BINARY_DIR}"
-    DEPENDS zircon_static iris_static compiler_rt_target
+    DEPENDS zircon_static iris_static compiler_rt_target ${MLIBC_SYSDEPS_DEPS}
     COMMENT "Building mlibc C library and CRT objects (${CMAKE_SYSTEM_PROCESSOR})"
     VERBATIM
 )
@@ -619,6 +627,11 @@ endfunction()
 # 1. Interactive Test Suite
 iris_add_userland_executable(its_irisOS
     SOURCES "${IRIS_ROOT}/apps/tests/its_irisOS/main.c"
+)
+
+# 1b. Persistent interactive shell launcher (boot mode "shell")
+iris_add_userland_executable(iris_shell
+    SOURCES "${IRIS_ROOT}/apps/sysutils/iris_shell/main.c"
 )
 
 # 2. VirtIO Block Driver Daemon

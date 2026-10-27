@@ -710,6 +710,23 @@ diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream/zircon/kernel/lib
  
  static const struct gfx_font* font = &font_9x16;
  
++static uint last_cursor_x = 0;
++static uint last_cursor_y = 0;
++
++static void gfxconsole_draw_cursor(void) {
++    gfx_surface* tgt = gfxconsole.hw_surface ? gfxconsole.hw_surface : gfxconsole.surface;
++    if (!tgt || !font) return;
++    if (gfxconsole.x < gfxconsole.columns && gfxconsole.y < gfxconsole.rows) {
++        uint32_t cursor_color = gfxconsole.front_color ? gfxconsole.front_color : 0xffffffff;
++        gfx_fillrect(tgt,
++                     gfxconsole.x * font->width,
++                     gfxconsole.y * font->height,
++                     font->width,
++                     font->height,
++                     cursor_color);
++    }
++}
++
 +static void apply_sgr(uint32_t code) {
 +    switch (code) {
 +    case 0:
@@ -792,3 +809,87 @@ diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream/zircon/kernel/lib
              state = NORMAL;
          }
      }
++@@ -87,6 +130,7 @@ static bool gfxconsole_putc(char c) {
++         case '
+':
++             gfxconsole.y++;
++             inval = 1;
++             break;
++         case '':
+++        case 0x7F:
++             // back up one character unless we're at the left side
++             if (gfxconsole.x > 0) {
++                 gfxconsole.x--;
++@@ -190,14 +234,26 @@ static void gfxconsole_print_callback(pr
++     if (gfxconsole.surface != gfxconsole.hw_surface) {
++         if (refresh_full_screen) {
++             gfx_surface_blend(gfxconsole.hw_surface, gfxconsole.surface, 0, 0);
++         } else {
++-            gfxconsole.line.ptr = ((uint8_t*)gfxconsole.surface->ptr) +
++-                                  (gfxconsole.y * gfxconsole.linestride);
++-            gfx_surface_blend(gfxconsole.hw_surface, &gfxconsole.line,
++-                              0, gfxconsole.y * font->height);
+++            uint min_y = (last_cursor_y < gfxconsole.y) ? last_cursor_y : gfxconsole.y;
+++            uint max_y = (last_cursor_y > gfxconsole.y) ? last_cursor_y : gfxconsole.y;
+++            if (max_y >= gfxconsole.rows) max_y = gfxconsole.rows - 1;
+++            for (uint row = min_y; row <= max_y; row++) {
+++                gfxconsole.line.ptr = ((uint8_t*)gfxconsole.surface->ptr) +
+++                                      (row * gfxconsole.linestride);
+++                gfx_surface_blend(gfxconsole.hw_surface, &gfxconsole.line,
+++                                  0, row * font->height);
+++            }
++         }
+++        gfxconsole_draw_cursor();
+++        last_cursor_x = gfxconsole.x;
+++        last_cursor_y = gfxconsole.y;
++         gfx_flush(gfxconsole.hw_surface);
++     } else {
+++        gfxconsole_draw_cursor();
+++        last_cursor_x = gfxconsole.x;
+++        last_cursor_y = gfxconsole.y;
++         gfx_flush(gfxconsole.surface);
++     }
++@@ -257,4 +313,9 @@ static void gfxconsole_clear(bool crash_
++     gfx_fillrect(gfxconsole.surface, 0, 0, gfxconsole.surface->width, gfxconsole.surface->height,
++                  gfxconsole.back_color);
++     gfx_flush(gfxconsole.surface);
+++    if (gfxconsole.hw_surface && gfxconsole.surface != gfxconsole.hw_surface) {
+++        gfx_surface_blend(gfxconsole.hw_surface, gfxconsole.surface, 0, 0);
+++    }
+++    gfxconsole_draw_cursor();
+++    gfx_flush(gfxconsole.hw_surface ? gfxconsole.hw_surface : gfxconsole.surface);
++ }
+
+--- a/kernel/lib/debuglog/debuglog.cpp
++++ b/kernel/lib/debuglog/debuglog.cpp
+@@ -367,9 +367,14 @@ static int debuglog_dumper(void* arg) {
+             }
+             int n;
+-            n = snprintf(tmp, sizeof(tmp), "[%05d.%03d] %05" PRIu64 ".%05" PRIu64 "> %s\n",
+-                         (int)(rec.hdr.timestamp / ZX_SEC(1)),
+-                         (int)((rec.hdr.timestamp / ZX_MSEC(1)) % 1000ULL),
+-                         rec.hdr.pid, rec.hdr.tid, rec.data);
++            if (rec.hdr.pid != 0) {
++                // Userspace records (pid != 0) are rendered cleanly without dmesg prefixes
++                n = snprintf(tmp, sizeof(tmp), "%s\n", rec.data);
++            } else {
++                n = snprintf(tmp, sizeof(tmp), "[%05d.%03d] %05" PRIu64 ".%05" PRIu64 "> %s\n",
++                             (int)(rec.hdr.timestamp / ZX_SEC(1)),
++                             (int)((rec.hdr.timestamp / ZX_MSEC(1)) % 1000ULL),
++                             rec.hdr.pid, rec.hdr.tid, rec.data);
++            }
+             if (n > (int)sizeof(tmp)) {
+                 n = sizeof(tmp);
+             }
+
+--- a/kernel/syscalls/debug.cpp
++++ b/kernel/syscalls/debug.cpp
+@@ -82,6 +82,7 @@ zx_status_t sys_debug_write(user_in_ptr<const char> ptr, size_t len) {
+     // This path to serial out arbitrates with the debug log
+     // drainer and/or kernel ll debug path to minimize interleaving
+     // of serial output between various sources
++    __kernel_console_write(buf, len);
+     dlog_serial_write(buf, len);
+
+     return ZX_OK;
+
