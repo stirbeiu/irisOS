@@ -984,7 +984,11 @@ static zx_status_t resolve_vfs_path(const char* raw_path,
 
         union dinodep ldp;
         if (getinode(disk, &ldp, found_ino) == 0 && (ldp.dp2->di_mode & IFMT) == IFLNK) {
-            const char* sym_target = (const char*)ldp.dp2->di_db;
+            /* Copy symlink target out of disk->d_inoblock before subsequent getinode() calls
+             * overwrite the shared inode block cache when found_ino and cur_ino reside in
+             * different 16-inode blocks (e.g. inodes >= 16 such as reboot, poweroff, help). */
+            char sym_target[128];
+            snprintf(sym_target, sizeof(sym_target), "%s", (const char*)ldp.dp2->di_db);
             if (sym_target[0] == '/') {
                 return resolve_vfs_path(sym_target, out_mount, out_disk, out_parent_ino,
                                         out_leaf, leaf_max, out_target_ino);
@@ -1149,6 +1153,11 @@ static void handle_fs_close(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
         !g_open_files[req->vfs_handle].in_use) {
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BAD_HANDLE, 0);
         return;
+    }
+    if (g_open_files[req->vfs_handle].writable) {
+        cgwrite1(&g_ufs_data, 0);
+        sbwrite(&g_ufs_data, 0);
+        iris_ufs_flush_device(1);
     }
     memset(&g_open_files[req->vfs_handle], 0, sizeof(vfs_open_file_t));
     iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
@@ -1372,6 +1381,11 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
         return;
     }
+
+    /* Persist dirty allocation bitmaps, superblock and flush underlying block device */
+    cgwrite1(disk, 0);
+    sbwrite(disk, 0);
+    iris_ufs_flush_device(1);
 
     iris_fs_write_resp_t* resp = (iris_fs_write_resp_t*)rep_payload;
     resp->bytes_written = bytes_written;
@@ -1840,6 +1854,13 @@ static void dispatch_fs_message(zx_handle_t ch, const uint8_t* req_buf, uint32_t
             break;
         case IRIS_FS_OP_READLINK:
             handle_fs_readlink(req_hdr, req_payload, rep_hdr, rep_payload, &rep_total_len);
+            break;
+        case IRIS_FS_OP_SYNC:
+            cgwrite1(&g_ufs_data, 0);
+            sbwrite(&g_ufs_data, 0);
+            iris_ufs_flush_device(1);
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
+            rep_total_len = sizeof(iris_msg_hdr_t);
             break;
         case IRIS_FS_OP_OPEN_CLIENT: {
             zx_handle_t srv = ZX_HANDLE_INVALID;

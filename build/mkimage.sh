@@ -57,15 +57,13 @@ esac
 
 echo "==> [mkimage] Packaging irisOS 4-partition GPT disk image for ${ARCH_NAME} (iris.mode=${IRIS_MODE})..."
 
-# 1. Ensure host tools (zbi, mkufs2) exist
+# 1. Ensure host tools (zbi, mkufs2) are up to date
 if [[ ! -x "${HOST_TOOLS}/zbi" ]]; then
     echo "==> Building host zbi utility..."
     make -C "${ROOT_DIR}/build" zbi
 fi
-if [[ ! -x "${HOST_TOOLS}/mkufs2" ]]; then
-    echo "==> Building host mkufs2 formatter..."
-    make -C "${ROOT_DIR}/build" mkufs2
-fi
+echo "==> Building host mkufs2 formatter (creates /System/Bin symlinks: reboot -> toybox, help -> toybox, poweroff -> toybox, etc.)..."
+make -C "${ROOT_DIR}/build" mkufs2
 
 # 2. Ensure iris_init, its_irisOS, virtio_blk, iris_crypt, iris_fshost, iris_pty, and toybox binaries exist
 if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/iris_shell" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" ]]; then
@@ -159,12 +157,20 @@ echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2
 "${HOST_TOOLS}/mkufs2" "${SYS_B_IMG}" 65536 system System_B "${BUILD_DIR}/bin/toybox"
 
 # 8. Construct Partition 4 (Data): 30 MB AES-256-XTS Encrypted UFS2 (61440 sectors)
+DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
 DATA_IMG="${IMAGES_DIR}/data_${ARCH_NAME}.crypt"
-echo "==> Formatting Partition 4 (Data): 30 MB AES-256-XTS Encrypted UFS2..."
-"${HOST_TOOLS}/mkufs2" "${DATA_IMG}" 61440 data-encrypted Data
+
+# If disk_${ARCH_NAME}.raw already exists with valid size, preserve existing Partition 4 (Data)
+RAW_SIZE=$(stat -f%z "${DISK_RAW}" 2>/dev/null || stat -c%s "${DISK_RAW}" 2>/dev/null || echo 0)
+if [[ -f "${DISK_RAW}" && ${RAW_SIZE} -ge 134217728 ]]; then
+    echo "==> Preserving existing Partition 4 (Data) from ${DISK_RAW}..."
+    dd if="${DISK_RAW}" of="${DATA_IMG}" bs=512 skip=198656 count=61440 status=none
+else
+    echo "==> Formatting Partition 4 (Data): 30 MB AES-256-XTS Encrypted UFS2..."
+    "${HOST_TOOLS}/mkufs2" "${DATA_IMG}" 61440 data-encrypted Data
+fi
 
 # 9. Assemble 128 MB 4-Partition GPT Raw Disk Image (262,144 sectors)
-DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
 echo "==> Assembling 128 MB 4-Partition GPT disk image (${DISK_RAW})..."
 python3 "${ROOT_DIR}/scripts/mk_gpt_disk.py" \
     "${DISK_RAW}" \

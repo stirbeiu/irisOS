@@ -2,7 +2,7 @@
 
 ## 1. Role & Objective
 You are assisting in the architecture and development of **irisOS**, a modern, 64-bit, microkernel-based operating system. 
-Always adhere strictly to the architectural rules, licensing boundaries, directory structure, and 6-phase roadmap defined below. Do not introduce legacy 32-bit/BIOS code, GPL contamination in shared libraries, or upper-layer Google Fuchsia frameworks.
+Always adhere strictly to the architectural rules, licensing boundaries, directory structure, and 7-phase roadmap defined below. Do not introduce legacy 32-bit/BIOS code, GPL contamination in shared libraries, or upper-layer Google Fuchsia frameworks.
 
 ---
 
@@ -243,6 +243,16 @@ irisOS/
 * Build the graphical terminal app running Toybox `sh` inside a desktop window.
 * **Milestone:** irisOS boots into a graphical desktop with a working mouse cursor and an interactive Terminal window.
 
+### Phase 7: Service Supervision
+
+* Implement service supervision, daemon health monitoring, and structured IPC lifecycle notifications in `iris_init`.
+* Wire `poweroff` and `reboot` commands to `iris_init` to coordinate orderly reverse-dependency service termination.
+* **Milestone:** System services shut down gracefully in reverse dependency order with DMA cleanly unpinned and encryption keys safely zeroed before ACPI hardware poweroff.
+
+### Note: Graceful Shutdown vs. Immediate ACPI Cut-Off
+- Current Behavior (Phase 5): `poweroff` and `reboot` invoke `sync()` followed directly by `zx_system_powerctl()`, immediately cutting ACPI power in QEMU.
+- Target Behavior (Phase 7): Wire `poweroff` to send an IPC request to `iris_init`. `iris_init` will broadcast a shutdown notice, terminate daemons in reverse dependency order (allowing `iris_crypt` to zero keys and `virtio_blk` to unpin DMA), and then trigger hardware poweroff.
+
 ---
 
 ## 8. Documentation & Progress Tracking Policy
@@ -262,7 +272,7 @@ To maintain code quality, ease onboarding, and ensure smooth collaboration betwe
   * Additional subsystem guides as components are implemented.
 
 ### 8.3 Live Progress Tracking (`PROGRESS.md`)
-* `PROGRESS.md` is a living document tracking the exact state of implementation across all 6 roadmap phases.
+* `PROGRESS.md` is a living document tracking the exact state of implementation across all roadmap phases.
 * **Immediate Update Rule:** Upon completing any verifiable step or milestone:
   1. Record what was implemented and added.
   2. Record the exact verification command(s) and test output proving it works.

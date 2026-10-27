@@ -24,6 +24,8 @@ extern "C" {
 #define PTY_LINE_BUF_MAX   4096
 #define PTY_READY_BUF_MAX  16384
 #define PTY_MAX_CLIENTS    32
+#define PTY_HIST_MAX       16
+#define PTY_HIST_LINE_MAX  256
 
 /**
  * @brief Terminal line discipline state.
@@ -34,9 +36,21 @@ typedef struct pty_discipline {
     uint32_t          pending_signal;
     bool              eof_pending;
 
-    /* Canonical editing line buffer */
+    /* Canonical editing line buffer & cursor position */
     char              line_buf[PTY_LINE_BUF_MAX];
     size_t            line_len;
+    size_t            line_cursor;
+
+    /* VT100 / ANSI escape sequence parser state for canonical editing */
+    uint8_t           esc_state;
+    char              esc_param;
+
+    /* Command history ring for Up/Down arrow keys in canonical mode */
+    char              history[PTY_HIST_MAX][PTY_HIST_LINE_MAX];
+    size_t            hist_count;
+    size_t            hist_view;
+    char              saved_line[PTY_HIST_LINE_MAX];
+    size_t            saved_len;
 
     /* Ready queue (characters ready for read()) */
     char              ready_buf[PTY_READY_BUF_MAX];

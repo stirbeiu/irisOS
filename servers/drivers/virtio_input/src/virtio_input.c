@@ -362,12 +362,13 @@ zx_status_t virtio_input_poll(virtio_input_dev_t* dev, char* out_chars, size_t m
                 /* Check for multi-byte VT100 / ANSI escape sequences (Arrow keys, navigation) */
                 const char* seq = NULL;
                 switch (ev->code) {
-                    case KEY_UP:       seq = "\033[A"; break;
-                    case KEY_DOWN:     seq = "\033[B"; break;
-                    case KEY_RIGHT:    seq = "\033[C"; break;
-                    case KEY_LEFT:     seq = "\033[D"; break;
-                    case KEY_HOME:     seq = "\033[H"; break;
-                    case KEY_END:      seq = "\033[F"; break;
+                    case KEY_UP:       seq = "\033[A"; break;  /* Code 103 */
+                    case KEY_DOWN:     seq = "\033[B"; break;  /* Code 108 */
+                    case KEY_RIGHT:    seq = "\033[C"; break;  /* Code 106 */
+                    case KEY_LEFT:     seq = "\033[D"; break;  /* Code 105 */
+                    case KEY_HOME:     seq = "\033[H"; break;  /* Code 102 */
+                    case KEY_END:      seq = "\033[F"; break;  /* Code 107 */
+                    case KEY_DELETE:   seq = "\033[3~"; break; /* Code 111 */
                     case KEY_PAGEUP:   seq = "\033[5~"; break;
                     case KEY_PAGEDOWN: seq = "\033[6~"; break;
                     case KEY_INSERT:   seq = "\033[2~"; break;

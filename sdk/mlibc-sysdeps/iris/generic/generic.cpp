@@ -3034,7 +3034,48 @@ int sys_readlinkat(int dirfd, const char *path, void *buffer, size_t max_size, s
     return sys_readlink(path, buffer, max_size, length);
 }
 
+void sys_sync() {
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch != ZX_HANDLE_INVALID) {
+        vfs_ipc_call(fs_ch, IRIS_FS_OP_SYNC, nullptr, 0, nullptr, 0, nullptr);
+    }
+}
+
+int sys_fsync(int fd) {
+    (void)fd;
+    sys_sync();
+    return 0;
+}
+
+int sys_fdatasync(int fd) {
+    (void)fd;
+    sys_sync();
+    return 0;
+}
+
+int sys_syncfs(int fd) {
+    (void)fd;
+    sys_sync();
+    return 0;
+}
+
 } // namespace mlibc
+
+extern "C" void sys_sync(void) {
+    mlibc::sys_sync();
+}
+
+extern "C" int sys_fsync(int fd) {
+    return mlibc::sys_fsync(fd);
+}
+
+extern "C" int sys_fdatasync(int fd) {
+    return mlibc::sys_fdatasync(fd);
+}
+
+extern "C" int sys_syncfs(int fd) {
+    return mlibc::sys_syncfs(fd);
+}
 
 extern "C" int sys_reboot(int cmd) {
     return mlibc::sys_reboot(cmd);

@@ -55,6 +55,16 @@ ssize_t iris_ufs_pread(int dev_id, void* buf, size_t size, off_t offset);
  */
 ssize_t iris_ufs_pwrite(int dev_id, const void* buf, size_t size, off_t offset);
 
+#ifndef IRIS_HOST_BUILD
+/**
+ * @brief Synchronously flush dirty cache buffers of an underlying block device to disk.
+ *
+ * @param dev_id Slot index of the block device.
+ * @return ZX_OK on success, or Zircon error code on failure.
+ */
+zx_status_t iris_ufs_flush_device(int dev_id);
+#endif
+
 /**
  * @brief Castagnoli CRC-32C calculation required by FreeBSD UFS2 metadata check-hashes.
  */

@@ -93,11 +93,11 @@ static void build_dir_block(uint8_t block[4096], uint32_t self_ino, uint32_t par
     uint8_t* chunk = block;
     size_t offset = 0;
 
-    dir_item_t all_items[32];
+    dir_item_t all_items[64];
     size_t total = 0;
     all_items[total++] = (dir_item_t){ self_ino, DT_DIR, "." };
     all_items[total++] = (dir_item_t){ parent_ino, DT_DIR, ".." };
-    for (size_t i = 0; i < num_items && total < 32; ++i) {
+    for (size_t i = 0; i < num_items && total < 64; ++i) {
         all_items[total++] = items[i];
     }
 
@@ -274,7 +274,7 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         static const char* const toybox_tools[] = {
             "sh", "ls", "cat", "echo", "pwd", "uname", "clear",
             "mkdir", "cp", "rm", "touch", "wc", "grep", "sleep", "kill",
-            "reboot", "poweroff"
+            "reboot", "poweroff", "help", "halt", "test"
         };
         const size_t num_tools = sizeof(toybox_tools) / sizeof(toybox_tools[0]);
 
@@ -335,12 +335,12 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         build_dir_block(dir_blk, 2, 2, root_items, 4);
         pwrite(fd, dir_blk, 4096, (off_t)blk_root * 4096);
 
-        dir_item_t bin_items[32];
+        dir_item_t bin_items[64];
         size_t num_bin_items = 0;
         bin_items[num_bin_items++] = (dir_item_t){ 7, DT_REG, "hello.txt" };
         if (tb_fd >= 0) {
             bin_items[num_bin_items++] = (dir_item_t){ 9, DT_REG, "toybox" };
-            for (size_t i = 0; i < num_tools && num_bin_items < 32; ++i) {
+            for (size_t i = 0; i < num_tools && num_bin_items < 64; ++i) {
                 bin_items[num_bin_items++] = (dir_item_t){ 10 + (uint32_t)i, DT_LNK, toybox_tools[i] };
             }
         }

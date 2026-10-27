@@ -893,3 +893,36 @@ diff -ruN --exclude=build-* --exclude=out /tmp/zircon_upstream/zircon/kernel/lib
 
      return ZX_OK;
 
+
+--- a/kernel/platform/pc/power.cpp
++++ b/kernel/platform/pc/power.cpp
+@@ -94,6 +94,15 @@ void platform_halt(
+     switch (suggested_action) {
+     case HALT_ACTION_SHUTDOWN:
+-        if (strcmp("QEMU", manufacturer) == 0) {
+-            outp(kQEMUDebugExitPort, (kQEMUExitCode >> 1));
+-        }
++        // Try QEMU debug exit port (if isa-debug-exit device is present)
++        outp(kQEMUDebugExitPort, (kQEMUExitCode >> 1));
++        // Try QEMU Q35 ACPI poweroff (PM1a_CNT port 0x604: SLP_TYP = 0, SLP_EN = 1 << 13)
++        outpw(0x604, 0x2000);
++        // Try QEMU PIIX4 ACPI poweroff (port 0xb004)
++        outpw(0xb004, 0x2000);
+         printf("Power off failed, halting\n");
++        for (;;) {
++            x86_hlt();
++        }
+         break;
+     case HALT_ACTION_REBOOT:
+@@ -113,6 +122,13 @@ void platform_halt(
+         break;
+     }
+ 
++    if (suggested_action == HALT_ACTION_SHUTDOWN) {
++        printf("Halted\n");
++        for (;;) {
++            x86_hlt();
++        }
++    }
++
+     if (reason == HALT_REASON_SW_PANIC) {

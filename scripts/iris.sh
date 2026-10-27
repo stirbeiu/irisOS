@@ -158,11 +158,19 @@ EOF
             ;;
         x86_64)
             shift || true
+            if [[ ! -f "${IMAGES_DIR}/disk_x86_64.raw" ]]; then
+                echo "==> x86_64 disk image not found. Building first..."
+                make -C "${BUILD_DIR}" image-x86_64
+            fi
             # Run existing image in QEMU window with serial console
             exec "${SCRIPT_DIR}/run_qemu.sh" -a x86_64 "$@"
             ;;
         aarch64)
             shift || true
+            if [[ ! -f "${IMAGES_DIR}/disk_aarch64.raw" ]]; then
+                echo "==> aarch64 disk image not found. Building first..."
+                make -C "${BUILD_DIR}" image-aarch64
+            fi
             # Run existing image in QEMU window with serial console
             exec "${SCRIPT_DIR}/run_qemu.sh" -a aarch64 "$@"
             ;;

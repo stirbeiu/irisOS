@@ -42,7 +42,7 @@ if [[ ! -f "${TOYBOX_SRC}/main.c" || ! -f "${TOYBOX_SRC}/Config.in" ]]; then
 fi
 
 # 2. Ensure generated headers exist in vendor/toybox/generated
-if [[ ! -f "${TOYBOX_SRC}/generated/config.h" || ! -f "${TOYBOX_SRC}/generated/newtoys.h" || ! -f "${TOYBOX_SRC}/generated/flags.h" || ! -f "${TOYBOX_SRC}/.config" || ! $(grep -q "CONFIG_REBOOT=y" "${TOYBOX_SRC}/.config" 2>/dev/null && echo "ok") ]]; then
+if [[ ! -f "${TOYBOX_SRC}/generated/config.h" || ! -f "${TOYBOX_SRC}/generated/newtoys.h" || ! -f "${TOYBOX_SRC}/generated/flags.h" || ! -f "${TOYBOX_SRC}/.config" || ! $(grep -q "CONFIG_REBOOT=y" "${TOYBOX_SRC}/.config" 2>/dev/null && grep -q "CONFIG_TOYBOX_HELP=y" "${TOYBOX_SRC}/.config" 2>/dev/null && grep -q "CONFIG_HELP=y" "${TOYBOX_SRC}/.config" 2>/dev/null && echo "ok") ]]; then
     echo "==> Generating Toybox configuration and headers..."
     (
         cd "${TOYBOX_SRC}"
@@ -53,8 +53,9 @@ if [[ ! -f "${TOYBOX_SRC}/generated/config.h" || ! -f "${TOYBOX_SRC}/generated/n
 with open('.config') as f:
     lines = f.readlines()
 
-enabled = {'CAT', 'CLEAR', 'CP', 'ECHO', 'GREP', 'KILL', 'LS', 'MKDIR', 'PWD', 'REBOOT', 'RM', 'SH', 'SLEEP', 'TOUCH', 'UNAME', 'WC',
-           'TOYBOX', 'TOYBOX_SUID', 'TOYBOX_LSM_NONE', 'TOYBOX_FLOAT', 'TOYBOX_HELP', 'TOYBOX_HELP_DASHDASH', 'TOYBOX_FORCE_NOMMU'}
+enabled = {'CAT', 'CLEAR', 'CP', 'ECHO', 'GREP', 'HELP', 'KILL', 'LS', 'MKDIR', 'PWD', 'REBOOT', 'RM', 'SH', 'SLEEP', 'TEST', 'TOUCH', 'UNAME', 'WC',
+           'TOYBOX', 'TOYBOX_SUID', 'TOYBOX_LSM_NONE', 'TOYBOX_FLOAT', 'TOYBOX_HELP', 'TOYBOX_HELP_DASHDASH', 'TOYBOX_FORCE_NOMMU',
+           'TOYBOX_LINEEDIT'}
 
 seen = set()
 new_lines = []
@@ -69,6 +70,8 @@ for line in lines:
             new_lines.append(f'CONFIG_{sym}=y\n')
         elif sym == 'TOYBOX_FORK':
             new_lines.append('# CONFIG_TOYBOX_FORK is not set\n')
+        elif sym == 'TOYBOX_LIBZ':
+            new_lines.append('# CONFIG_TOYBOX_LIBZ is not set\n')
         elif sym == 'TOYBOX_UID_SYS':
             new_lines.append('CONFIG_TOYBOX_UID_SYS=100\n')
         elif sym == 'TOYBOX_UID_USR':
@@ -160,6 +163,7 @@ SOURCES=(
     "${TOYBOX_SRC}/toys/posix/wc.c"
     "${TOYBOX_SRC}/toys/pending/sh.c"
     "${TOYBOX_SRC}/toys/other/clear.c"
+    "${TOYBOX_SRC}/toys/other/help.c"
     "${TOYBOX_SRC}/toys/other/reboot.c"
 )
 
@@ -177,7 +181,7 @@ for src in "${SOURCES[@]}"; do
         EXTRA_CFLAGS+=("-Dxpopen_setup=orig_toybox_xpopen_setup" "-Dxpopen=orig_toybox_xpopen" "-Dxpopen_both=orig_toybox_xpopen_both")
     fi
 
-    if [[ ! -f "${obj}" || "${src}" -nt "${obj}" ]]; then
+    if [[ ! -f "${obj}" || "${src}" -nt "${obj}" || "${TOYBOX_SRC}/generated/config.h" -nt "${obj}" ]]; then
         "${CLANG}" "${COMMON_CFLAGS[@]}" ${EXTRA_CFLAGS[@]+"${EXTRA_CFLAGS[@]}"} -c "${src}" -o "${obj}"
     fi
 done

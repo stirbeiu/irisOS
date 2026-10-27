@@ -278,6 +278,31 @@ ssize_t iris_ufs_pwrite(int dev_id, const void* buf, size_t size, off_t offset) 
     return (ssize_t)size;
 }
 
+zx_status_t iris_ufs_flush_device(int dev_id) {
+    if (dev_id < 0 || dev_id >= IRIS_UFS_MAX_DEVS || !g_ufs_devs[dev_id].in_use) {
+        return ZX_ERR_BAD_HANDLE;
+    }
+    const iris_ufs_blk_dev_t* dev = &g_ufs_devs[dev_id];
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_DRIVER, IRIS_BLK_OP_FLUSH, g_ufs_txid++, 0);
+    zx_status_t st = zx_channel_write(dev->channel, 0, &req, sizeof(req), NULL, 0);
+    if (st != ZX_OK) {
+        return st;
+    }
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(dev->channel, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED, ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) {
+        return ZX_ERR_PEER_CLOSED;
+    }
+    iris_msg_hdr_t rep;
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(dev->channel, 0, &rep, NULL, sizeof(rep), 0, &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t)) {
+        return ZX_ERR_IO;
+    }
+    return rep.status;
+}
+
 #endif /* !IRIS_HOST_BUILD */
 
 /* ==============================================================================

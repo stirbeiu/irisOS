@@ -269,16 +269,20 @@ image-aarch64: build-aarch64 toybox-aarch64
 run: run-x86_64
 run-gui: run-x86_64-gui
 
-run-x86_64: image-x86_64
+run-x86_64:
+	@if [ ! -f $(ROOT_DIR)/out/images/disk_x86_64.raw ]; then $(MAKE) image-x86_64; fi
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 $(if $(filter 1,$(GUI)),--gui,)
 
-run-aarch64: image-aarch64
+run-aarch64:
+	@if [ ! -f $(ROOT_DIR)/out/images/disk_aarch64.raw ]; then $(MAKE) image-aarch64; fi
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a aarch64 $(if $(filter 1,$(GUI)),--gui,)
 
-run-x86_64-gui: image-x86_64
+run-x86_64-gui:
+	@if [ ! -f $(ROOT_DIR)/out/images/disk_x86_64.raw ]; then $(MAKE) image-x86_64; fi
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a x86_64 --gui
 
-run-aarch64-gui: image-aarch64
+run-aarch64-gui:
+	@if [ ! -f $(ROOT_DIR)/out/images/disk_aarch64.raw ]; then $(MAKE) image-aarch64; fi
 	@$(ROOT_DIR)/scripts/run_qemu.sh -a aarch64 --gui
 
 # ------------------------------------------------------------------------------

@@ -67,14 +67,11 @@ esac
 
 # The boot mode lives in the ZBI kernel command line, so repackage the images in
 # interactive "shell" mode on every launch (./iris test packages "test" mode).
-echo "==> Packaging ${ARCH_NAME} image in shell mode (build/mkimage.sh)..."
-IRIS_MODE=shell "${ROOT_DIR}/build/mkimage.sh" "${ARCH_NAME}" > /dev/null
-
-# Ensure secondary virtual raw disk exists
+# Ensure system and disk images exist
 DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
-if [[ ! -f "${DISK_RAW}" ]]; then
-    echo "==> Virtual raw disk not found. Creating 64MB disk image (${DISK_RAW})..."
-    dd if=/dev/zero of="${DISK_RAW}" bs=1M count=64 status=none
+if [[ ! -f "${DISK_RAW}" || ! -f "${ESP_IMAGE}" ]]; then
+    echo "==> Images not found. Packaging ${ARCH_NAME} image in shell mode (build/mkimage.sh)..."
+    IRIS_MODE=shell "${ROOT_DIR}/build/mkimage.sh" "${ARCH_NAME}"
 fi
 
 # Ensure UEFI firmware exists

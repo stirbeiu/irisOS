@@ -97,11 +97,159 @@ static char ready_pop(pty_discipline_t* p) {
     return c;
 }
 
+static void pty_replace_line(pty_discipline_t* p, const char* new_str, size_t new_len) {
+    if (new_len > PTY_LINE_BUF_MAX - 1) {
+        new_len = PTY_LINE_BUF_MAX - 1;
+    }
+    if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+        /* Move cursor to end of current line, then erase backwards to start */
+        while (p->line_cursor < p->line_len) {
+            pty_raw_output(&p->line_buf[p->line_cursor], 1);
+            p->line_cursor++;
+        }
+        while (p->line_len > 0) {
+            pty_raw_output("\b \b", 3);
+            p->line_len--;
+        }
+    }
+    memcpy(p->line_buf, new_str, new_len);
+    p->line_len = new_len;
+    p->line_cursor = new_len;
+    if ((p->mode_flags & IRIS_PTY_MODE_ECHO) && new_len > 0) {
+        pty_raw_output(p->line_buf, new_len);
+    }
+}
+
 void pty_feed_char(pty_discipline_t* p, char c) {
     pty_lock(p);
 
     if (p->mode_flags & IRIS_PTY_MODE_CANONICAL) {
         /* Canonical (Cooked) Mode */
+        /* 0. Handle multi-byte VT100 escape sequences (\033[A, \033[B, \033[C, \033[D, \033[H, \033[F, \033[3~) */
+        if (p->esc_state == 1) {
+            if (c == '[' || c == 'O') {
+                p->esc_state = 2;
+                p->esc_param = 0;
+                pty_unlock(p);
+                return;
+            }
+            p->esc_state = 0;
+        } else if (p->esc_state == 2) {
+            if (c >= '0' && c <= '9') {
+                p->esc_param = c;
+                p->esc_state = 3;
+                pty_unlock(p);
+                return;
+            }
+            p->esc_state = 0;
+            if (c == 'A') {
+                /* KEY_UP (\033[A): previous history entry */
+                if (p->hist_view > 0) {
+                    if (p->hist_view == p->hist_count) {
+                        size_t slen = (p->line_len < PTY_HIST_LINE_MAX - 1) ? p->line_len : (PTY_HIST_LINE_MAX - 1);
+                        memcpy(p->saved_line, p->line_buf, slen);
+                        p->saved_line[slen] = '\0';
+                        p->saved_len = slen;
+                    }
+                    p->hist_view--;
+                    const char* h = p->history[p->hist_view % PTY_HIST_MAX];
+                    pty_replace_line(p, h, strlen(h));
+                }
+            } else if (c == 'B') {
+                /* KEY_DOWN (\033[B): next history entry */
+                if (p->hist_view < p->hist_count) {
+                    p->hist_view++;
+                    if (p->hist_view == p->hist_count) {
+                        pty_replace_line(p, p->saved_line, p->saved_len);
+                    } else {
+                        const char* h = p->history[p->hist_view % PTY_HIST_MAX];
+                        pty_replace_line(p, h, strlen(h));
+                    }
+                }
+            } else if (c == 'C') {
+                /* KEY_RIGHT (\033[C): move cursor right */
+                if (p->line_cursor < p->line_len) {
+                    p->line_cursor++;
+                    if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                        pty_raw_output("\033[C", 3);
+                    }
+                }
+            } else if (c == 'D') {
+                /* KEY_LEFT (\033[D): move cursor left */
+                if (p->line_cursor > 0) {
+                    p->line_cursor--;
+                    if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                        pty_raw_output("\b", 1);
+                    }
+                }
+            } else if (c == 'H') {
+                /* KEY_HOME (\033[H): move cursor to start of line */
+                while (p->line_cursor > 0) {
+                    p->line_cursor--;
+                    if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                        pty_raw_output("\b", 1);
+                    }
+                }
+            } else if (c == 'F') {
+                /* KEY_END (\033[F): move cursor to end of line */
+                while (p->line_cursor < p->line_len) {
+                    if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                        pty_raw_output(&p->line_buf[p->line_cursor], 1);
+                    }
+                    p->line_cursor++;
+                }
+            }
+            pty_unlock(p);
+            return;
+        } else if (p->esc_state == 3) {
+            p->esc_state = 0;
+            if (c == '~') {
+                if (p->esc_param == '3') {
+                    /* KEY_DELETE (\033[3~): delete character under cursor */
+                    if (p->line_cursor < p->line_len) {
+                        size_t tail_len = p->line_len - p->line_cursor - 1;
+                        memmove(&p->line_buf[p->line_cursor],
+                                &p->line_buf[p->line_cursor + 1],
+                                tail_len);
+                        p->line_len--;
+                        if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                            if (tail_len > 0) {
+                                pty_raw_output(&p->line_buf[p->line_cursor], tail_len);
+                            }
+                            pty_raw_output(" ", 1);
+                            for (size_t i = 0; i < tail_len + 1; i++) {
+                                pty_raw_output("\b", 1);
+                            }
+                        }
+                    }
+                } else if (p->esc_param == '1' || p->esc_param == '7') {
+                    /* Alternate HOME (\033[1~) */
+                    while (p->line_cursor > 0) {
+                        p->line_cursor--;
+                        if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                            pty_raw_output("\b", 1);
+                        }
+                    }
+                } else if (p->esc_param == '4' || p->esc_param == '8') {
+                    /* Alternate END (\033[4~) */
+                    while (p->line_cursor < p->line_len) {
+                        if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
+                            pty_raw_output(&p->line_buf[p->line_cursor], 1);
+                        }
+                        p->line_cursor++;
+                    }
+                }
+            }
+            pty_unlock(p);
+            return;
+        }
+
+        if ((uint8_t)c == 0x1B) {
+            p->esc_state = 1;
+            pty_unlock(p);
+            return;
+        }
+
         if (c == '\r') {
             c = '\n';
         }
@@ -112,6 +260,8 @@ void pty_feed_char(pty_discipline_t* p, char c) {
                 pty_raw_output("^C\n", 3);
             }
             p->line_len = 0;
+            p->line_cursor = 0;
+            p->esc_state = 0;
             p->pending_signal = 2; /* POSIX SIGINT */
             pty_unlock(p);
             return;
@@ -127,18 +277,31 @@ void pty_feed_char(pty_discipline_t* p, char c) {
                     ready_push(p, p->line_buf[i]);
                 }
                 p->line_len = 0;
+                p->line_cursor = 0;
             }
             pty_unlock(p);
+            pty_try_fulfill_pending_reads();
             return;
         }
 
         /* 3. Handle Backspace (0x08 / '\b' or 0x7F DEL) */
         if (c == '\b' || (uint8_t)c == 0x08 || (uint8_t)c == 0x7F) {
-            if (p->line_len > 0) {
+            if (p->line_cursor > 0) {
+                size_t tail_len = p->line_len - p->line_cursor;
+                memmove(&p->line_buf[p->line_cursor - 1],
+                        &p->line_buf[p->line_cursor],
+                        tail_len);
+                p->line_cursor--;
                 p->line_len--;
                 if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
-                    const char erase_seq[3] = { '\b', ' ', '\b' };
-                    pty_raw_output(erase_seq, 3);
+                    pty_raw_output("\b", 1);
+                    if (tail_len > 0) {
+                        pty_raw_output(&p->line_buf[p->line_cursor], tail_len);
+                    }
+                    pty_raw_output(" ", 1);
+                    for (size_t i = 0; i < tail_len + 1; i++) {
+                        pty_raw_output("\b", 1);
+                    }
                 }
             }
             pty_unlock(p);
@@ -147,6 +310,17 @@ void pty_feed_char(pty_discipline_t* p, char c) {
 
         /* 4. Handle Line Completion ('\n') */
         if (c == '\n') {
+            /* Record non-empty command in history ring */
+            if (p->line_len > 0) {
+                size_t hlen = (p->line_len < PTY_HIST_LINE_MAX - 1) ? p->line_len : (PTY_HIST_LINE_MAX - 1);
+                char* slot = p->history[p->hist_count % PTY_HIST_MAX];
+                memcpy(slot, p->line_buf, hlen);
+                slot[hlen] = '\0';
+                p->hist_count++;
+            }
+            p->hist_view = p->hist_count;
+            p->saved_len = 0;
+
             if (p->line_len < PTY_LINE_BUF_MAX - 1) {
                 p->line_buf[p->line_len++] = '\n';
             }
@@ -154,22 +328,38 @@ void pty_feed_char(pty_discipline_t* p, char c) {
                 ready_push(p, p->line_buf[i]);
             }
             p->line_len = 0;
+            p->line_cursor = 0;
             if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
                 pty_raw_output("\r\n", 2);
             }
             pty_unlock(p);
+            pty_try_fulfill_pending_reads();
             return;
         }
 
-        /* 5. Regular Printable Characters */
+        /* 5. Regular Printable Characters (supports mid-line insertion when cursor < line_len) */
         if (p->line_len < PTY_LINE_BUF_MAX - 1) {
-            p->line_buf[p->line_len++] = c;
+            size_t tail_len = p->line_len - p->line_cursor;
+            if (tail_len > 0) {
+                memmove(&p->line_buf[p->line_cursor + 1],
+                        &p->line_buf[p->line_cursor],
+                        tail_len);
+            }
+            p->line_buf[p->line_cursor] = c;
+            p->line_len++;
+            p->line_cursor++;
             if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
                 pty_raw_output(&c, 1);
+                if (tail_len > 0) {
+                    pty_raw_output(&p->line_buf[p->line_cursor], tail_len);
+                    for (size_t i = 0; i < tail_len; i++) {
+                        pty_raw_output("\b", 1);
+                    }
+                }
             }
         }
     } else {
-        /* Raw Mode: Immediate Character Pass-Through */
+        /* Raw Mode: Immediate Character & VT100 Escape Sequence Pass-Through into PTY FIFO */
         ready_push(p, c);
         if (p->mode_flags & IRIS_PTY_MODE_ECHO) {
             pty_raw_output(&c, 1);
@@ -537,6 +727,7 @@ static bool handle_pty_message(zx_handle_t ch) {
                 g_clients[g_num_clients].pending_req_count = 0;
                 g_num_clients++;
                 pty_unlock(&g_pty);
+                zx_debug_write("\033[1 q\033[?12h", 11);
                 iris_msg_hdr_t rep;
                 iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
                 zx_channel_write(ch, 0, &rep, sizeof(rep), &cli, 1);
@@ -634,7 +825,7 @@ int main(int argc, char** argv) {
     log_status(STATUS_OKAY, "iris_pty", "IPC server listening on control channel.");
 
     /* Emit VT100 sequence to enable blinking block cursor */
-    pty_raw_output("\033[1 q\033[?12h", 11);
+    zx_debug_write("\033[1 q\033[?12h", 11);
 
     /* 5. Main Server Event Loop */
     while (!g_shutdown && g_num_clients > 0) {

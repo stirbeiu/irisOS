@@ -199,7 +199,18 @@ This document tracks implementation status, completed milestones, verification c
 * `its_irisOS` Step 13.1 now reads the `uname -a` pipe until EOF (toybox emits fields in several small writes; the old single `read()` + early `close()` caused toybox `uname: write` / `Failed to flush file` errors) and asserts the full expected string plus exit status 0 per architecture (`irisOS irisOS-dev 0.1.0 Zircon 1011 (Ring 3 userland) <arch>`).
 * Found and removed a stale x86_64 toybox object (`pending_sh.o`) carrying old debug prints (`[GNL]`, `[SH_LINE]`) from an earlier session; clean toybox rebuild verified free of them.
 * Verification: `./iris test all` -> `[PASS]` on x86_64 and aarch64, full `uname -a` line logged, no write/flush errors.
-* **Next (planned):** Step C (`iris.mode=test|shell`, persistent `/bin/sh`), Step D (keyboard + serial input, real command testing).
+
+### Step 5.2c: Interactive Shell Mode, System Control Applets & PTY Navigation (COMPLETED)
+* **Boot Mode Selection (`iris.mode=shell|test`):**
+  * Default `./iris build` and `./iris run` boot into interactive `/bin/sh` (`iris.mode=shell`), while `./iris test` boots the automated `its_irisOS` test suite (`iris.mode=test`).
+* **Toybox Help & System Control Symlinks (`build/toybox.config`, `scripts/build_toybox.sh`, `build/mkufs2_host.c`, `build/mkimage.sh`):**
+  * Enabled `CONFIG_HELP=y`, `CONFIG_TOYBOX_HELP=y`, `CONFIG_REBOOT=y`, and `CONFIG_TEST=y` in Toybox configuration and compiled `toys/other/help.c` and `toys/other/reboot.c`.
+  * Added `/System/Bin` symlinks for `reboot`, `poweroff`, `help`, `halt`, and `test` pointing to `toybox`.
+  * Fixed UFS2 symlink target resolution in `servers/iris_fshost/src/main.c` (`resolve_vfs_path`) by copying `ldp.dp2->di_db` out of `disk->d_inoblock` before subsequent `getinode()` calls overwrite the shared 16-inode block cache for inodes $\ge 16$.
+* **VirtIO Keyboard Navigation & PTY Line Editing (`servers/drivers/virtio_input/src/virtio_input.c`, `servers/iris_pty/src/main.c`):**
+  * Translated Linux navigation scancodes (`KEY_UP` 103 $\rightarrow$ `"\033[A"`, `KEY_DOWN` 108 $\rightarrow$ `"\033[B"`, `KEY_RIGHT` 106 $\rightarrow$ `"\033[C"`, `KEY_LEFT` 105 $\rightarrow$ `"\033[D"`, `KEY_HOME` 102 $\rightarrow$ `"\033[H"`, `KEY_END` 107 $\rightarrow$ `"\033[F"`, `KEY_DELETE` 111 $\rightarrow$ `"\033[3~"`) into VT100 escape sequences.
+  * Implemented VT100 escape sequence parsing in `iris_pty` canonical line discipline for cursor movement (`Left`/`Right`/`Home`/`End`), mid-line insertion/deletion (`Backspace`/`Delete`), and 16-entry command history (`Up`/`Down`), while passing raw sequences directly into `ready_buf` in raw mode.
+  * Emits VT100 blinking block cursor sequence (`"\033[1 q\033[?12h"`) via `zx_debug_write` on PTY startup and shell session open.
 
 * **Immediate Next Steps for Phase 5:**
   1. **Step 5.3:** Implement `apps/sysutils/passphrase` interactive unlock prompt for `Data` partition decryption keys, replacing the deterministic Argon2 dev key fallback with interactive password entry.
@@ -449,41 +460,58 @@ Following the Adversarial Audit, Remediation Pass 1 implemented genuine filesyst
      * Updated `scripts/patches/zircon-standalone-llvm.patch` to record the kernel syscall patch.
 
 6. **Backspace & Cursor Block Support (`iris_pty`, `virtio_input`, `gfxconsole`):**
-   - **Canonical Backspace & Erase Sequence ([`servers/iris_pty/src/main.c`](file:///Users/stefan/Dev/irisos/servers/iris_pty/src/main.c), [`servers/drivers/virtio_input/src/virtio_input.c`](file:///Users/stefan/Dev/irisos/servers/drivers/virtio_input/src/virtio_input.c)):**
+   - **Canonical Backspace & Erase Sequence (`servers/iris_pty/src/main.c`, `servers/drivers/virtio_input/src/virtio_input.c`):**
      * Handled both `0x08` (`'\b'`) and `0x7F` (macOS/VT100 DEL) in `pty_feed_char()`.
      * Added `KEY_DELETE` (111u) translation to `0x7F` alongside `KEY_BACKSPACE` in `virtio_input_translate_key()`.
      * When backspace is pressed with a non-empty line buffer (`line_len > 0`), pops the character and emits the 3-byte visual erase sequence `"\b \b"` (`0x08, 0x20, 0x08`).
-   - **Graphical Console Backspace & Solid Cursor Block ([`kernel/zircon/kernel/lib/gfxconsole/gfxconsole.cpp`](file:///Users/stefan/Dev/irisos/kernel/zircon/kernel/lib/gfxconsole/gfxconsole.cpp)):**
+   - **Graphical Console Backspace & Solid Cursor Block (`kernel/zircon/kernel/lib/gfxconsole/gfxconsole.cpp`):**
      * Updated `gfxconsole_putc` to handle both `'\b'` and `0x7F` by moving `gfxconsole.x` back one character column.
      * Implemented `gfxconsole_draw_cursor()` drawing a solid cursor block `█` (`gfx_fillrect`) at `(x, y)` on the hardware framebuffer (`hw_surface`).
      * In `gfxconsole_print_callback`, re-blits affected line regions from `gfxconsole.surface` (which retains clean text without the cursor), ensuring the previous cursor is cleanly restored and the visual erase sequence `"\b \b"` erases on-screen characters before drawing the new cursor block at the updated position.
 
 7. **Shell Redirection, Working Directory Inheritance, Arrow Keys, Poweroff/Reboot & Blinking Cursor (COMPLETE):**
-   - **Shell Redirection & Client-Side VFS Reference Counting ([`sdk/mlibc-sysdeps/iris/generic/generic.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/generic.cpp)):**
+   - **Shell Redirection & Client-Side VFS Reference Counting (`sdk/mlibc-sysdeps/iris/generic/generic.cpp`):**
      * Fixed `sys_dup`, `sys_dup2`, `sys_fcntl` (`F_DUPFD` / `F_DUPFD_CLOEXEC`), and `sys_close`.
      * In `sys_dup` and `sys_dup2`: full FD table attributes (`handle`, `vfs_handle`, `flags`, `offset`, `type`) are cloned. Handle duplication via `zx_handle_duplicate()` is performed for channels and sockets, while PTY and VFS channels are cleanly shared.
      * In `sys_dup2`: existing target descriptors are closed cleanly via `sys_close(newfd)` before binding the replacement descriptor.
      * In `sys_close`: implemented client-side reference counting for `IRIS_FD_VFS`. When an FD referencing a server-side `vfs_handle` is closed, `sys_close` checks if any other slot in `g_fd_table` still references that `vfs_handle`. `IRIS_FS_OP_CLOSE` is sent to `iris_fshost` ONLY when the last reference is closed, preventing premature server-side file closure when Toybox redirects built-ins (`echo Hello > /Users/hello.txt` via `dup2(fd, 1)` and `close(fd)`).
-   - **Working Directory (`cd`) Inheritance Across `posix_spawn()` ([`sdk/mlibc-sysdeps/iris/generic/generic.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/generic.cpp), [`sdk/mlibc-sysdeps/iris/generic/entry.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/entry.cpp)):**
+   - **Working Directory (`cd`) Inheritance Across `posix_spawn()` (`sdk/mlibc-sysdeps/iris/generic/generic.cpp`, `sdk/mlibc-sysdeps/iris/generic/entry.cpp`):**
      * Implemented robust path canonicalization (`canonicalize_path()`) handling `.` and `..` segments for relative and absolute paths.
      * In `sys_chdir()`: validates destination directory existence with `sys_stat(..., &st)` and `S_ISDIR(st.st_mode)`, updates `g_cwd`.
      * In `sys_spawn()`: ensures child process environment vector contains updated `PWD=<g_cwd>`.
      * In `entry.cpp`: parses `PWD` from `pargs->environ_off` on child startup and calls `iris_set_cwd()`, ensuring spawned binaries (e.g. `ls` after `cd Users`) correctly inherit parent working directory.
-   - **Arrow Keys & Input Modifier State Tracking ([`servers/drivers/virtio_input/src/virtio_input.c`](file:///Users/stefan/Dev/irisos/servers/drivers/virtio_input/src/virtio_input.c), [`servers/iris_pty/src/main.c`](file:///Users/stefan/Dev/irisos/servers/iris_pty/src/main.c)):**
+   - **Arrow Keys & Input Modifier State Tracking (`servers/drivers/virtio_input/src/virtio_input.c`, `servers/iris_pty/src/main.c`):**
      * In `virtio_input_dev_t`: split modifier tracking into independent `shift_l`/`shift_r`, `ctrl_l`/`ctrl_r`, and `alt_l`/`alt_r` boolean states, guaranteeing Shift state is never prematurely cleared. This ensures quotes (`"`) and redirection (`>`) translate reliably.
      * In `virtio_input_poll()`: added VT100 / ANSI 3-byte escape sequence emission for navigation keys: `KEY_UP` (`\033[A`), `KEY_DOWN` (`\033[B`), `KEY_RIGHT` (`\033[C`), `KEY_LEFT` (`\033[D`), `KEY_HOME` (`\033[H`), `KEY_END` (`\033[F`), `KEY_PAGEUP` (`\033[5~`), `KEY_PAGEDOWN` (`\033[6~`), and `KEY_INSERT` (`\033[2~`).
      * In `iris_pty`: added `IRIS_PTY_OP_SET_ATTR` alias, updated `IRIS_PTY_OP_SET_MODE` so switching to raw mode immediately flushes any uncommitted characters in `line_buf` to the ready queue, and immediately triggers `pty_try_fulfill_pending_reads()`.
-   - **`poweroff` and `reboot` System Commands ([`sdk/mlibc-sysdeps/iris/generic/generic.cpp`](file:///Users/stefan/Dev/irisos/sdk/mlibc-sysdeps/iris/generic/generic.cpp), [`build/mkufs2_host.c`](file:///Users/stefan/Dev/irisos/build/mkufs2_host.c), [`scripts/build_toybox.sh`](file:///Users/stefan/Dev/irisos/scripts/build_toybox.sh)):**
+   - **`poweroff` and `reboot` System Commands (`sdk/mlibc-sysdeps/iris/generic/generic.cpp`, `build/mkufs2_host.c`, `scripts/build_toybox.sh`):**
      * Dynamically resolved `zx_system_powerctl()` from vDSO.
      * Implemented `sys_reboot(cmd)` in `generic.cpp` mapping `RB_AUTOBOOT` to `ZX_SYSTEM_POWERCTL_REBOOT` and `RB_POWER_OFF` / `RB_HALT_SYSTEM` to `ZX_SYSTEM_POWERCTL_SHUTDOWN`.
      * In `sys_kill()`: routed signals to PID 1 (`SIGTERM`/`SIGINT` -> reboot, `SIGUSR1`/`SIGUSR2`/`SIGPWR` -> poweroff) to `sys_reboot()`.
      * In `servers/iris_init/src/main.c` and `sys_spawn()`: propagated `g_root_resource` as `PA_HND(PA_RESOURCE, 0)` so shells and utility binaries have capability authorization for power management.
      * Enabled `CONFIG_REBOOT=y` in Toybox, compiled `toys/other/reboot.c`, and created `/System/Bin/reboot` and `/System/Bin/poweroff` symlinks in UFS2 images.
-   - **Blinking Cursor ([`servers/iris_pty/src/main.c`](file:///Users/stefan/Dev/irisos/servers/iris_pty/src/main.c)):**
+   - **Blinking Cursor (`servers/iris_pty/src/main.c`):**
      * Emitted VT100 sequence `\033[1 q\033[?12h` on `iris_pty` initialization to activate blinking block cursor across serial terminals and terminal emulators.
 
-8. **Verification & Clean Build:**
-   - Compiled both `x86_64` and `aarch64` targets with `./iris build x86_64` and `./iris build aarch64`:
-     * Microkernel (`zircon.elf`), `libzircon.so` vDSO, all ring 3 daemons (`iris_init`, `virtio_blk`, `iris_crypt`, `iris_fshost`, `iris_pty`), `toybox`, and 4-partition GPT disk images (`disk_x86_64.raw`, `disk_aarch64.raw`) compiled with 0 errors and 0 warnings.
-   - Verified symbols and symlinks in disk images: `reboot` and `poweroff` verified in `bin/toybox` and on UFS2 root filesystem.
+8. **Poweroff Crash Fix, Syscall Sync, Disk Persistence & Toybox Line Editing (COMPLETE):**
+   - **`poweroff` Crash & Missing `sys_sync` Sysdeps (`sdk/mlibc-sysdeps/iris/generic/generic.cpp`):**
+     * Toybox `reboot.c` calls `sync()`, which previously triggered `MLIBC_MISSING_SYSDEP()` inside `unistd.cpp:793`.
+     * Implemented `mlibc::sys_sync()`, `sys_fsync(int fd)`, `sys_fdatasync(int fd)`, and `sys_syncfs(int fd)` dispatching `IRIS_FS_OP_SYNC` over IPC to `iris_fshost`. Exported matching `extern "C"` functions.
+     * In `kernel/zircon/kernel/platform/pc/power.cpp`: updated `platform_halt(HALT_ACTION_SHUTDOWN)` to issue QEMU Q35 ACPI poweroff (`outpw(0x604, 0x2000)`) and PIIX4 ACPI poweroff (`outpw(0xb004, 0x2000)`) alongside the QEMU isa-debug-exit port (`outp(kQEMUDebugExitPort, ...)`). If the system cannot immediately power down, halts execution (`x86_hlt()`) rather than falling through to `reboot()`.
+   - **Disk Persistence & UFS2 Metadata Flushing (`servers/iris_fshost/src/ufs_io.c`, `servers/iris_fshost/src/main.c`, `build/mkimage.sh`, `scripts/run_qemu.sh`, `build/Makefile`):**
+     * Implemented `iris_ufs_flush_device(int dev_id)` in `ufs_io.c` to issue `IRIS_BLK_OP_FLUSH` over IPC to `iris_crypt` and `virtio_blk`.
+     * In `servers/iris_fshost/src/main.c`: updated `handle_fs_write`, `handle_fs_close`, and the new `IRIS_FS_OP_SYNC` IPC handler to commit dirty cylinder groups (`cgwrite1`), superblocks (`sbwrite`), and flush the underlying block device cache to disk.
+     * In `scripts/run_qemu.sh`: removed unconditional re-invocation of `mkimage.sh` and 64 MB zero-disk recreation. `run_qemu.sh` now launches the existing `disk_<arch>.raw` directly.
+     * In `build/Makefile`: updated `run-*` targets to only invoke `image-*` if the disk image does not already exist.
+     * In `build/mkimage.sh`: if `disk_<arch>.raw` already exists and is >= 128 MB, extracts the existing 30 MB Data partition (LBA 198656..260095) via `dd` and restores it into the assembled GPT image so user data persists even across full system rebuilds.
+   - **Arrow Key Line Editing in Toybox (`build/toybox.config`, `scripts/build_toybox.sh`):**
+     * Enabled `CONFIG_TOYBOX_LINEEDIT=y`, `CONFIG_TOYBOX_LIBZ=n`, and `CONFIG_REBOOT=y` in `build/toybox.config`.
+     * Added `TOYBOX_LINEEDIT` to the generated configuration whitelist in `scripts/build_toybox.sh` and defined `CFG_TOYBOX_LINEEDIT 1` in `vendor/toybox/generated/config.h`.
+     * Verified `iris_pty` in raw mode forwards raw 3-byte escape sequences (`\033[A`, `\033[B`, `\033[C`, `\033[D`) directly without translation or filtering.
+     * Recompiled and relinked `bin/toybox` with line editing enabled.
+
+9. **Verification & Clean Build:**
+   - Compiled `x86_64` with `./iris build x86_64`:
+     * Microkernel (`zircon.elf`), `libzircon.so` vDSO, `mlibc` sysdeps, all ring 3 daemons (`iris_init`, `virtio_blk`, `iris_crypt`, `iris_fshost`, `iris_pty`), and `toybox` compiled with 0 errors and 0 warnings.
+     * 128 MB GPT disk image `disk_x86_64.raw` and UEFI NVMe ESP image `esp_x86_64.img` assembled cleanly with existing user data preserved.
    - Ready for manual interactive test by running `./iris run x86_64`.
