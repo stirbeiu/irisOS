@@ -325,12 +325,86 @@ typedef struct iris_crypt_status_resp {
 /**
  * @brief Window Compositor Protocol Opcodes (IRIS_PROTO_COMPOSITOR)
  */
-#define IRIS_COMP_OP_CREATE      0x0030u /**< Create new client window surface */
-#define IRIS_COMP_OP_DESTROY     0x0031u /**< Destroy client window surface */
-#define IRIS_COMP_OP_ATTACH_VMO  0x0032u /**< Attach shared pixel VMO to window surface */
-#define IRIS_COMP_OP_DAMAGE      0x0033u /**< Post rectangle damage region notification */
-#define IRIS_COMP_OP_PRESENT     0x0034u /**< Present completed frame at next 60 Hz vblank */
-#define IRIS_COMP_OP_POLL_EVENT  0x0035u /**< Poll pending keyboard or mouse input events */
+#define IRIS_COMPOSITOR_OP_CREATE_WINDOW  0x0030u /**< Create new client window surface (transfers shared VMO handle) */
+#define IRIS_COMPOSITOR_OP_DESTROY_WINDOW 0x0031u /**< Destroy client window surface */
+#define IRIS_COMPOSITOR_OP_DAMAGE         0x0032u /**< Post dirty rectangle damage region notification */
+#define IRIS_COMPOSITOR_OP_MOVE_WINDOW    0x0033u /**< Update window desktop coordinates (x, y) */
+#define IRIS_COMPOSITOR_OP_OPEN_CLIENT    0x0034u /**< Request new compositor client channel endpoint */
+#define IRIS_COMPOSITOR_OP_POLL_EVENT     0x0035u /**< Poll pending keyboard or mouse input events */
+
+/* Legacy compatibility aliases */
+#define IRIS_COMP_OP_CREATE      IRIS_COMPOSITOR_OP_CREATE_WINDOW
+#define IRIS_COMP_OP_DESTROY     IRIS_COMPOSITOR_OP_DESTROY_WINDOW
+#define IRIS_COMP_OP_DAMAGE      IRIS_COMPOSITOR_OP_DAMAGE
+#define IRIS_COMP_OP_MOVE        IRIS_COMPOSITOR_OP_MOVE_WINDOW
+#define IRIS_COMP_OP_POLL_EVENT  IRIS_COMPOSITOR_OP_POLL_EVENT
+
+#pragma pack(push, 4)
+/**
+ * @brief Request payload for IRIS_COMPOSITOR_OP_CREATE_WINDOW
+ *        (accompanied by duplicated shared surface VMO handle at handles[0] / PA_HND(PA_USER0, 0)).
+ */
+typedef struct iris_compositor_create_window_req {
+    uint32_t width;      /**< Client surface width in pixels */
+    uint32_t height;     /**< Client surface height in pixels */
+    uint32_t flags;      /**< Window creation flags (0 = default decorated window) */
+    int32_t  x;          /**< Initial desktop X coordinate (-1 for automatic cascade/centering) */
+    int32_t  y;          /**< Initial desktop Y coordinate (-1 for automatic cascade/centering) */
+    char     title[64];  /**< Null-terminated window title string */
+} iris_compositor_create_window_req_t;
+
+/**
+ * @brief Reply payload for IRIS_COMPOSITOR_OP_CREATE_WINDOW.
+ */
+typedef struct iris_compositor_create_window_resp {
+    uint32_t window_id;  /**< Assigned compositor window identifier (> 0 on success) */
+} iris_compositor_create_window_resp_t;
+
+/**
+ * @brief Request payload for IRIS_COMPOSITOR_OP_DESTROY_WINDOW.
+ */
+typedef struct iris_compositor_destroy_window_req {
+    uint32_t window_id;  /**< Target window identifier to destroy */
+} iris_compositor_destroy_window_req_t;
+
+/**
+ * @brief Request payload for IRIS_COMPOSITOR_OP_DAMAGE.
+ */
+typedef struct iris_compositor_damage_req {
+    uint32_t window_id;  /**< Target window identifier */
+    uint32_t x;          /**< Dirty rectangle top-left X coordinate (client-relative) */
+    uint32_t y;          /**< Dirty rectangle top-left Y coordinate (client-relative) */
+    uint32_t w;          /**< Dirty rectangle width in pixels (0 = full window width) */
+    uint32_t h;          /**< Dirty rectangle height in pixels (0 = full window height) */
+} iris_compositor_damage_req_t;
+
+/**
+ * @brief Request payload for IRIS_COMPOSITOR_OP_MOVE_WINDOW.
+ */
+typedef struct iris_compositor_move_window_req {
+    uint32_t window_id;  /**< Target window identifier */
+    int32_t  x;          /**< Updated desktop X coordinate */
+    int32_t  y;          /**< Updated desktop Y coordinate */
+} iris_compositor_move_window_req_t;
+
+/**
+ * @brief Request payload for IRIS_COMPOSITOR_OP_POLL_EVENT.
+ */
+typedef struct iris_compositor_poll_event_req {
+    uint32_t window_id;  /**< Target window identifier */
+} iris_compositor_poll_event_req_t;
+
+/**
+ * @brief Reply payload for IRIS_COMPOSITOR_OP_POLL_EVENT.
+ */
+typedef struct iris_compositor_poll_event_resp {
+    uint32_t num_chars;  /**< Number of pending keyboard characters returned (0..64) */
+    int32_t  mouse_x;    /**< Current window-relative mouse X coordinate */
+    int32_t  mouse_y;    /**< Current window-relative mouse Y coordinate */
+    uint32_t buttons;    /**< Active mouse button bitmask (bit 0 = left button) */
+    char     chars[64];  /**< Pending translated keyboard input characters */
+} iris_compositor_poll_event_resp_t;
+#pragma pack(pop)
 
 /**
  * @brief Pseudo-Terminal Protocol Opcodes (IRIS_PROTO_PTY)

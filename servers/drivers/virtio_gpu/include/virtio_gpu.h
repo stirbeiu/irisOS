@@ -114,8 +114,8 @@ extern "C" {
 #define VIRTIO_GPU_MAX_SCANOUTS                 16u
 
 /* Default fallback display dimensions and background color */
-#define VIRTIO_GPU_DEFAULT_WIDTH                1024u
-#define VIRTIO_GPU_DEFAULT_HEIGHT               768u
+#define VIRTIO_GPU_DEFAULT_WIDTH                1280u
+#define VIRTIO_GPU_DEFAULT_HEIGHT               800u
 #define VIRTIO_GPU_RESOURCE_ID_FB               1u
 #define IRIS_DESKTOP_BG_COLOR                   0xFF1E1E2Eu /* Dark Slate / Iris Blue */
 

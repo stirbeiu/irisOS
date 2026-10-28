@@ -456,6 +456,7 @@ static zx_status_t spawn_process_from_elf(const char* name, const uint8_t* elf, 
 
     bool is_daemon = (iris_strcmp(name, "virtio_blk") == 0 ||
                       iris_strcmp(name, "virtio_gpu") == 0 ||
+                      iris_strcmp(name, "iris_compositor") == 0 ||
                       iris_strcmp(name, "iris_crypt") == 0 ||
                       iris_strcmp(name, "iris_fshost") == 0 ||
                       iris_strcmp(name, "iris_pty") == 0);
@@ -653,7 +654,7 @@ static zx_status_t vfs_read_file_to_vmo(zx_handle_t fs_ch, const char* path,
 static zx_status_t spawn_vfs_binary(zx_handle_t fs_ch, const char* name, const char* path,
                                     int argc, const char* argv[],
                                     const spawn_handle_t* extra, size_t num_extra,
-                                    zx_handle_t* out_proc) __attribute__((noinline));
+                                    zx_handle_t* out_proc) __attribute__((noinline, unused));
 static zx_status_t spawn_vfs_binary(zx_handle_t fs_ch, const char* name, const char* path,
                                     int argc, const char* argv[],
                                     const spawn_handle_t* extra, size_t num_extra,
@@ -678,6 +679,42 @@ static void register_blk_client(zx_handle_t blk_ch, zx_handle_t new_srv) {
     zx_signals_t obs = 0; g_zx_object_wait_one(blk_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &obs);
     uint8_t rep[256]; uint32_t act_b = 0, act_h = 0;
     g_zx_channel_read(blk_ch, 0, rep, NULL, sizeof(rep), 0, &act_b, &act_h);
+}
+
+static void register_gpu_client(zx_handle_t gpu_ch, zx_handle_t new_srv) {
+    if (gpu_ch == ZX_HANDLE_INVALID || new_srv == ZX_HANDLE_INVALID) return;
+    iris_msg_hdr_t req; iris_msg_hdr_init(&req, IRIS_PROTO_DRIVER, IRIS_GPU_OP_GET_INFO, 2, 0);
+    g_zx_channel_write(gpu_ch, 0, &req, sizeof(req), &new_srv, 1);
+    zx_signals_t obs = 0; g_zx_object_wait_one(gpu_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &obs);
+    uint8_t rep[256]; zx_handle_t ret_hnd = ZX_HANDLE_INVALID; uint32_t act_b = 0, act_h = 0;
+    g_zx_channel_read(gpu_ch, 0, rep, &ret_hnd, sizeof(rep), 1, &act_b, &act_h);
+    if (act_h > 0 && ret_hnd != ZX_HANDLE_INVALID) {
+        g_zx_handle_close(ret_hnd);
+    }
+}
+
+static zx_handle_t request_compositor_client_channel(zx_handle_t comp_ch) {
+    if (comp_ch == ZX_HANDLE_INVALID) return ZX_HANDLE_INVALID;
+    static uint32_t s_comp_txid = 800;
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_COMPOSITOR, IRIS_COMPOSITOR_OP_OPEN_CLIENT, ++s_comp_txid, 0);
+
+    zx_status_t st = g_zx_channel_write(comp_ch, 0, &req, sizeof(req), NULL, 0);
+    if (st != ZX_OK) return ZX_HANDLE_INVALID;
+
+    zx_signals_t obs = 0;
+    st = g_zx_object_wait_one(comp_ch, ZX_CHANNEL_READABLE, ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK) return ZX_HANDLE_INVALID;
+
+    uint8_t rep[sizeof(iris_msg_hdr_t) + 64];
+    zx_handle_t cli = ZX_HANDLE_INVALID;
+    uint32_t act_b = 0, act_h = 0;
+    st = g_zx_channel_read(comp_ch, 0, rep, &cli, sizeof(rep), 1, &act_b, &act_h);
+    if (st != ZX_OK || act_h < 1) {
+        if (cli != ZX_HANDLE_INVALID) g_zx_handle_close(cli);
+        return ZX_HANDLE_INVALID;
+    }
+    return cli;
 }
 
 static zx_handle_t request_pty_client_channel(zx_handle_t pty_ch) {
@@ -845,10 +882,15 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         }
 
         virtio_pci_dev_t input_dev; iris_memset(&input_dev, 0, sizeof(input_dev));
-        if (pci_find_virtio_device(ecam_va, 16, VIRTIO_DEV_ID_INPUT, &input_dev)) {
-            log_status(STATUS_OKAY, "iris_init", "Discovered VirtIO Input Device at PCI %02x:%02x.%x.", input_dev.bus, input_dev.dev, input_dev.func);
+        if (pci_find_virtio_device_nth(ecam_va, 16, VIRTIO_DEV_ID_INPUT, 0, &input_dev)) {
+            log_status(STATUS_OKAY, "iris_init", "Discovered VirtIO Input Device #0 at PCI %02x:%02x.%x.", input_dev.bus, input_dev.dev, input_dev.func);
         } else {
             log_status(STATUS_WARN, "iris_init", "VirtIO Input Device not detected, using UART fallback.");
+        }
+
+        virtio_pci_dev_t tablet_dev; iris_memset(&tablet_dev, 0, sizeof(tablet_dev));
+        if (pci_find_virtio_device_nth(ecam_va, 16, VIRTIO_DEV_ID_INPUT, 1, &tablet_dev)) {
+            log_status(STATUS_OKAY, "iris_init", "Discovered VirtIO Tablet Device #1 at PCI %02x:%02x.%x.", tablet_dev.bus, tablet_dev.dev, tablet_dev.func);
         }
 
         virtio_pci_dev_t gpu_dev; iris_memset(&gpu_dev, 0, sizeof(gpu_dev));
@@ -861,7 +903,7 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         }
 
         /* 3. Spawn core system daemons in dependency order:
-         *    virtio_blk -> virtio_gpu -> iris_crypt -> iris_pty -> [passphrase] -> iris_fshost */
+         *    virtio_blk -> virtio_gpu -> iris_crypt -> iris_pty -> [passphrase] -> iris_fshost -> iris_compositor */
         zx_handle_t blk_client = ZX_HANDLE_INVALID, blk_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &blk_client, &blk_server);
         zx_handle_t root_res_blk = ZX_HANDLE_INVALID;
@@ -874,6 +916,8 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
 
         zx_handle_t gpu_client = ZX_HANDLE_INVALID, gpu_server = ZX_HANDLE_INVALID;
         zx_handle_t proc_gpu = ZX_HANDLE_INVALID;
+        zx_handle_t comp_client = ZX_HANDLE_INVALID, comp_server = ZX_HANDLE_INVALID;
+        zx_handle_t proc_comp = ZX_HANDLE_INVALID;
         if (has_gpu) {
             g_zx_channel_create(0, &gpu_client, &gpu_server);
             zx_handle_t root_res_gpu = ZX_HANDLE_INVALID;
@@ -982,6 +1026,19 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             } else {
                 log_status(STATUS_FAIL, "iris_init", "Failed to spawn bin/passphrase (%d).", pw_st);
             }
+
+            /* In GUI boot mode, release iris_pty after passphrase unlock so iris_compositor
+             * has exclusive access to VirtIO Input (keyboard + tablet) and UART serial. */
+            if (has_gpu && pty_client != ZX_HANDLE_INVALID) {
+                g_zx_handle_close(pty_client);
+                pty_client = ZX_HANDLE_INVALID;
+                if (proc_pty != ZX_HANDLE_INVALID) {
+                    zx_signals_t pty_obs = 0;
+                    g_zx_object_wait_one(proc_pty, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &pty_obs);
+                    g_zx_handle_close(proc_pty);
+                    proc_pty = ZX_HANDLE_INVALID;
+                }
+            }
         }
 
         zx_handle_t fshost_client = ZX_HANDLE_INVALID, fshost_server = ZX_HANDLE_INVALID;
@@ -996,17 +1053,51 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         g_zx_handle_close(fshost_server); g_zx_handle_close(blk_for_fshost); g_zx_handle_close(crypt_client_for_fshost);
         log_status(STATUS_OKAY, "iris_init", "Spawned VFS Router & Filesystem Daemon (bin/iris_fshost).");
 
+        if (has_gpu) {
+            /* Establish GPU client channel and VFS client channel for iris_compositor */
+            zx_handle_t gpu_for_comp = ZX_HANDLE_INVALID, gpu_srv_comp = ZX_HANDLE_INVALID;
+            g_zx_channel_create(0, &gpu_for_comp, &gpu_srv_comp);
+            register_gpu_client(gpu_client, gpu_srv_comp);
+
+            zx_handle_t comp_fs_client = request_fs_client_channel(fshost_client);
+
+            g_zx_channel_create(0, &comp_client, &comp_server);
+            spawn_handle_t comp_hnds[4];
+            size_t num_comp_hnds = 0;
+            comp_hnds[num_comp_hnds++] = (spawn_handle_t){ comp_server,  PA_HND(PA_USER0, 0) };
+            comp_hnds[num_comp_hnds++] = (spawn_handle_t){ gpu_for_comp, PA_HND(PA_USER1, 0) };
+            if (comp_fs_client != ZX_HANDLE_INVALID) {
+                comp_hnds[num_comp_hnds++] = (spawn_handle_t){ comp_fs_client, PA_HND(PA_NS_DIR, 0) };
+            }
+            if (!g_test_mode && g_root_resource != ZX_HANDLE_INVALID) {
+                zx_handle_t root_res_comp = ZX_HANDLE_INVALID;
+                if (g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_comp) == ZX_OK) {
+                    comp_hnds[num_comp_hnds++] = (spawn_handle_t){ root_res_comp, PA_HND(PA_RESOURCE, 0) };
+                }
+            }
+
+            spawn_bootfs_binary("iris_compositor", "bin/iris_compositor", 0, NULL, comp_hnds, num_comp_hnds, &proc_comp);
+            g_zx_handle_close(comp_server);
+            g_zx_handle_close(gpu_for_comp);
+            log_status(STATUS_OKAY, "iris_init", "Spawned Window Compositor Daemon (bin/iris_compositor).");
+        }
+
         if (g_test_mode) {
             /* 4a. iris.mode=test: spawn the automated Interactive Test Suite */
-            zx_handle_t its_fs_client = request_fs_client_channel(fshost_client);
-            spawn_handle_t its_hnds[] = {
-                { its_fs_client != ZX_HANDLE_INVALID ? its_fs_client : fshost_client, PA_HND(PA_NS_DIR, 0) },
-                { pty_client,           PA_HND(PA_USER0, 0) },
-                { blk_client,           PA_HND(PA_USER1, 0) },
-                { crypt_client_for_its, PA_HND(PA_USER2, 0) }
-            };
+            zx_handle_t its_fs_client   = request_fs_client_channel(fshost_client);
+            zx_handle_t its_comp_client = request_compositor_client_channel(comp_client);
+            spawn_handle_t its_hnds[6];
+            size_t num_its_hnds = 0;
+            its_hnds[num_its_hnds++] = (spawn_handle_t){ its_fs_client != ZX_HANDLE_INVALID ? its_fs_client : fshost_client, PA_HND(PA_NS_DIR, 0) };
+            its_hnds[num_its_hnds++] = (spawn_handle_t){ pty_client,           PA_HND(PA_USER0, 0) };
+            if (its_comp_client != ZX_HANDLE_INVALID) {
+                its_hnds[num_its_hnds++] = (spawn_handle_t){ its_comp_client,  PA_HND(PA_USER0, 1) };
+            }
+            its_hnds[num_its_hnds++] = (spawn_handle_t){ blk_client,           PA_HND(PA_USER1, 0) };
+            its_hnds[num_its_hnds++] = (spawn_handle_t){ crypt_client_for_its, PA_HND(PA_USER2, 0) };
+
             zx_handle_t proc_its = ZX_HANDLE_INVALID;
-            spawn_bootfs_binary("its_irisOS", "bin/its_irisOS", 0, NULL, its_hnds, 4, &proc_its);
+            spawn_bootfs_binary("its_irisOS", "bin/its_irisOS", 0, NULL, its_hnds, num_its_hnds, &proc_its);
             log_status(STATUS_OKAY, "iris_init", "Boot mode: test. Spawned Interactive Test Suite (bin/its_irisOS).");
 
             /* Wait for its_irisOS to terminate */
@@ -1026,7 +1117,23 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 fshost_client = ZX_HANDLE_INVALID;
             }
 
-            /* Clean daemon teardown for automated testing */
+            /* Clean daemon teardown for automated testing (reverse dependency order) */
+            if (comp_client != ZX_HANDLE_INVALID) {
+                g_zx_handle_close(comp_client);
+                comp_client = ZX_HANDLE_INVALID;
+            }
+            if (proc_comp != ZX_HANDLE_INVALID) {
+                g_zx_object_wait_one(proc_comp, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
+                g_zx_handle_close(proc_comp);
+            }
+            if (gpu_client != ZX_HANDLE_INVALID) {
+                g_zx_handle_close(gpu_client);
+                gpu_client = ZX_HANDLE_INVALID;
+            }
+            if (proc_gpu != ZX_HANDLE_INVALID) {
+                g_zx_object_wait_one(proc_gpu, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
+                g_zx_handle_close(proc_gpu);
+            }
             if (proc_pty != ZX_HANDLE_INVALID) {
                 g_zx_object_wait_one(proc_pty, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
                 g_zx_handle_close(proc_pty);
@@ -1043,89 +1150,23 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 g_zx_object_wait_one(proc_blk, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
                 g_zx_handle_close(proc_blk);
             }
-            if (gpu_client != ZX_HANDLE_INVALID) {
-                g_zx_handle_close(gpu_client);
-                gpu_client = ZX_HANDLE_INVALID;
-            }
-            if (proc_gpu != ZX_HANDLE_INVALID) {
-                g_zx_object_wait_one(proc_gpu, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &obs);
-                g_zx_handle_close(proc_gpu);
-            }
 
             log_status(STATUS_OKAY, "iris_init", "All daemons cleanly terminated.");
             log_status(STATUS_OKAY, "iris_init", "Test run completed cleanly.");
         } else {
-            /* 4b. Default boot mode: immediately spawn /System/Bin/toybox (sh -i) attached to iris_pty */
-            bool boot_confirmed = false;
-            for (;;) {
-                zx_handle_t shell_pty = request_pty_client_channel(pty_client);
-                zx_handle_t shell_fs  = request_fs_client_channel(fshost_client);
+            /* 4b. Default GUI mode: confirm A/B slot, suppress serial Toybox shell,
+             *     and route VirtIO & UART input directly to iris_compositor. */
+            if (fshost_client != ZX_HANDLE_INVALID) {
+                if (confirm_boot_with_fshost(fshost_client) == ZX_OK) {
+                    log_status(STATUS_OKAY, "iris_init", "Confirmed active A/B GPT slot (boot_successful=1).");
+                }
+            }
 
-                zx_handle_t pty_fd0 = ZX_HANDLE_INVALID;
-                zx_handle_t pty_fd1 = ZX_HANDLE_INVALID;
-                zx_handle_t pty_fd2 = ZX_HANDLE_INVALID;
-                if (shell_pty != ZX_HANDLE_INVALID) {
-                    g_zx_handle_duplicate(shell_pty, ZX_RIGHT_SAME_RIGHTS, &pty_fd0);
-                    g_zx_handle_duplicate(shell_pty, ZX_RIGHT_SAME_RIGHTS, &pty_fd1);
-                    g_zx_handle_duplicate(shell_pty, ZX_RIGHT_SAME_RIGHTS, &pty_fd2);
-                }
-
-                spawn_handle_t sh_hnds[8];
-                size_t num_sh_hnds = 0;
-                if (g_root_resource != ZX_HANDLE_INVALID) {
-                    zx_handle_t root_res_shell = ZX_HANDLE_INVALID;
-                    if (g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_shell) == ZX_OK) {
-                        sh_hnds[num_sh_hnds++] = (spawn_handle_t){ root_res_shell, PA_HND(PA_RESOURCE, 0) };
-                    }
-                }
-                if (shell_fs != ZX_HANDLE_INVALID) {
-                    sh_hnds[num_sh_hnds++] = (spawn_handle_t){ shell_fs,  PA_HND(PA_NS_DIR, 0) };
-                }
-                if (shell_pty != ZX_HANDLE_INVALID) {
-                    sh_hnds[num_sh_hnds++] = (spawn_handle_t){ shell_pty, PA_HND(PA_USER0, 0) };
-                }
-                if (pty_fd0 != ZX_HANDLE_INVALID) {
-                    sh_hnds[num_sh_hnds++] = (spawn_handle_t){ pty_fd0,   PA_HND(PA_FD, 0) };
-                }
-                if (pty_fd1 != ZX_HANDLE_INVALID) {
-                    sh_hnds[num_sh_hnds++] = (spawn_handle_t){ pty_fd1,   PA_HND(PA_FD, 1) };
-                }
-                if (pty_fd2 != ZX_HANDLE_INVALID) {
-                    sh_hnds[num_sh_hnds++] = (spawn_handle_t){ pty_fd2,   PA_HND(PA_FD, 2) };
-                }
-
-                const char* sh_argv[] = { "sh", "-i", NULL };
-                zx_handle_t proc_shell = ZX_HANDLE_INVALID;
-                zx_status_t sp_st = ZX_ERR_NOT_FOUND;
-
-                if (fshost_client != ZX_HANDLE_INVALID) {
-                    sp_st = spawn_vfs_binary(fshost_client, "sh", "/System/Bin/toybox", 2, sh_argv, sh_hnds, num_sh_hnds, &proc_shell);
-                }
-                if (sp_st != ZX_OK) {
-                    sp_st = spawn_bootfs_binary("sh", "bin/toybox", 2, sh_argv, sh_hnds, num_sh_hnds, &proc_shell);
-                }
-                if (sp_st == ZX_OK && proc_shell != ZX_HANDLE_INVALID) {
-                    if (!boot_confirmed && fshost_client != ZX_HANDLE_INVALID) {
-                        if (confirm_boot_with_fshost(fshost_client) == ZX_OK) {
-                            log_status(STATUS_OKAY, "iris_init", "Confirmed active A/B GPT slot (boot_successful=1).");
-                        }
-                        boot_confirmed = true;
-                    }
-                    log_status(STATUS_OKAY, "iris_init", "Interactive shell spawned (/System/Bin/toybox sh -i).");
-                    zx_signals_t obs = 0;
-                    g_zx_object_wait_one(proc_shell, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &obs);
-                    g_zx_handle_close(proc_shell);
-                    log_status(STATUS_WARN, "iris_init", "Shell exited, respawning in 1s...");
-                    g_zx_nanosleep(iris_deadline_after(ZX_SEC(1)));
-                } else {
-                    log_status(STATUS_FAIL, "iris_init", "Failed to spawn shell (%d), retrying in 2s...", sp_st);
-                    for (size_t i = 0; i < num_sh_hnds; i++) {
-                        if (sh_hnds[i].handle != ZX_HANDLE_INVALID) {
-                            g_zx_handle_close(sh_hnds[i].handle);
-                        }
-                    }
-                    g_zx_nanosleep(iris_deadline_after(ZX_SEC(2)));
-                }
+            if (has_gpu && proc_comp != ZX_HANDLE_INVALID) {
+                log_status(STATUS_OKAY, "iris_init", "GUI desktop active (1280x800). Serial shell suppressed; routing VirtIO & UART input to iris_compositor.");
+                zx_signals_t obs = 0;
+                g_zx_object_wait_one(proc_comp, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &obs);
+                g_zx_handle_close(proc_comp);
             }
         }
     }

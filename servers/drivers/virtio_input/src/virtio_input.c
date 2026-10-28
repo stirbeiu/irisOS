@@ -143,7 +143,8 @@ int virtio_input_translate_key(uint16_t code, bool shift, bool ctrl, bool caps) 
     }
 }
 
-zx_status_t virtio_input_init(uintptr_t ecam_vaddr, zx_handle_t root_resource, virtio_input_dev_t* out_dev) {
+zx_status_t virtio_input_init_nth(uintptr_t ecam_vaddr, zx_handle_t root_resource,
+                                  uint32_t match_index, virtio_input_dev_t* out_dev) {
     if (!ecam_vaddr || root_resource == ZX_HANDLE_INVALID || !out_dev) {
         return ZX_ERR_INVALID_ARGS;
     }
@@ -152,8 +153,8 @@ zx_status_t virtio_input_init(uintptr_t ecam_vaddr, zx_handle_t root_resource, v
     out_dev->vq_pmt = ZX_HANDLE_INVALID;
     out_dev->dma_pmt = ZX_HANDLE_INVALID;
 
-    /* 1. Discover virtio-input device on PCIe ECAM */
-    if (!pci_find_virtio_device(ecam_vaddr, 16, VIRTIO_DEV_ID_INPUT, &out_dev->pci_dev)) {
+    /* 1. Discover Nth virtio-input device on PCIe ECAM */
+    if (!pci_find_virtio_device_nth(ecam_vaddr, 16, VIRTIO_DEV_ID_INPUT, match_index, &out_dev->pci_dev)) {
         return ZX_ERR_NOT_FOUND;
     }
 
@@ -318,6 +319,51 @@ zx_status_t virtio_input_init(uintptr_t ecam_vaddr, zx_handle_t root_resource, v
     __sync_synchronize();
 
     out_dev->active = true;
+    return ZX_OK;
+}
+
+zx_status_t virtio_input_init(uintptr_t ecam_vaddr, zx_handle_t root_resource, virtio_input_dev_t* out_dev) {
+    return virtio_input_init_nth(ecam_vaddr, root_resource, 0, out_dev);
+}
+
+zx_status_t virtio_input_poll_raw(virtio_input_dev_t* dev, virtio_input_event_t* out_events,
+                                  size_t max_events, size_t* out_count) {
+    if (!dev || !dev->active || !dev->vq_used_vaddr || !out_events || max_events == 0) {
+        if (out_count) *out_count = 0;
+        return ZX_ERR_INVALID_ARGS;
+    }
+
+    volatile vring_used_t* used = (volatile vring_used_t*)dev->vq_used_vaddr;
+    volatile vring_avail_t* avail = (volatile vring_avail_t*)dev->vq_avail_vaddr;
+    size_t count = 0;
+    uint16_t recycled = 0;
+
+    while (dev->last_used_idx != used->idx && count < max_events) {
+        uint32_t id = used->ring[dev->last_used_idx % dev->queue_size].id;
+        volatile virtio_input_event_t* ev = (volatile virtio_input_event_t*)(
+            dev->dma_vaddr + id * sizeof(virtio_input_event_t));
+
+        out_events[count].type  = ev->type;
+        out_events[count].code  = ev->code;
+        out_events[count].value = ev->value;
+        count++;
+
+        /* Recycle descriptor buffer into available ring */
+        avail->ring[avail->idx % dev->queue_size] = (uint16_t)id;
+        __sync_synchronize();
+        avail->idx++;
+        dev->last_used_idx++;
+        recycled++;
+    }
+
+    if (recycled > 0) {
+        __sync_synchronize();
+        volatile uint16_t* doorbell = (volatile uint16_t*)(
+            dev->doorbell_vaddr + dev->common_cfg->queue_notify_off * dev->pci_dev.notify_mult);
+        *doorbell = 0;
+    }
+
+    if (out_count) *out_count = count;
     return ZX_OK;
 }
 

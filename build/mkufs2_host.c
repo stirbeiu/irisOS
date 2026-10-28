@@ -397,6 +397,8 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             max_ino = 8 + 1 + (uint32_t)num_tools;
         }
 
+        uint32_t ino_fonts_dir = ++max_ino;
+
         host_file_alloc_t lib_allocs[32];
         size_t valid_libs = 0;
         memset(lib_allocs, 0, sizeof(lib_allocs));
@@ -409,11 +411,16 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             }
             const char* slash = strrchr(lib_paths[i], '/');
             const char* bname = slash ? (slash + 1) : lib_paths[i];
+            bool is_font = (strstr(bname, ".otf") != NULL || strstr(bname, ".ttf") != NULL);
+            bool is_srv_bin = (!is_font && strstr(bname, ".so") == NULL && strstr(bname, ".a") == NULL);
+            if (is_font && strcmp(bname, "Inter-Regular.otf") == 0) {
+                bname = "Inter.otf";
+            }
             max_ino++;
             lib_allocs[valid_libs].fd   = lfd;
             lib_allocs[valid_libs].name = bname;
             lib_allocs[valid_libs].ino  = max_ino;
-            lib_allocs[valid_libs].mode = 0644;
+            lib_allocs[valid_libs].mode = is_srv_bin ? 0755 : 0644;
             lib_allocs[valid_libs].size = lseek(lfd, 0, SEEK_END);
             lseek(lfd, 0, SEEK_SET);
             valid_libs++;
@@ -423,13 +430,14 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             setbit(inosused, ino);
             used_inodes++;
         }
-        used_dirs = 5; /* /, /Bin, /Libraries, /Servers, /Resources */
+        used_dirs = 6; /* /, /Bin, /Libraries, /Servers, /Resources, /Resources/Fonts */
 
         uint32_t blk_root    = next_blk++;
         uint32_t blk_bin     = next_blk++;
         uint32_t blk_lib     = next_blk++;
         uint32_t blk_srv     = next_blk++;
         uint32_t blk_res     = next_blk++;
+        uint32_t blk_fonts   = next_blk++;
         uint32_t blk_hello   = next_blk++;
         uint32_t blk_release = next_blk++;
 
@@ -473,20 +481,40 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         pwrite(fd, dir_blk, 4096, (off_t)blk_bin * 4096);
 
         dir_item_t lib_items[32];
+        size_t num_lib_items = 0;
+        dir_item_t srv_items[32];
+        size_t num_srv_items = 0;
+        dir_item_t font_items[32];
+        size_t num_font_items = 0;
         for (size_t i = 0; i < valid_libs; ++i) {
-            lib_items[i] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+            bool is_font = (strstr(lib_allocs[i].name, ".otf") != NULL ||
+                            strstr(lib_allocs[i].name, ".ttf") != NULL);
+            bool is_srv_bin = (!is_font &&
+                               strstr(lib_allocs[i].name, ".so") == NULL &&
+                               strstr(lib_allocs[i].name, ".a") == NULL);
+            if (is_font) {
+                font_items[num_font_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+            } else if (is_srv_bin) {
+                srv_items[num_srv_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+            } else {
+                lib_items[num_lib_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+            }
         }
-        build_dir_block(dir_blk, 4, 2, lib_items, valid_libs);
+        build_dir_block(dir_blk, 4, 2, lib_items, num_lib_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_lib * 4096);
 
-        build_dir_block(dir_blk, 5, 2, NULL, 0);
+        build_dir_block(dir_blk, 5, 2, srv_items, num_srv_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_srv * 4096);
 
         dir_item_t res_items[] = {
-            { 8, DT_REG, "release.txt" },
+            { 8,             DT_REG, "release.txt" },
+            { ino_fonts_dir, DT_DIR, "Fonts" },
         };
-        build_dir_block(dir_blk, 6, 2, res_items, 1);
+        build_dir_block(dir_blk, 6, 2, res_items, 2);
         pwrite(fd, dir_blk, 4096, (off_t)blk_res * 4096);
+
+        build_dir_block(dir_blk, ino_fonts_dir, 6, font_items, num_font_items);
+        pwrite(fd, dir_blk, 4096, (off_t)blk_fonts * 4096);
 
         const char* hello_str = "irisOS Immutable System Partition (UFS2)\n";
         uint8_t file_blk[4096];
@@ -499,10 +527,10 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         memcpy(file_blk, release_str, strlen(release_str));
         pwrite(fd, file_blk, 4096, (off_t)blk_release * 4096);
 
-        /* Write inodes 2..6 (dirs) */
+        /* Write inodes 2..6 (dirs) and ino_fonts_dir (/Resources/Fonts) */
         struct ufs2_dinode di;
         uint32_t dir_blks[5] = { blk_root, blk_bin, blk_lib, blk_srv, blk_res };
-        uint16_t dir_nlinks[5] = { 6, 2, 2, 2, 2 };
+        uint16_t dir_nlinks[5] = { 6, 2, 2, 2, 3 };
         for (int i = 0; i < 5; ++i) {
             memset(&di, 0, sizeof(di));
             di.di_mode    = IFDIR | 0755;
@@ -517,6 +545,19 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             di.di_db[0]   = dir_blks[i];
             write_inode_entry(fd, sblock, (uint32_t)(2 + i), &di);
         }
+
+        memset(&di, 0, sizeof(di));
+        di.di_mode    = IFDIR | 0755;
+        di.di_nlink   = 2;
+        di.di_size    = DIRBLKSIZ;
+        di.di_blocks  = 8;
+        di.di_blksize = 4096;
+        di.di_gen     = 1;
+        di.di_mtime   = sblock->fs_time;
+        di.di_atime   = sblock->fs_time;
+        di.di_ctime   = sblock->fs_time;
+        di.di_db[0]   = blk_fonts;
+        write_inode_entry(fd, sblock, ino_fonts_dir, &di);
 
         /* Write inode 7 (Bin/hello.txt) */
         memset(&di, 0, sizeof(di));

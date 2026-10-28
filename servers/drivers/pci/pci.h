@@ -39,6 +39,19 @@ void pci_parse_bars(uintptr_t ecam, uint8_t bus, uint8_t dev, uint8_t func, pci_
 bool pci_parse_virtio_caps(uintptr_t ecam, virtio_pci_dev_t* dev);
 
 /**
+ * @brief Scan PCIe buses to locate the Nth matching VirtIO device.
+ *
+ * @param ecam Base virtual address of mapped ECAM configuration window.
+ * @param max_buses Number of buses to scan (e.g. 16 or 256).
+ * @param target_dev_id Target VirtIO device ID (e.g. 0x1042, or 0 to match any VirtIO block device).
+ * @param match_index Zero-based occurrence index to match (0 = first matching device, 1 = second, etc.).
+ * @param out_dev Output virtio_pci_dev_t structure.
+ * @return true if device was found and capabilities parsed, false otherwise.
+ */
+bool pci_find_virtio_device_nth(uintptr_t ecam, uint8_t max_buses, uint16_t target_dev_id,
+                                uint32_t match_index, virtio_pci_dev_t* out_dev);
+
+/**
  * @brief Scan PCIe buses to locate a specific VirtIO device.
  *
  * @param ecam Base virtual address of mapped ECAM configuration window.

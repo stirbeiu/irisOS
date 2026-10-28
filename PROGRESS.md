@@ -245,10 +245,28 @@ This document tracks implementation status, completed milestones, verification c
 
 ## Phase 6: VirtIO-GPU & Graphical Framebuffer (CURRENT MILESTONE)
 
-* [ ] **Step 6.1:** Build `virtio-gpu-pci` Ring 3 driver and UEFI GOP Framebuffer fallback.
-* [ ] **Step 6.2:** Cross-compile `vendor/pixman` (MIT) and `vendor/freetype` (FTL) into `/System/Libraries`.
-* [ ] **Step 6.3:** Build `iris_compositor` and `libiris_gui` (zero-copy shared VMO window surfaces + IPC damage notifications at 60 Hz).
+* [x] **Step 6.1:** Build `virtio-gpu-pci` Ring 3 driver and UEFI GOP Framebuffer fallback.
+* [x] **Step 6.2:** Cross-compile `vendor/pixman` (MIT) and `vendor/freetype` (FTL) into `/System/Libraries`.
+* [x] **Step 6.3:** Build `iris_compositor` and `libiris_gui` (zero-copy shared VMO window surfaces + IPC damage notifications at 60 Hz).
 * [ ] **Step 6.4:** Build the graphical Terminal emulator (`apps/terminal`) running Toybox `sh` inside a desktop window with mouse cursor support.
+
+### Step 6.3: Zero-Copy Window Compositor (`iris_compositor`) & Client GUI Library (`libiris_gui`) (COMPLETED)
+* **Compositor IPC Protocol (`sdk/libiris/include/iris/ipc.h`):**
+  * Defined `IRIS_PROTO_COMPOSITOR` (`0x0004`) opcodes and packed payload structures:
+    * `IRIS_COMPOSITOR_OP_CREATE_WINDOW` (`iris_compositor_create_window_req_t` / `iris_compositor_create_window_resp_t`) with shared VMO transfer.
+    * `IRIS_COMPOSITOR_OP_DESTROY_WINDOW` (`iris_compositor_destroy_window_req_t`).
+    * `IRIS_COMPOSITOR_OP_DAMAGE` (`iris_compositor_damage_req_t`).
+    * `IRIS_COMPOSITOR_OP_MOVE_WINDOW` (`iris_compositor_move_window_req_t`).
+    * `IRIS_COMPOSITOR_OP_OPEN_CLIENT` for `posix_spawn` client channel propagation.
+* **Client Windowing Library (`sdk/libiris_gui/include/iris/gui.h`, `sdk/libiris_gui/src/gui.c`):**
+  * Implemented `iris_window_create()`, `iris_window_destroy()`, `iris_window_damage()`, `iris_window_get_surface()`, and `iris_window_move()`.
+  * Allocates a page-aligned Zircon VMO (`width * height * 4`), maps it via `zx_vmar_map()`, wraps it in a 32-bit `PIXMAN_a8r8g8b8` Pixman image, and transfers a duplicated VMO handle to `iris_compositor`.
+  * Built into `libiris_gui.a` and `libiris_gui.so` and installed into `out/sysroot` and `/System/Libraries`.
+* **Compositor Daemon (`servers/iris_compositor/src/main.c` -> `bin/iris_compositor`):**
+  * Connects to `virtio_gpu` via `IRIS_GPU_OP_GET_INFO` and maps the shared scanout VMO.
+  * Renders a Catppuccin Mocha / Slate linear gradient desktop wallpaper and 28px top bar using Pixman (`pixman_image_create_linear_gradient`, `pixman_image_composite32`).
+  * Manages window stacking in Z-order, draws a 1px outer border and 24px title bar with window control accents and title text, blends client surfaces via `pixman_image_composite32(PIXMAN_OP_OVER)`, and flushes damaged rectangles to `virtio_gpu` (`IRIS_GPU_OP_FLUSH`).
+  * Packaged into BOOTFS (`bin/iris_compositor`) and `/System/Servers/iris_compositor`, and spawned by `iris_init` immediately after `virtio_gpu` is ready.
 
 ---
 
@@ -575,3 +593,19 @@ Following the Adversarial Audit, Remediation Pass 1 implemented genuine filesyst
      * Verified clean build via `./iris build x86_64` (exit code 0, zero errors).
    - **Immediate Next Step (Step 6.3):**
      * Implement `iris_compositor` and `libiris_gui` for zero-copy VMO shared-memory window surfaces, 2D Pixman compositing, FreeType text rendering, and IPC damage notifications.
+
+3. **Step 6.3: `iris_compositor` & `libiris_gui` Zero-Copy Window System (COMPLETE):**
+   - **Compositor IPC Protocol (`sdk/libiris/include/iris/ipc.h`):**
+     * Defined `IRIS_PROTO_COMPOSITOR` (`0x0004`) and opcodes `IRIS_COMPOSITOR_OP_CREATE_WINDOW`, `IRIS_COMPOSITOR_OP_DESTROY_WINDOW`, `IRIS_COMPOSITOR_OP_DAMAGE`, `IRIS_COMPOSITOR_OP_MOVE_WINDOW`, and `IRIS_COMPOSITOR_OP_POLL_EVENT`.
+   - **Client Windowing Library (`sdk/libiris_gui/`):**
+     * Implemented `iris_window_create()`, `iris_window_destroy()`, `iris_window_damage()`, `iris_window_move()`, and `iris_window_get_surface()` in `sdk/libiris_gui/src/gui.c` and `sdk/libiris_gui/include/iris/gui.h`, compiled into both `libiris_gui.a` and `libiris_gui.so`.
+   - **Compositor Daemon (`servers/iris_compositor/src/main.c` -> `bin/iris_compositor`):**
+     * Default 1280x800 resolution (`-device virtio-gpu-pci,xres=1280,yres=800`) across `virtio_gpu`, `iris_compositor`, and `scripts/run_qemu.sh`.
+     * Added `-device virtio-tablet-pci` in QEMU and implemented multi-device PCIe VirtIO input discovery (`pci_find_virtio_device_nth`, `virtio_input_init_nth`, `virtio_input_poll_raw`) for absolute mouse coordinates (`EV_ABS`: `ABS_X`, `ABS_Y`) and mouse button events (`BTN_LEFT`).
+     * Added a 32x32 RGBA classic macOS arrow software cursor sprite (solid black arrow with a crisp 1px white border), pointer tracking `(cursor_x, cursor_y)`, cursor compositing over dirty damage regions prior to `flush_gpu_scanout()`, and window title-bar click-and-drag movement + Z-order focus switching.
+     * Integrated `Inter-Regular.otf` (`resources/fonts/Inter-Regular.otf` installed to `/System/Resources/Fonts/Inter.otf` on `System_A`/`System_B` via `mkufs2` and `mkimage.sh`) and initialized FreeType 2 (`FT_New_Face`) in `iris_compositor` for anti-aliased rendering of the top menu bar, window titles, and UI text.
+     * Suppressed spawning the serial Toybox shell in default GUI boot (`servers/iris_init/src/main.c`) and routed keyboard input from both VirtIO keyboard and UART serial directly to the active focused window in `iris_compositor`.
+   - **Verification:**
+     * Verified clean compilation and disk image creation via `./iris build x86_64` (exit code 0).
+   - **Immediate Next Step (Step 6.4):**
+     * Build the graphical Terminal emulator app (`apps/terminal/`) running Toybox `sh` inside a desktop window.

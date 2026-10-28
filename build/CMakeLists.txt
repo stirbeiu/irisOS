@@ -565,6 +565,7 @@ target_include_directories(iris_userland_common SYSTEM INTERFACE
     "${CMAKE_BINARY_DIR}/mlibc"
     "${IRIS_ROOT}/sdk/mlibc-sysdeps/iris/include"
     "${IRIS_ROOT}/sdk/libiris/include"
+    "${IRIS_ROOT}/sdk/libiris_gui/include"
     "${IRIS_ROOT}"
     "${IRIS_ROOT}/kernel/zircon/system/public"
     "${GEN_DIR}"
@@ -842,6 +843,72 @@ if (EXISTS "${FREETYPE_ROOT}/src/base/ftbase.c")
     add_custom_target(freetype_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libfreetype.so")
 endif()
 
+# ==============================================================================
+# Target: libiris_gui (Client Windowing Library - Zone 1 Permissive MIT)
+# ==============================================================================
+file(MAKE_DIRECTORY "${SYSROOT_INC_DIR}/iris")
+file(COPY_FILE "${IRIS_ROOT}/sdk/libiris_gui/include/iris/gui.h"
+               "${SYSROOT_INC_DIR}/iris/gui.h" ONLY_IF_DIFFERENT)
+
+set(LIBIRIS_GUI_SRCS
+    "${IRIS_ROOT}/sdk/libiris_gui/src/gui.c"
+)
+
+add_library(iris_gui_static STATIC ${LIBIRIS_GUI_SRCS})
+add_dependencies(iris_gui_static zircon_syscall_headers mlibc_target pixman)
+target_link_libraries(iris_gui_static PRIVATE iris_userland_common)
+
+target_include_directories(iris_gui_static PUBLIC
+    "${IRIS_ROOT}/sdk/libiris_gui/include"
+    "${IRIS_ROOT}/sdk/libiris/include"
+    "${SYSROOT_INC_DIR}"
+)
+
+target_compile_options(iris_gui_static PRIVATE
+    -fPIC
+    -O2
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+)
+
+set_target_properties(iris_gui_static PROPERTIES
+    OUTPUT_NAME "iris_gui"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
+
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/lib/libiris_gui.so"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/lib" "${SYSROOT_LIB_DIR}"
+    COMMAND "${CMAKE_C_COMPILER}"
+        "--target=${CMAKE_C_COMPILER_TARGET}"
+        "-Wl,-shared"
+        "-nostdlib"
+        "-fuse-ld=${CMAKE_LINKER}"
+        "-Wl,-soname,libiris_gui.so"
+        "-Wl,--allow-shlib-undefined"
+        $<TARGET_OBJECTS:iris_gui_static>
+        "-L${CMAKE_BINARY_DIR}/lib"
+        "-Wl,-Bdynamic"
+        "-liris"
+        "-lpixman-1"
+        "-lzircon"
+        "${BUILTINS_LIB}"
+        "-o" "${CMAKE_BINARY_DIR}/lib/libiris_gui.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/lib/libiris_gui.a"
+        "${SYSROOT_LIB_DIR}/libiris_gui.a"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/lib/libiris_gui.so"
+        "${SYSROOT_LIB_DIR}/libiris_gui.so"
+    DEPENDS iris_gui_static iris_shared pixman_shared zircon_shared compiler_rt_target
+    COMMENT "Linking dynamic shared library (libiris_gui.so) and installing into sysroot"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
+
+add_custom_target(iris_gui_shared ALL DEPENDS "${CMAKE_BINARY_DIR}/lib/libiris_gui.so")
+
 function(iris_add_userland_executable TARGET_NAME)
     cmake_parse_arguments(USERLAND "" "" "SOURCES;LIBRARIES;INCLUDES;DEFINITIONS;OPTIONS" ${ARGN})
 
@@ -891,6 +958,7 @@ endfunction()
 # 1. Interactive Test Suite
 iris_add_userland_executable(its_irisOS
     SOURCES "${IRIS_ROOT}/apps/tests/its_irisOS/main.c"
+    LIBRARIES iris_gui_static pixman freetype
 )
 
 # 1b. Persistent interactive shell launcher (boot mode "shell")
@@ -950,6 +1018,15 @@ iris_add_userland_executable(iris_pty
     INCLUDES
         "${IRIS_ROOT}/servers/iris_pty/include"
         "${IRIS_ROOT}/servers/drivers/virtio_input/include"
+)
+
+# 5b. Zero-Copy Window Compositor Daemon (Step 6.3)
+iris_add_userland_executable(iris_compositor
+    SOURCES
+        "${IRIS_ROOT}/servers/iris_compositor/src/main.c"
+        "${IRIS_ROOT}/servers/drivers/virtio_input/src/virtio_input.c"
+    LIBRARIES pixman freetype
+    INCLUDES "${IRIS_ROOT}/servers/drivers/virtio_input/include"
 )
 
 # 6. Toybox Multicall Userland Binary

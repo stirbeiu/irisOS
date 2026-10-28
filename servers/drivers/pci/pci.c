@@ -171,8 +171,11 @@ bool pci_parse_virtio_caps(uintptr_t ecam, virtio_pci_dev_t* dev) {
     return dev->has_common_cfg && dev->has_notify_cfg;
 }
 
-bool pci_find_virtio_device(uintptr_t ecam, uint8_t max_buses, uint16_t target_dev_id, virtio_pci_dev_t* out_dev) {
+bool pci_find_virtio_device_nth(uintptr_t ecam, uint8_t max_buses, uint16_t target_dev_id,
+                                uint32_t match_index, virtio_pci_dev_t* out_dev) {
     if (!ecam || !out_dev) return false;
+
+    uint32_t seen_matches = 0;
 
     for (uint16_t bus = 0; bus < max_buses; bus++) {
         for (uint8_t dev = 0; dev < 32; dev++) {
@@ -209,6 +212,10 @@ bool pci_find_virtio_device(uintptr_t ecam, uint8_t max_buses, uint16_t target_d
                 }
 
                 if (is_match) {
+                    if (seen_matches < match_index) {
+                        seen_matches++;
+                        continue;
+                    }
                     out_dev->bus = (uint8_t)bus;
                     out_dev->dev = dev;
                     out_dev->func = func;
@@ -230,4 +237,8 @@ bool pci_find_virtio_device(uintptr_t ecam, uint8_t max_buses, uint16_t target_d
     }
 
     return false;
+}
+
+bool pci_find_virtio_device(uintptr_t ecam, uint8_t max_buses, uint16_t target_dev_id, virtio_pci_dev_t* out_dev) {
+    return pci_find_virtio_device_nth(ecam, max_buses, target_dev_id, 0, out_dev);
 }

@@ -30,6 +30,7 @@
 #include <iris/ipc.h>
 #include <iris/fd_table.h>
 #include <iris/pty.h>
+#include <iris/gui.h>
 #include <iris/log.h>
 
 /* ==============================================================================
@@ -684,6 +685,28 @@ int main(int argc, char** argv) {
         return 19;
     }
     log_status(STATUS_OKAY, "its_irisOS", "VFS readlink verified: /System/Bin/sh -> \"%s\".", sym_buf);
+
+    /* 15. Verify Zero-Copy Window Compositor (iris_compositor & libiris_gui) (Step 6.3) */
+    if (iris_gui_get_channel() != ZX_HANDLE_INVALID) {
+        iris_window_t* win = iris_window_create("its_irisOS Test Window", 360, 200);
+        if (!win || win->window_id == 0 || !iris_window_get_surface(win)) {
+            log_status(STATUS_FAIL, "its_irisOS", "iris_window_create(\"its_irisOS Test Window\", 360, 200) failed.");
+            return 20;
+        }
+        pixman_image_t* surf = iris_window_get_surface(win);
+        pixman_color_t fill_col = { 0x8989, 0xB4B4, 0xFAFA, 0xFFFF };
+        pixman_rectangle16_t rect = { 16, 16, 328, 168 };
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, surf, &fill_col, 1, &rect);
+        iris_window_damage(win, 0, 0, 360, 200);
+        if (iris_window_move(win, 180, 140) != ZX_OK) {
+            log_status(STATUS_FAIL, "its_irisOS", "iris_window_move() failed.");
+            iris_window_destroy(win);
+            return 20;
+        }
+        uint32_t wid = win->window_id;
+        iris_window_destroy(win);
+        log_status(STATUS_OKAY, "its_irisOS", "Window Compositor & libiris_gui verified (window_id=%u, VMO surface + Pixman damage/move/destroy).", wid);
+    }
 
     log_status(STATUS_OKAY, "its_irisOS", "Interactive Test Suite all checks passed.");
     return 0;

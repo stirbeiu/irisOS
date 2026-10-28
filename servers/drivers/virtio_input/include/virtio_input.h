@@ -135,6 +135,21 @@ extern "C" {
 #define KEY_INSERT     110u
 #define KEY_DELETE     111u
 
+/* Absolute & Relative Axes (EV_ABS / EV_REL) */
+#define ABS_X          0x00u
+#define ABS_Y          0x01u
+#define ABS_Z          0x02u
+#define ABS_MAX_VAL    32767u
+
+#define REL_X          0x00u
+#define REL_Y          0x01u
+#define REL_WHEEL      0x08u
+
+/* Mouse & Tablet Button Codes (EV_KEY) */
+#define BTN_LEFT       0x110u
+#define BTN_RIGHT      0x111u
+#define BTN_MIDDLE     0x112u
+
 #pragma pack(push, 1)
 /**
  * @brief VirtIO input event packet received over queue 0 (eventq).
@@ -180,6 +195,18 @@ typedef struct virtio_input_dev {
 } virtio_input_dev_t;
 
 /**
+ * @brief Discover and initialize the Nth virtio-input-pci device on the PCIe bus.
+ *
+ * @param ecam_vaddr Mapped virtual address of ECAM space.
+ * @param root_resource Root resource handle for BAR mapping and BTI.
+ * @param match_index Zero-based index of the VirtIO input device to bind (0 = first, 1 = second).
+ * @param out_dev Pointer to virtio_input_dev_t to initialize.
+ * @return ZX_OK on success, ZX_ERR_NOT_FOUND if device absent, or error code.
+ */
+zx_status_t virtio_input_init_nth(uintptr_t ecam_vaddr, zx_handle_t root_resource,
+                                  uint32_t match_index, virtio_input_dev_t* out_dev);
+
+/**
  * @brief Discover and initialize a virtio-input-pci device on the PCIe bus.
  *
  * @param ecam_vaddr Mapped virtual address of ECAM space.
@@ -188,6 +215,18 @@ typedef struct virtio_input_dev {
  * @return ZX_OK on success, ZX_ERR_NOT_FOUND if device absent, or error code.
  */
 zx_status_t virtio_input_init(uintptr_t ecam_vaddr, zx_handle_t root_resource, virtio_input_dev_t* out_dev);
+
+/**
+ * @brief Poll a virtio-input device for raw `virtio_input_event_t` packets (keyboard & tablet/mouse).
+ *
+ * @param dev Pointer to initialized virtio_input_dev_t.
+ * @param out_events Buffer to store raw input events.
+ * @param max_events Maximum events to read.
+ * @param out_count Actual number of events read.
+ * @return ZX_OK if polled successfully, or error code.
+ */
+zx_status_t virtio_input_poll_raw(virtio_input_dev_t* dev, virtio_input_event_t* out_events,
+                                  size_t max_events, size_t* out_count);
 
 /**
  * @brief Poll the virtio-input device for input events and translate them to ASCII.

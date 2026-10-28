@@ -71,8 +71,20 @@ static zx_handle_t g_vdso_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_bootfs_vmo = ZX_HANDLE_INVALID;
 static zx_handle_t g_fshost_channel = ZX_HANDLE_INVALID;
 static zx_handle_t g_pty_channel = ZX_HANDLE_INVALID;
+static zx_handle_t g_compositor_channel = ZX_HANDLE_INVALID;
 
 extern "C" zx_handle_t iris_root_resource(void);
+
+extern "C" void iris_set_compositor_channel(zx_handle_t handle) {
+    g_compositor_channel = handle;
+}
+
+extern "C" zx_handle_t iris_get_compositor_channel(void) {
+    if (g_compositor_channel == ZX_HANDLE_INVALID) {
+        g_compositor_channel = zx_take_startup_handle(PA_HND(PA_USER0, 1));
+    }
+    return g_compositor_channel;
+}
 
 extern "C" zx_handle_t iris_get_bootfs_vmo(void) {
     return g_bootfs_vmo;
@@ -1223,6 +1235,42 @@ static zx_handle_t iris_fshost_create_client_channel(zx_handle_t fs_ch) {
     return child_ch;
 }
 
+static zx_handle_t iris_compositor_create_client_channel(zx_handle_t comp_ch) {
+    if (comp_ch == ZX_HANDLE_INVALID) return ZX_HANDLE_INVALID;
+
+    static uint32_t s_comp_client_txid = 980;
+    uint32_t txid = ++s_comp_client_txid;
+
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_COMPOSITOR, IRIS_COMPOSITOR_OP_OPEN_CLIENT, txid, 0);
+
+    zx_status_t st = zx_channel_write(comp_ch, 0, &req, sizeof(req), nullptr, 0);
+    if (st != ZX_OK) return ZX_HANDLE_INVALID;
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(comp_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) return ZX_HANDLE_INVALID;
+
+    uint8_t rep_buf[sizeof(iris_msg_hdr_t) + 64] __attribute__((aligned(8)));
+    zx_handle_t child_ch = ZX_HANDLE_INVALID;
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(comp_ch, 0, rep_buf, &child_ch, sizeof(rep_buf), 1,
+                         &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) || act_handles < 1) {
+        if (child_ch != ZX_HANDLE_INVALID) zx_handle_close(child_ch);
+        return ZX_HANDLE_INVALID;
+    }
+
+    const iris_msg_hdr_t* rep_hdr = reinterpret_cast<const iris_msg_hdr_t*>(rep_buf);
+    if (!iris_msg_hdr_is_valid(rep_hdr, IRIS_PROTO_COMPOSITOR) || rep_hdr->txid != txid || rep_hdr->status != ZX_OK) {
+        if (child_ch != ZX_HANDLE_INVALID) zx_handle_close(child_ch);
+        return ZX_HANDLE_INVALID;
+    }
+
+    return child_ch;
+}
+
 static void raw_debug_write(const char* buf, size_t count) {
     while (count > 0) {
         size_t n = (count > 256) ? 256 : count;
@@ -2261,6 +2309,18 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
             actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
             actions[num_actions].handle = child_pty;
             actions[num_actions].handle_info = PA_HND(PA_USER0, 0);
+            num_actions++;
+        }
+    }
+
+    // Propagate iris_compositor channel as PA_HND(PA_USER0, 1) if available
+    zx_handle_t comp_ch = iris_get_compositor_channel();
+    if (comp_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+        zx_handle_t child_comp = iris_compositor_create_client_channel(comp_ch);
+        if (child_comp != ZX_HANDLE_INVALID) {
+            actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
+            actions[num_actions].handle = child_comp;
+            actions[num_actions].handle_info = PA_HND(PA_USER0, 1);
             num_actions++;
         }
     }
