@@ -1024,9 +1024,14 @@ iris_add_userland_executable(iris_pty
 iris_add_userland_executable(iris_compositor
     SOURCES
         "${IRIS_ROOT}/servers/iris_compositor/src/main.c"
+        "${IRIS_ROOT}/servers/iris_compositor/src/font.c"
+        "${IRIS_ROOT}/servers/iris_compositor/src/render.c"
+        "${IRIS_ROOT}/servers/iris_compositor/src/input.c"
         "${IRIS_ROOT}/servers/drivers/virtio_input/src/virtio_input.c"
     LIBRARIES pixman freetype
-    INCLUDES "${IRIS_ROOT}/servers/drivers/virtio_input/include"
+    INCLUDES
+        "${IRIS_ROOT}/servers/iris_compositor/include"
+        "${IRIS_ROOT}/servers/drivers/virtio_input/include"
 )
 
 # 6. Toybox Multicall Userland Binary

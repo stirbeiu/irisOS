@@ -251,14 +251,16 @@ static zx_status_t virtio_gpu_flush_rect(uint32_t x, uint32_t y, uint32_t width,
         return st;
     }
 
-    /* 2. VIRTIO_GPU_CMD_RESOURCE_FLUSH */
+    /* 2. VIRTIO_GPU_CMD_RESOURCE_FLUSH: set flush rectangle to the full scanout
+     *    (0, 0, scanout_width, scanout_height) so QEMU's macOS Cocoa scaler
+     *    refreshes the host texture uniformly without fractional clip-rect rounding shear */
     virtio_gpu_resource_flush_t flush;
     memset(&flush, 0, sizeof(flush));
     flush.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-    flush.r.x         = x;
-    flush.r.y         = y;
-    flush.r.width     = width;
-    flush.r.height    = height;
+    flush.r.x         = 0;
+    flush.r.y         = 0;
+    flush.r.width     = g_display_width;
+    flush.r.height    = g_display_height;
     flush.resource_id = VIRTIO_GPU_RESOURCE_ID_FB;
 
     return virtio_gpu_exec_cmd(&flush, sizeof(flush), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
@@ -553,43 +555,12 @@ static zx_status_t init_virtio_gpu_device(void) {
         return status;
     }
 
-    /* 10. Clear framebuffer to solid desktop background color (0xFF1E1E2E),
-     *     draw Visual Test Card (top 100-px RGBW color bars + centered 400x200 iris rectangle),
-     *     and flush to scanout 0. */
+    /* 10. Clear framebuffer to solid desktop background color (0xFF1E1E2E)
+     *     and flush to scanout 0 for clean transition to compositor. */
     uint32_t* pixels = (uint32_t*)g_fb_vaddr;
     size_t total_pixels = (size_t)g_display_width * (size_t)g_display_height;
     for (size_t i = 0; i < total_pixels; i++) {
         pixels[i] = IRIS_DESKTOP_BG_COLOR;
-    }
-
-    /* Top 100 rows: 4 equal-width RGBW color bars (Red, Green, Blue, White) */
-    uint32_t bar_h = (g_display_height >= 100u) ? 100u : g_display_height;
-    uint32_t bar_w = g_display_width / 4u;
-    const uint32_t bar_colors[4] = {
-        0xFFFF0000u, /* Red   */
-        0xFF00FF00u, /* Green */
-        0xFF0000FFu, /* Blue  */
-        0xFFFFFFFFu  /* White */
-    };
-    for (uint32_t y = 0; y < bar_h; y++) {
-        uint32_t* row = pixels + ((size_t)y * g_display_width);
-        for (uint32_t x = 0; x < g_display_width; x++) {
-            uint32_t idx = (bar_w > 0) ? (x / bar_w) : 0;
-            if (idx > 3u) idx = 3u;
-            row[x] = bar_colors[idx];
-        }
-    }
-
-    /* Centered 400x200 bright cyan/iris rectangle (0xFF89B4FA) */
-    uint32_t rect_w = (g_display_width >= 400u) ? 400u : g_display_width;
-    uint32_t rect_h = (g_display_height >= 200u) ? 200u : g_display_height;
-    uint32_t start_x = (g_display_width - rect_w) / 2u;
-    uint32_t start_y = (g_display_height - rect_h) / 2u;
-    for (uint32_t y = start_y; y < start_y + rect_h; y++) {
-        uint32_t* row = pixels + ((size_t)y * g_display_width);
-        for (uint32_t x = start_x; x < start_x + rect_w; x++) {
-            row[x] = 0xFF89B4FAu;
-        }
     }
     __sync_synchronize();
 

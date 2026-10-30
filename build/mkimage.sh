@@ -155,7 +155,9 @@ dd if=/dev/zero of="${PART1_ESP}" bs=512 count=65536 status=none
 # 7. Construct Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 each (65536 sectors)
 SYS_A_IMG="${IMAGES_DIR}/system_a_${ARCH_NAME}.ufs2"
 SYS_B_IMG="${IMAGES_DIR}/system_b_${ARCH_NAME}.ufs2"
-INTER_FONT="${ROOT_DIR}/resources/fonts/Inter-Regular.otf"
+INTER_REGULAR="${ROOT_DIR}/resources/fonts/InterDisplay-Regular.otf"
+INTER_BOLD="${ROOT_DIR}/resources/fonts/InterDisplay-Bold.otf"
+INTER_ITALIC="${ROOT_DIR}/resources/fonts/InterDisplay-Italic.otf"
 SYS_LIBS=(
     "${BUILD_DIR}/lib/libzircon.so"
     "${BUILD_DIR}/lib/libiris.so"
@@ -166,9 +168,11 @@ SYS_LIBS=(
     "${BUILD_DIR}/lib/libpixman-1.a"
     "${BUILD_DIR}/lib/libfreetype.a"
     "${BUILD_DIR}/bin/iris_compositor"
-    "${INTER_FONT}"
+    "${INTER_REGULAR}"
+    "${INTER_BOLD}"
+    "${INTER_ITALIC}"
 )
-echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries & /System/Resources/Fonts/Inter.otf..."
+echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries & Inter Display Fonts..."
 "${HOST_TOOLS}/mkufs2" "${SYS_A_IMG}" 65536 system System_A "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
 "${HOST_TOOLS}/mkufs2" "${SYS_B_IMG}" 65536 system System_B "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
 

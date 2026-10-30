@@ -1064,6 +1064,18 @@ static zx_status_t resolve_vfs_path(const char* raw_path,
         if (ufs2_dir_lookup(disk, UFS_ROOTINO, "Users", &users_ino) == ZX_OK) {
             cur_ino = users_ino;
         }
+    } else if (strcmp(path, "/tmp") == 0 || strncmp(path, "/tmp/", 5) == 0) {
+        if (!g_data_mounted) return ZX_ERR_UNAVAILABLE;
+        mount_id = VFS_MOUNT_DATA_RW;
+        disk     = &g_ufs_data;
+        rel      = (path[4] == '/') ? (path + 5) : "";
+        ufs_ino_t tmp_ino = UFS_ROOTINO;
+        if (ufs2_dir_lookup(disk, UFS_ROOTINO, "tmp", &tmp_ino) != ZX_OK) {
+            ufs2_mkdir(disk, UFS_ROOTINO, "tmp", 0777, &tmp_ino);
+        }
+        if (tmp_ino != 0) {
+            cur_ino = tmp_ino;
+        }
     } else if (strcmp(path, "/Applications") == 0 || strncmp(path, "/Applications/", 14) == 0) {
         if (!g_data_mounted) return ZX_ERR_UNAVAILABLE;
         mount_id = VFS_MOUNT_DATA_RW;

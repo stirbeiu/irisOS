@@ -82,8 +82,8 @@ if [[ ! -f "${UEFI_CODE}" ]]; then
 fi
 
 if [[ "${GUI}" == "1" ]]; then
-    DISPLAY_MODE="QEMU Cocoa Window (-display cocoa) + Serial Console (-serial stdio)"
-    DISPLAY_ARGS=("-display" "cocoa")
+    DISPLAY_MODE="QEMU Cocoa Window (-display cocoa,zoom-to-fit=on) + Serial Console (-serial stdio)"
+    DISPLAY_ARGS=("-display" "cocoa,zoom-to-fit=on")
 else
     DISPLAY_MODE="Headless Serial Console Only (-display none)"
     DISPLAY_ARGS=("-display" "none")

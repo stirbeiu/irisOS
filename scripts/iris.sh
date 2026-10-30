@@ -42,7 +42,7 @@ BUILD COMMANDS:
   make build x86_64      Build system image for x86_64
   make build aarch64     Build system image for aarch64
 
-RUN COMMANDS (QEMU window + serial console in stdio):
+RUN COMMANDS (QEMU Cocoa window (-display cocoa,zoom-to-fit=on) + serial console in stdio):
   make run all           Boot dual VMs (x86_64 & aarch64) with warning prompt
   make run x86_64        Boot x86_64 VM (without rebuilding)
   make run aarch64       Boot aarch64 VM (without rebuilding)

@@ -609,3 +609,35 @@ Following the Adversarial Audit, Remediation Pass 1 implemented genuine filesyst
      * Verified clean compilation and disk image creation via `./iris build x86_64` (exit code 0).
    - **Immediate Next Step (Step 6.4):**
      * Build the graphical Terminal emulator app (`apps/terminal/`) running Toybox `sh` inside a desktop window.
+
+4. **Step 6.3.1: Compositor Modular Refactor & Performance Decoupling (COMPLETE):**
+   - **Modular Codebase Separation (`servers/iris_compositor/`):**
+     * `include/compositor.h`: Centralized types (`comp_window_t`, `comp_dirty_rect_t`, `font_style_t`), shared constants, global variable declarations, and function prototypes.
+     * `src/font.c`: FreeType 2 multi-font loader for Inter Display (`InterDisplay-Regular.otf`, `InterDisplay-Bold.otf`, `InterDisplay-Italic.otf`) with fallback to legacy `Inter.otf` and complete 8x8 bitmap font fallback.
+     * `src/render.c`: VirtIO-GPU scanout connection, 18x24 macOS cursor sprite, desktop wallpaper gradient, window decoration/clipping blits, welcome window input strip redraw, modal crash recovery dialog, double-buffering with cursor save-under, and `pixman_region32_t` clip optimization in `composite_and_flush()`.
+     * `src/input.c`: VirtIO keyboard/tablet event polling, UART serial RX thread, mouse hit-testing, and window drag tracking completely decoupled from rendering.
+     * `src/main.c`: Startup capability extraction, window table management, `IRIS_PROTO_COMPOSITOR` IPC handlers, and true 60 FPS frame-pacing loop (`16.67ms` deadline via `zx_clock_get_monotonic()`).
+   - **Performance Decoupling & Dirty Rect Tracking:**
+     * Completely decoupled input processing from rendering: zero direct calls to `composite_and_flush()` or `update_screen()` inside `poll_input_devices()` or `route_key_to_focused_window()`.
+     * Keystrokes in welcome window only redraw the 32px input box strip (`y = 174..206`) and union it with `g_dirty_rect`.
+     * Window dragging updates coordinates and unions old/new window rectangles into `g_dirty_rect`.
+     * `composite_and_flush()` applies `pixman_image_set_clip_region32(g_backbuf_surface, &clip)` before compositing wallpaper and windows, skipping off-damage pixels entirely.
+     * Rendering tick paced to 60 FPS (`16666667 ns`) executing at most one render pass when `g_dirty_active` or `g_cursor_dirty` is true.
+   - **Inter Display Fonts Packaging:**
+     * Bundled `InterDisplay-Regular.otf`, `InterDisplay-Bold.otf`, and `InterDisplay-Italic.otf` into `/System/Resources/Fonts/` via `build/mkimage.sh`.
+   - **Verification:**
+     * Clean build via `./iris build x86_64` (exit code 0, zero warnings/errors).
+
+5. **Step 6.3.2: Fractional Dirty-Rect Tearing & Clean Cursor Restore (COMPLETE):**
+   - **Full Scanout Host Refresh (`servers/drivers/virtio_gpu/src/main.c`):**
+     * In `virtio_gpu_flush_rect()`: verified `VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D` calculates the exact byte offset `((uint64_t)y * (uint64_t)g_display_pitch) + ((uint64_t)x * 4ULL)` and transfers only the minimal dirty bounding box `(x, y, width, height)`.
+     * Set `VIRTIO_GPU_CMD_RESOURCE_FLUSH` to the full scanout `(0, 0, g_display_width, g_display_height)`, ensuring QEMU's macOS Cocoa scaler (`zoom-to-fit=on`) refreshes the host texture uniformly without fractional clip-rect rounding shear or edge stair-stepping.
+   - **Clean Cursor Restore Sequence (`servers/iris_compositor/src/render.c`):**
+     * Verified `g_backbuf_surface` is never contaminated with cursor pixels.
+     * In `update_screen()`: ordered presentation into 3 discrete passes:
+       1. Copy `old_cursor_rect` from `g_backbuf_surface` to `g_scanout_surface` (`PIXMAN_OP_SRC`).
+       2. Copy any `dmg_rect` from `g_backbuf_surface` to `g_scanout_surface` (`PIXMAN_OP_SRC`).
+       3. Copy `new_cursor_rect` from `g_backbuf_surface` to `g_scanout_surface` (`PIXMAN_OP_SRC`), and then composite `g_cursor_surface` onto `g_scanout_surface` at `(g_cursor_x, g_cursor_y)` via `PIXMAN_OP_OVER`.
+   - **Verification:**
+     * Clean build via `./iris build x86_64` (exit code 0).
+
