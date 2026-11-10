@@ -146,6 +146,7 @@ typedef struct vfs_open_file {
     bool           in_use;
     vfs_mount_id_t mount_id;
     bool           writable;
+    bool           dirty;
     ufs_ino_t      ino;
     uint32_t       flags;
     uint64_t       offset;
@@ -1299,13 +1300,87 @@ static void handle_fs_close(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BAD_HANDLE, 0);
         return;
     }
-    if (g_open_files[req->vfs_handle].writable) {
-        cgwrite1(&g_ufs_data, 0);
-        sbwrite(&g_ufs_data, 0);
-        iris_ufs_flush_device(1);
+    if (g_open_files[req->vfs_handle].writable && g_open_files[req->vfs_handle].dirty) {
+        iris_ufs_flush_device(DEV_ID_DATA_CRYPT);
     }
     memset(&g_open_files[req->vfs_handle], 0, sizeof(vfs_open_file_t));
     iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
+}
+
+/* ==============================================================================
+ * UFS2 Indirect Block Cache & Coalesced Reader
+ * ============================================================================== */
+
+static struct uufsd* g_cached_ib0_disk = NULL;
+static ufs2_daddr_t  g_cached_ib0_frag = 0;
+static ufs2_daddr_t  g_cached_ib0_blk[512];
+
+static struct uufsd* g_cached_ib1_l1_disk = NULL;
+static ufs2_daddr_t  g_cached_ib1_l1_frag = 0;
+static ufs2_daddr_t  g_cached_ib1_l1_blk[512];
+
+static struct uufsd* g_cached_ib1_l2_disk = NULL;
+static ufs2_daddr_t  g_cached_ib1_l2_frag = 0;
+static ufs2_daddr_t  g_cached_ib1_l2_blk[512];
+
+static void ufs2_invalidate_indirect_cache(void) {
+    g_cached_ib0_disk    = NULL;
+    g_cached_ib0_frag    = 0;
+    g_cached_ib1_l1_disk = NULL;
+    g_cached_ib1_l1_frag = 0;
+    g_cached_ib1_l2_disk = NULL;
+    g_cached_ib1_l2_frag = 0;
+}
+
+static bool ufs2_lookup_lbn_frag(struct uufsd* disk, const struct ufs2_dinode* di,
+                                 uint32_t lbn, ufs2_daddr_t* out_frag) {
+    struct fs* fs = &disk->d_fs;
+    *out_frag = 0;
+
+    if (lbn < UFS_NDADDR) {
+        *out_frag = di->di_db[lbn];
+        return true;
+    } else if (lbn < UFS_NDADDR + 512u) {
+        uint32_t ind_idx = lbn - UFS_NDADDR;
+        if (di->di_ib[0] != 0) {
+            if (g_cached_ib0_disk != disk || g_cached_ib0_frag != di->di_ib[0]) {
+                if (bread(disk, fsbtodb(fs, di->di_ib[0]), (char*)g_cached_ib0_blk, 4096) == -1) {
+                    return false;
+                }
+                g_cached_ib0_disk = disk;
+                g_cached_ib0_frag = di->di_ib[0];
+            }
+            *out_frag = g_cached_ib0_blk[ind_idx];
+        }
+        return true;
+    } else if (lbn < UFS_NDADDR + 512u + (512u * 512u)) {
+        uint32_t dind_off = lbn - (UFS_NDADDR + 512u);
+        uint32_t l1_idx   = dind_off / 512u;
+        uint32_t l2_idx   = dind_off % 512u;
+        if (di->di_ib[1] != 0) {
+            if (g_cached_ib1_l1_disk != disk || g_cached_ib1_l1_frag != di->di_ib[1]) {
+                if (bread(disk, fsbtodb(fs, di->di_ib[1]), (char*)g_cached_ib1_l1_blk, 4096) == -1) {
+                    return false;
+                }
+                g_cached_ib1_l1_disk = disk;
+                g_cached_ib1_l1_frag = di->di_ib[1];
+            }
+            ufs2_daddr_t l2_frag = g_cached_ib1_l1_blk[l1_idx];
+            if (l2_frag != 0) {
+                if (g_cached_ib1_l2_disk != disk || g_cached_ib1_l2_frag != l2_frag) {
+                    if (bread(disk, fsbtodb(fs, l2_frag), (char*)g_cached_ib1_l2_blk, 4096) == -1) {
+                        return false;
+                    }
+                    g_cached_ib1_l2_disk = disk;
+                    g_cached_ib1_l2_frag = l2_frag;
+                }
+                *out_frag = g_cached_ib1_l2_blk[l2_idx];
+            }
+        }
+        return true;
+    }
+
+    return false;
 }
 
 static void handle_fs_read(const iris_msg_hdr_t* req_hdr, const uint8_t* payload,
@@ -1359,44 +1434,45 @@ static void handle_fs_read(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
         }
 
         ufs2_daddr_t frag = 0;
-        if (lbn < UFS_NDADDR) {
-            frag = di.di_db[lbn];
-        } else if (lbn < UFS_NDADDR + 512) {
-            uint32_t ind_idx = lbn - UFS_NDADDR;
-            if (di.di_ib[0] != 0) {
-                ufs2_daddr_t iblk[512];
-                if (bread(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) != -1) {
-                    frag = iblk[ind_idx];
-                }
-            }
-        } else if (lbn < UFS_NDADDR + 512 + 512 * 512) {
-            uint32_t dind_off = lbn - (UFS_NDADDR + 512);
-            uint32_t l1_idx   = dind_off / 512;
-            uint32_t l2_idx   = dind_off % 512;
-            if (di.di_ib[1] != 0) {
-                ufs2_daddr_t l1_blk[512];
-                if (bread(disk, fsbtodb(fs, di.di_ib[1]), (char*)l1_blk, 4096) != -1 &&
-                    l1_blk[l1_idx] != 0) {
-                    ufs2_daddr_t l2_blk[512];
-                    if (bread(disk, fsbtodb(fs, l1_blk[l1_idx]), (char*)l2_blk, 4096) != -1) {
-                        frag = l2_blk[l2_idx];
-                    }
-                }
-            }
-        } else {
+        if (!ufs2_lookup_lbn_frag(disk, &di, lbn, &frag)) {
             break;
         }
 
         if (frag == 0) {
             memset(rep_payload + bytes_copied, 0, chunk);
+            bytes_copied += chunk;
+            continue;
+        }
+
+        /* Coalesce contiguous full 4KB blocks (up to 32KB / 8 blocks per IPC transfer) */
+        if (blk_off == 0 && chunk == 4096u) {
+            uint32_t run_blks = 1u;
+            uint32_t rem_bytes = to_read - bytes_copied;
+            while (run_blks < 8u && (run_blks + 1u) * 4096u <= rem_bytes) {
+                ufs2_daddr_t next_frag = 0;
+                if (!ufs2_lookup_lbn_frag(disk, &di, lbn + run_blks, &next_frag)) {
+                    break;
+                }
+                if (next_frag != frag + (ufs2_daddr_t)(run_blks * (uint32_t)fs->fs_frag)) {
+                    break;
+                }
+                run_blks++;
+            }
+
+            uint32_t run_bytes = run_blks * 4096u;
+            if (bread(disk, fsbtodb(fs, frag), rep_payload + bytes_copied, (int)run_bytes) == -1) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                return;
+            }
+            bytes_copied += run_bytes;
         } else {
             if (bread(disk, fsbtodb(fs, frag), blk_buf, 4096) == -1) {
                 iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
                 return;
             }
             memcpy(rep_payload + bytes_copied, blk_buf + blk_off, chunk);
+            bytes_copied += chunk;
         }
-        bytes_copied += chunk;
     }
 
     f->offset += bytes_copied;
@@ -1441,6 +1517,7 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
 
     uint8_t blk_buf[4096] __attribute__((aligned(8)));
     uint32_t bytes_written = 0;
+    bool alloc_changed = false;
 
     while (bytes_written < req->count) {
         uint64_t cur_off = f->offset + bytes_written;
@@ -1462,6 +1539,7 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
                 }
                 di.di_db[lbn]  = frag;
                 di.di_blocks  += btodb(4096);
+                alloc_changed  = true;
                 memset(blk_buf, 0, sizeof(blk_buf));
             } else if (blk_off != 0 || chunk < 4096u) {
                 if (bread(disk, fsbtodb(fs, frag), blk_buf, 4096) == -1) {
@@ -1479,11 +1557,13 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
                     return;
                 }
                 di.di_blocks += btodb(4096);
+                alloc_changed = true;
                 memset(iblk, 0, sizeof(iblk));
                 if (bwrite(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) == -1) {
                     iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
                     return;
                 }
+                ufs2_invalidate_indirect_cache();
             } else {
                 if (bread(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) == -1) {
                     iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
@@ -1500,10 +1580,12 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
                 }
                 iblk[ind_idx] = frag;
                 di.di_blocks += btodb(4096);
+                alloc_changed = true;
                 if (bwrite(disk, fsbtodb(fs, di.di_ib[0]), (char*)iblk, 4096) == -1) {
                     iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
                     return;
                 }
+                ufs2_invalidate_indirect_cache();
                 memset(blk_buf, 0, sizeof(blk_buf));
             } else if (blk_off != 0 || chunk < 4096u) {
                 if (bread(disk, fsbtodb(fs, frag), blk_buf, 4096) == -1) {
@@ -1528,7 +1610,8 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
     if (f->offset > di.di_size) {
         di.di_size = f->offset;
     }
-    f->size = di.di_size;
+    f->size  = di.di_size;
+    f->dirty = true;
 
     /* Reload and persist updated dinode */
     if (getinode(disk, &dp, f->ino) == -1) {
@@ -1541,10 +1624,12 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
         return;
     }
 
-    /* Persist dirty allocation bitmaps, superblock and flush underlying block device */
-    cgwrite1(disk, 0);
-    sbwrite(disk, 0);
-    iris_ufs_flush_device(1);
+    /* Persist cylinder group & superblock when new blocks were allocated, and flush Data device */
+    if (alloc_changed) {
+        cgwrite1(disk, 0);
+        sbwrite(disk, 0);
+    }
+    iris_ufs_flush_device(DEV_ID_DATA_CRYPT);
 
     iris_fs_write_resp_t* resp = (iris_fs_write_resp_t*)rep_payload;
     resp->bytes_written = bytes_written;
@@ -1963,6 +2048,177 @@ static void handle_fs_readlink(const iris_msg_hdr_t* req_hdr, const uint8_t* pay
 }
 
 /* ==============================================================================
+ * Read-Only /System Executable VMO Cache (IRIS_FS_OP_GET_EXEC_VMO)
+ * ============================================================================== */
+
+#define MAX_EXEC_VMO_CACHE 16
+
+typedef struct exec_vmo_cache_entry {
+    bool        in_use;
+    ufs_ino_t   ino;
+    uint64_t    size;
+    zx_handle_t exec_vmo;
+} exec_vmo_cache_entry_t;
+
+static exec_vmo_cache_entry_t g_exec_vmo_cache[MAX_EXEC_VMO_CACHE];
+
+static void handle_fs_get_exec_vmo(zx_handle_t ch, const iris_msg_hdr_t* req_hdr, const uint8_t* payload) {
+    iris_msg_hdr_t rep_hdr;
+    if (req_hdr->payload_len < sizeof(iris_fs_get_exec_vmo_req_t)) {
+        iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+        zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+        return;
+    }
+
+    const iris_fs_get_exec_vmo_req_t* req = (const iris_fs_get_exec_vmo_req_t*)payload;
+    char safe_path[256];
+    memcpy(safe_path, req->path, sizeof(safe_path) - 1);
+    safe_path[sizeof(safe_path) - 1] = '\0';
+
+    vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
+    struct uufsd* disk = NULL;
+    ufs_ino_t parent_ino = 0;
+    ufs_ino_t target_ino = 0;
+    char leaf[128] = {0};
+
+    zx_status_t st = resolve_vfs_path(safe_path, &mount_id, &disk, &parent_ino,
+                                      leaf, sizeof(leaf), &target_ino);
+    if (st != ZX_OK || mount_id != VFS_MOUNT_SYSTEM_RO || disk != &g_ufs_system) {
+        iris_msg_hdr_init_reply(&rep_hdr, req_hdr, (st != ZX_OK) ? st : ZX_ERR_NOT_SUPPORTED, 0);
+        zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+        return;
+    }
+
+    /* 1. Check if this /System inode is already cached */
+    for (int i = 0; i < MAX_EXEC_VMO_CACHE; ++i) {
+        if (g_exec_vmo_cache[i].in_use && g_exec_vmo_cache[i].ino == target_ino &&
+            g_exec_vmo_cache[i].exec_vmo != ZX_HANDLE_INVALID) {
+            zx_handle_t dup_vmo = ZX_HANDLE_INVALID;
+            zx_status_t dst = zx_handle_duplicate(g_exec_vmo_cache[i].exec_vmo, ZX_RIGHT_SAME_RIGHTS, &dup_vmo);
+            if (dst == ZX_OK && dup_vmo != ZX_HANDLE_INVALID) {
+                uint8_t msg[sizeof(iris_msg_hdr_t) + sizeof(iris_fs_get_exec_vmo_resp_t)] __attribute__((aligned(8)));
+                iris_msg_hdr_t* h = (iris_msg_hdr_t*)msg;
+                iris_fs_get_exec_vmo_resp_t* r = (iris_fs_get_exec_vmo_resp_t*)(msg + sizeof(iris_msg_hdr_t));
+                r->size = g_exec_vmo_cache[i].size;
+                iris_msg_hdr_init_reply(h, req_hdr, ZX_OK, sizeof(*r));
+                zx_channel_write(ch, 0, msg, sizeof(msg), &dup_vmo, 1);
+                return;
+            }
+        }
+    }
+
+    /* 2. Cold load from immutable /System UFS2 using coalesced block reads */
+    union dinodep dp;
+    if (getinode(disk, &dp, target_ino) == -1) {
+        iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_IO, 0);
+        zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+        return;
+    }
+    struct ufs2_dinode di = *dp.dp2;
+    if ((di.di_mode & IFMT) != IFREG || di.di_size < 64) {
+        iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_NOT_FILE, 0);
+        zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+        return;
+    }
+
+    uint64_t file_size = (uint64_t)di.di_size;
+    zx_handle_t raw_vmo = ZX_HANDLE_INVALID;
+    if (zx_vmo_create(file_size, 0, &raw_vmo) != ZX_OK) {
+        iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_NO_MEMORY, 0);
+        zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+        return;
+    }
+
+    struct fs* fs = &disk->d_fs;
+    static uint8_t io_buf[32768] __attribute__((aligned(8)));
+    uint64_t cur_off = 0;
+
+    while (cur_off < file_size) {
+        uint32_t lbn = (uint32_t)(cur_off / 4096u);
+        ufs2_daddr_t frag = 0;
+        if (!ufs2_lookup_lbn_frag(disk, &di, lbn, &frag)) {
+            zx_handle_close(raw_vmo);
+            iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_IO, 0);
+            zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+            return;
+        }
+
+        uint32_t run_blks = 1u;
+        uint64_t rem_bytes = file_size - cur_off;
+        if (frag != 0) {
+            while (run_blks < 8u && (uint64_t)run_blks * 4096ULL < rem_bytes) {
+                ufs2_daddr_t next_frag = 0;
+                if (!ufs2_lookup_lbn_frag(disk, &di, lbn + run_blks, &next_frag)) {
+                    break;
+                }
+                if (next_frag != frag + (ufs2_daddr_t)(run_blks * (uint32_t)fs->fs_frag)) {
+                    break;
+                }
+                run_blks++;
+            }
+            uint32_t read_bytes = run_blks * 4096u;
+            if (bread(disk, fsbtodb(fs, frag), io_buf, (int)read_bytes) == -1) {
+                zx_handle_close(raw_vmo);
+                iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_IO, 0);
+                zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+                return;
+            }
+        } else {
+            memset(io_buf, 0, 4096u);
+        }
+
+        /* On first block, verify ELF magic (if #! script, fall back to sys_spawn script path) */
+        if (cur_off == 0) {
+            if (io_buf[0] != 0x7fu || io_buf[1] != 'E' || io_buf[2] != 'L' || io_buf[3] != 'F') {
+                zx_handle_close(raw_vmo);
+                iris_msg_hdr_init_reply(&rep_hdr, req_hdr, ZX_ERR_NOT_SUPPORTED, 0);
+                zx_channel_write(ch, 0, &rep_hdr, sizeof(rep_hdr), NULL, 0);
+                return;
+            }
+        }
+
+        uint64_t write_len = (uint64_t)run_blks * 4096ULL;
+        if (write_len > rem_bytes) {
+            write_len = rem_bytes;
+        }
+        zx_vmo_write(raw_vmo, io_buf, cur_off, (size_t)write_len);
+        cur_off += write_len;
+    }
+
+    zx_handle_t exec_vmo = ZX_HANDLE_INVALID;
+    if (zx_vmo_replace_as_executable(raw_vmo, ZX_HANDLE_INVALID, &exec_vmo) != ZX_OK) {
+        exec_vmo = raw_vmo;
+    }
+
+    /* 3. Store in cache if a slot is available */
+    bool cached = false;
+    for (int i = 0; i < MAX_EXEC_VMO_CACHE; ++i) {
+        if (!g_exec_vmo_cache[i].in_use) {
+            g_exec_vmo_cache[i].in_use   = true;
+            g_exec_vmo_cache[i].ino      = target_ino;
+            g_exec_vmo_cache[i].size     = file_size;
+            g_exec_vmo_cache[i].exec_vmo = exec_vmo;
+            cached = true;
+            break;
+        }
+    }
+
+    zx_handle_t out_vmo = ZX_HANDLE_INVALID;
+    if (cached) {
+        zx_handle_duplicate(exec_vmo, ZX_RIGHT_SAME_RIGHTS, &out_vmo);
+    } else {
+        out_vmo = exec_vmo;
+    }
+
+    uint8_t msg[sizeof(iris_msg_hdr_t) + sizeof(iris_fs_get_exec_vmo_resp_t)] __attribute__((aligned(8)));
+    iris_msg_hdr_t* h = (iris_msg_hdr_t*)msg;
+    iris_fs_get_exec_vmo_resp_t* r = (iris_fs_get_exec_vmo_resp_t*)(msg + sizeof(iris_msg_hdr_t));
+    r->size = file_size;
+    iris_msg_hdr_init_reply(h, req_hdr, ZX_OK, sizeof(*r));
+    zx_channel_write(ch, 0, msg, sizeof(msg), &out_vmo, 1);
+}
+
+/* ==============================================================================
  * VFS IPC Server Loop
  * ============================================================================== */
 
@@ -2017,10 +2273,13 @@ static void dispatch_fs_message(zx_handle_t ch, const uint8_t* req_buf, uint32_t
         case IRIS_FS_OP_SYNC:
             cgwrite1(&g_ufs_data, 0);
             sbwrite(&g_ufs_data, 0);
-            iris_ufs_flush_device(1);
+            iris_ufs_flush_device(DEV_ID_DATA_CRYPT);
             iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
             rep_total_len = sizeof(iris_msg_hdr_t);
             break;
+        case IRIS_FS_OP_GET_EXEC_VMO:
+            handle_fs_get_exec_vmo(ch, req_hdr, req_payload);
+            return;
         case IRIS_FS_OP_CONFIRM_BOOT: {
             zx_status_t bst = confirm_gpt_boot_slot();
             iris_msg_hdr_init_reply(rep_hdr, req_hdr, bst, 0);

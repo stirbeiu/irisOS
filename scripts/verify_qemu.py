@@ -261,6 +261,11 @@ def run_verification(arch: str, timeout: float = 45.0) -> int:
         print("=" * 70, flush=True)
         return 1
 
+    # Restore interactive GUI/shell boot image after test verification completes
+    subprocess.run([os.path.join(root_dir, "build", "mkimage.sh"), arch],
+                   env=dict(os.environ, IRIS_MODE="shell"),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+
     print("\n" + "=" * 70)
     print(f" [PASS] irisOS {arch} verification SUCCEEDED!")
     print(f"   - Boot 1: Token written, disk flushed, daemons cleanly exited.")

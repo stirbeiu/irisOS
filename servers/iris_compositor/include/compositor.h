@@ -45,19 +45,22 @@
 #define MAX_COMP_WINDOWS        32
 #define MAX_INPUT_DEVS          4
 #define WIN_KEY_FIFO_MAX        256
-#define CURSOR_SPRITE_W         18
+#define CURSOR_SPRITE_W         24
 #define CURSOR_SPRITE_H         24
+#define CURSOR_HOTSPOT_X        2
+#define CURSOR_HOTSPOT_Y        2
 
 /* Window frame decoration constants */
 #define IRIS_WIN_BORDER_PX      1
 #define IRIS_WIN_TITLEBAR_H     24
 #define IRIS_TOPBAR_H           28
 
-/* Font Paths */
+/* Font & Wallpaper Asset Paths */
 #define INTER_REGULAR_PATH      "/System/Resources/Fonts/InterDisplay-Regular.otf"
 #define INTER_BOLD_PATH         "/System/Resources/Fonts/InterDisplay-Bold.otf"
 #define INTER_ITALIC_PATH       "/System/Resources/Fonts/InterDisplay-Italic.otf"
 #define INTER_LEGACY_PATH       "/System/Resources/Fonts/Inter.otf"
+#define WALLPAPER_QOI_PATH      "/System/Resources/wallpaper.qoi"
 
 /**
  * @brief Font style selector for FreeType typography.

@@ -66,11 +66,11 @@ case "${ARCH}" in
 esac
 
 # The boot mode lives in the ZBI kernel command line, so repackage the images in
-# interactive "shell" mode on every launch (./iris test packages "test" mode).
-# Ensure system and disk images exist
+# interactive "shell" mode whenever images are missing or left in "test" mode.
 DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
-if [[ ! -f "${DISK_RAW}" || ! -f "${ESP_IMAGE}" ]]; then
-    echo "==> Images not found. Packaging ${ARCH_NAME} image in shell mode (build/mkimage.sh)..."
+ZBI_A="${ROOT_DIR}/out/build-${ARCH_NAME}/iris_a.zbi"
+if [[ ! -f "${DISK_RAW}" || ! -f "${ESP_IMAGE}" || ! -f "${ZBI_A}" ]] || ! strings "${ZBI_A}" | grep -q "iris.mode=shell"; then
+    echo "==> Packaging ${ARCH_NAME} image in interactive GUI/shell mode (build/mkimage.sh)..."
     IRIS_MODE=shell "${ROOT_DIR}/build/mkimage.sh" "${ARCH_NAME}"
 fi
 
@@ -81,9 +81,15 @@ if [[ ! -f "${UEFI_CODE}" ]]; then
     exit 1
 fi
 
+HOST_OS="$(uname -s)"
 if [[ "${GUI}" == "1" ]]; then
-    DISPLAY_MODE="QEMU Cocoa Window (-display cocoa,zoom-to-fit=on) + Serial Console (-serial stdio)"
-    DISPLAY_ARGS=("-display" "cocoa,zoom-to-fit=on")
+    if [[ "${HOST_OS}" == "Darwin" ]]; then
+        DISPLAY_MODE="QEMU Cocoa Window (-display cocoa,zoom-to-fit=on) + Serial Console (-serial stdio)"
+        DISPLAY_ARGS=("-display" "cocoa,zoom-to-fit=on")
+    else
+        DISPLAY_MODE="QEMU Window + Serial Console (-serial stdio)"
+        DISPLAY_ARGS=("-display" "default,show-cursor=on")
+    fi
 else
     DISPLAY_MODE="Headless Serial Console Only (-display none)"
     DISPLAY_ARGS=("-display" "none")
@@ -105,6 +111,7 @@ echo "======================================================================"
 if [[ "${ARCH_NAME}" == "x86_64" ]]; then
     exec "${QEMU_BIN}" \
         -machine q35 \
+        -accel tcg,thread=multi,tb-size=512 \
         -cpu max \
         -m 512M \
         -smp 2 \
@@ -125,14 +132,14 @@ else
     # Prepare writable vars for aarch64 UEFI
     cp -f "${UEFI_VARS_SRC}" "${UEFI_VARS_TMP}"
 
-    AARCH64_EXTRA_ARGS=()
-    if [[ "${GUI}" == "1" ]]; then
-        AARCH64_EXTRA_ARGS+=("-device" "ramfb")
+    AARCH64_ACCEL_ARGS=("-accel" "tcg,thread=multi,tb-size=512" "-cpu" "max")
+    if [[ "${HOST_OS}" == "Darwin" && "${IRIS_QEMU_HVF:-0}" == "1" ]] && "${QEMU_BIN}" -accel help 2>/dev/null | grep -q "hvf"; then
+        AARCH64_ACCEL_ARGS=("-accel" "hvf" "-cpu" "host")
     fi
 
     exec "${QEMU_BIN}" \
         -M virt,gic-version=2 \
-        -cpu max \
+        "${AARCH64_ACCEL_ARGS[@]}" \
         -m 512M \
         -smp 2 \
         -nic none \
@@ -147,7 +154,6 @@ else
         -device virtio-keyboard-pci \
         -device virtio-tablet-pci \
         -device virtio-rng-pci \
-        ${AARCH64_EXTRA_ARGS[@]+"${AARCH64_EXTRA_ARGS[@]}"} \
         -serial stdio \
         "${DISPLAY_ARGS[@]}"
 fi

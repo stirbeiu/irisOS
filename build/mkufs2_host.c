@@ -412,7 +412,9 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             const char* slash = strrchr(lib_paths[i], '/');
             const char* bname = slash ? (slash + 1) : lib_paths[i];
             bool is_font = (strstr(bname, ".otf") != NULL || strstr(bname, ".ttf") != NULL);
-            bool is_srv_bin = (!is_font && strstr(bname, ".so") == NULL && strstr(bname, ".a") == NULL);
+            bool is_res_asset = (strstr(bname, ".qoi") != NULL || strstr(bname, ".bmp") != NULL);
+            bool is_srv_bin = (!is_font && !is_res_asset &&
+                               strstr(bname, ".so") == NULL && strstr(bname, ".a") == NULL);
             if (is_font && strcmp(bname, "Inter-Regular.otf") == 0) {
                 bname = "Inter.otf";
             }
@@ -486,14 +488,23 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         size_t num_srv_items = 0;
         dir_item_t font_items[32];
         size_t num_font_items = 0;
+        dir_item_t res_items[32];
+        size_t num_res_items = 0;
+        res_items[num_res_items++] = (dir_item_t){ 8,             DT_REG, "release.txt" };
+        res_items[num_res_items++] = (dir_item_t){ ino_fonts_dir, DT_DIR, "Fonts" };
+
         for (size_t i = 0; i < valid_libs; ++i) {
             bool is_font = (strstr(lib_allocs[i].name, ".otf") != NULL ||
                             strstr(lib_allocs[i].name, ".ttf") != NULL);
-            bool is_srv_bin = (!is_font &&
+            bool is_res_asset = (strstr(lib_allocs[i].name, ".qoi") != NULL ||
+                                 strstr(lib_allocs[i].name, ".bmp") != NULL);
+            bool is_srv_bin = (!is_font && !is_res_asset &&
                                strstr(lib_allocs[i].name, ".so") == NULL &&
                                strstr(lib_allocs[i].name, ".a") == NULL);
             if (is_font) {
                 font_items[num_font_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+            } else if (is_res_asset) {
+                res_items[num_res_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             } else if (is_srv_bin) {
                 srv_items[num_srv_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             } else {
@@ -506,11 +517,7 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         build_dir_block(dir_blk, 5, 2, srv_items, num_srv_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_srv * 4096);
 
-        dir_item_t res_items[] = {
-            { 8,             DT_REG, "release.txt" },
-            { ino_fonts_dir, DT_DIR, "Fonts" },
-        };
-        build_dir_block(dir_blk, 6, 2, res_items, 2);
+        build_dir_block(dir_blk, 6, 2, res_items, num_res_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_res * 4096);
 
         build_dir_block(dir_blk, ino_fonts_dir, 6, font_items, num_font_items);

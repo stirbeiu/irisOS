@@ -11,35 +11,57 @@
 #include "compositor.h"
 
 /* ==============================================================================
- * 18x24 RGBA Classic macOS Arrow Cursor Sprite
+ * 24x24 8x8-MSAA Vector Pointer Cursor with Anti-Aliased Outline & Drop Shadow
  * ============================================================================== */
 
-static const char* const k_macos_cursor_18x24[CURSOR_SPRITE_H] = {
-    "W.................",
-    "WW................",
-    "WBW...............",
-    "WBBW..............",
-    "WBBBW.............",
-    "WBBBBW............",
-    "WBBBBBW...........",
-    "WBBBBBBW..........",
-    "WBBBBBBBW.........",
-    "WBBBBBBBBW........",
-    "WBBBBBBBBBW.......",
-    "WBBBBBBBBBBW......",
-    "WBBBBBBBBBBBW.....",
-    "WBBBBBBWWWWWW.....",
-    "WBBW.WBBW.........",
-    "WBW..WBBW.........",
-    "WW...WBBW.........",
-    "W.....WBBW........",
-    "......WBBW........",
-    "......WBBW........",
-    ".......WBBW.......",
-    ".......WBBW.......",
-    "........WBBW......",
-    "........WWWW......"
+typedef struct vec2f {
+    float x;
+    float y;
+} vec2f_t;
+
+static const vec2f_t k_cursor_poly[7] = {
+    {  2.0f,  2.0f }, /* 0: Tip */
+    {  2.0f, 17.8f }, /* 1: Left vertical wing tip */
+    {  5.8f, 14.0f }, /* 2: Inner-left wing-to-stem notch */
+    {  8.3f, 20.0f }, /* 3: Stem bottom-left */
+    { 10.5f, 19.1f }, /* 4: Stem bottom-right */
+    {  8.0f, 13.2f }, /* 5: Inner-right stem-to-wing notch */
+    { 13.2f, 13.2f }  /* 6: Right wing tip */
 };
+
+static bool point_in_cursor_poly(float px, float py) {
+    bool inside = false;
+    for (int i = 0, j = 6; i < 7; j = i++) {
+        float xi = k_cursor_poly[i].x, yi = k_cursor_poly[i].y;
+        float xj = k_cursor_poly[j].x, yj = k_cursor_poly[j].y;
+        if (((yi > py) != (yj > py)) &&
+            (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+static float min_dist_sq_to_cursor_poly(float px, float py) {
+    float min_d2 = 1e9f;
+    for (int i = 0, j = 6; i < 7; j = i++) {
+        float ax = k_cursor_poly[j].x, ay = k_cursor_poly[j].y;
+        float bx = k_cursor_poly[i].x, by = k_cursor_poly[i].y;
+        float vx = bx - ax, vy = by - ay;
+        float wx = px - ax, wy = py - ay;
+        float len2 = vx * vx + vy * vy;
+        float t = (len2 > 0.0f) ? ((wx * vx + wy * vy) / len2) : 0.0f;
+        if (t < 0.0f) t = 0.0f;
+        else if (t > 1.0f) t = 1.0f;
+        float dx = px - (ax + t * vx);
+        float dy = py - (ay + t * vy);
+        float d2 = dx * dx + dy * dy;
+        if (d2 < min_d2) {
+            min_d2 = d2;
+        }
+    }
+    return min_d2;
+}
 
 zx_status_t init_cursor_sprite(void) {
     g_cursor_pixels = (uint32_t*)calloc((size_t)CURSOR_SPRITE_W * CURSOR_SPRITE_H, sizeof(uint32_t));
@@ -47,17 +69,66 @@ zx_status_t init_cursor_sprite(void) {
         return ZX_ERR_NO_MEMORY;
     }
 
+    const float border_r2      = 1.30f * 1.30f; /* 1.30px crisp white outline */
+    const float shadow_core_r2 = 1.15f * 1.15f;
+    const float shadow_max_r2  = 2.35f * 2.35f;
+
     for (uint32_t y = 0; y < CURSOR_SPRITE_H; ++y) {
-        const char* row = k_macos_cursor_18x24[y];
         for (uint32_t x = 0; x < CURSOR_SPRITE_W; ++x) {
-            char c = row[x];
-            uint32_t pixel = 0x00000000u;
-            if (c == 'W') {
-                pixel = 0xFFFFFFFFu; /* Crisp 1px white border */
-            } else if (c == 'B') {
-                pixel = 0xFF000000u; /* Solid black arrow interior */
+            uint32_t sum_r = 0;
+            uint32_t sum_g = 0;
+            uint32_t sum_b = 0;
+            uint32_t sum_a = 0;
+
+            /* 8x8 (64x) subpixel supersampling in premultiplied ARGB8888 */
+            for (uint32_t sy = 0; sy < 8; ++sy) {
+                float fy = (float)y + ((float)sy + 0.5f) * 0.125f;
+                for (uint32_t sx = 0; sx < 8; ++sx) {
+                    float fx = (float)x + ((float)sx + 0.5f) * 0.125f;
+
+                    if (point_in_cursor_poly(fx, fy)) {
+                        /* Deep obsidian pointer body (#101016, A=255) */
+                        sum_r += 16u;
+                        sum_g += 16u;
+                        sum_b += 22u;
+                        sum_a += 255u;
+                    } else {
+                        float d2 = min_dist_sq_to_cursor_poly(fx, fy);
+                        if (d2 <= border_r2) {
+                            /* Pure white anti-aliased border (#FFFFFF, A=255) */
+                            sum_r += 255u;
+                            sum_g += 255u;
+                            sum_b += 255u;
+                            sum_a += 255u;
+                        } else {
+                            /* Soft offset drop shadow at (-0.85, -1.35) */
+                            float sh_x = fx - 0.85f;
+                            float sh_y = fy - 1.35f;
+                            if (point_in_cursor_poly(sh_x, sh_y)) {
+                                sum_a += 72u;
+                            } else {
+                                float sh_d2 = min_dist_sq_to_cursor_poly(sh_x, sh_y);
+                                if (sh_d2 <= shadow_core_r2) {
+                                    sum_a += 72u;
+                                } else if (sh_d2 < shadow_max_r2) {
+                                    float t = (shadow_max_r2 - sh_d2) / (shadow_max_r2 - shadow_core_r2);
+                                    sum_a += (uint32_t)(72.0f * t);
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            g_cursor_pixels[y * CURSOR_SPRITE_W + x] = pixel;
+
+            uint32_t r = (sum_r + 32u) >> 6;
+            uint32_t g = (sum_g + 32u) >> 6;
+            uint32_t b = (sum_b + 32u) >> 6;
+            uint32_t a = (sum_a + 32u) >> 6;
+            if (r > a) r = a;
+            if (g > a) g = a;
+            if (b > a) b = a;
+
+            g_cursor_pixels[y * CURSOR_SPRITE_W + x] = (a << 24) | (r << 16) | (g << 8) | b;
         }
     }
 
@@ -491,6 +562,160 @@ void init_crash_dialog(const char* details) {
                      ch + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX);
 }
 
+/* ==============================================================================
+ * Lossless QOI Decoder & Dynamic Aspect-Fill Wallpaper Scaler
+ * ============================================================================== */
+
+static bool load_qoi_wallpaper_aspect_fill(const char* path, pixman_image_t* dst_surface,
+                                           uint32_t dst_w, uint32_t dst_h) {
+    if (!path || !dst_surface || dst_w == 0 || dst_h == 0) {
+        return false;
+    }
+
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return false;
+    }
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return false;
+    }
+    long fsize = ftell(fp);
+    if (fsize < 22 || fsize > 16 * 1024 * 1024) {
+        fclose(fp);
+        return false;
+    }
+    rewind(fp);
+
+    uint8_t* data = (uint8_t*)malloc((size_t)fsize);
+    if (!data) {
+        fclose(fp);
+        return false;
+    }
+
+    size_t nread = fread(data, 1, (size_t)fsize, fp);
+    fclose(fp);
+    if (nread != (size_t)fsize) {
+        free(data);
+        return false;
+    }
+
+    /* Validate 14-byte QOI header ("qoif") */
+    if (data[0] != 'q' || data[1] != 'o' || data[2] != 'i' || data[3] != 'f') {
+        free(data);
+        return false;
+    }
+
+    uint32_t src_w = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) |
+                     ((uint32_t)data[6] << 8)  |  (uint32_t)data[7];
+    uint32_t src_h = ((uint32_t)data[8] << 24) | ((uint32_t)data[9] << 16) |
+                     ((uint32_t)data[10] << 8) |  (uint32_t)data[11];
+    uint8_t channels = data[12];
+
+    if (src_w == 0 || src_h == 0 || src_w > 8192u || src_h > 8192u || (channels != 3 && channels != 4)) {
+        free(data);
+        return false;
+    }
+
+    size_t total_px = (size_t)src_w * (size_t)src_h;
+    uint32_t* src_pixels = (uint32_t*)malloc(total_px * sizeof(uint32_t));
+    if (!src_pixels) {
+        free(data);
+        return false;
+    }
+
+    uint32_t index[64];
+    memset(index, 0, sizeof(index));
+
+    uint8_t r = 0, g = 0, b = 0, a = 255;
+    size_t pos = 14;
+    size_t end_pos = (size_t)fsize - 8;
+    uint32_t run = 0;
+
+    for (size_t px = 0; px < total_px; ++px) {
+        if (run > 0) {
+            run--;
+        } else if (pos < end_pos) {
+            uint8_t b1 = data[pos++];
+            if (b1 == 0xFEu) { /* QOI_OP_RGB */
+                if (pos + 3 <= end_pos) {
+                    r = data[pos++];
+                    g = data[pos++];
+                    b = data[pos++];
+                }
+            } else if (b1 == 0xFFu) { /* QOI_OP_RGBA */
+                if (pos + 4 <= end_pos) {
+                    r = data[pos++];
+                    g = data[pos++];
+                    b = data[pos++];
+                    a = data[pos++];
+                }
+            } else if ((b1 & 0xC0u) == 0x00u) { /* QOI_OP_INDEX */
+                uint32_t c = index[b1 & 63u];
+                r = (uint8_t)((c >> 16) & 0xFFu);
+                g = (uint8_t)((c >> 8)  & 0xFFu);
+                b = (uint8_t)(c & 0xFFu);
+                a = (uint8_t)((c >> 24) & 0xFFu);
+            } else if ((b1 & 0xC0u) == 0x40u) { /* QOI_OP_DIFF */
+                r = (uint8_t)(r + ((int)((b1 >> 4) & 0x03u) - 2));
+                g = (uint8_t)(g + ((int)((b1 >> 2) & 0x03u) - 2));
+                b = (uint8_t)(b + ((int)(b1 & 0x03u) - 2));
+            } else if ((b1 & 0xC0u) == 0x80u) { /* QOI_OP_LUMA */
+                if (pos < end_pos) {
+                    uint8_t b2 = data[pos++];
+                    int vg = (int)(b1 & 0x3Fu) - 32;
+                    r = (uint8_t)(r + vg - 8 + ((int)((b2 >> 4) & 0x0Fu)));
+                    g = (uint8_t)(g + vg);
+                    b = (uint8_t)(b + vg - 8 + ((int)(b2 & 0x0Fu)));
+                }
+            } else if ((b1 & 0xC0u) == 0xC0u) { /* QOI_OP_RUN */
+                run = (uint32_t)(b1 & 0x3Fu);
+            }
+            uint32_t hash = ((uint32_t)r * 3u + (uint32_t)g * 5u + (uint32_t)b * 7u + (uint32_t)a * 11u) & 63u;
+            index[hash] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+        }
+        src_pixels[px] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    }
+
+    free(data);
+
+    pixman_image_t* src_img = pixman_image_create_bits(PIXMAN_x8r8g8b8,
+                                                       (int)src_w, (int)src_h,
+                                                       src_pixels, (int)(src_w * 4u));
+    if (!src_img) {
+        free(src_pixels);
+        return false;
+    }
+
+    /* Compute dynamic aspect-fill ("cover") transform from dst (dst_w x dst_h) -> src (src_w x src_h) */
+    double scale_x = (double)src_w / (double)dst_w;
+    double scale_y = (double)src_h / (double)dst_h;
+    double scale   = (scale_x < scale_y) ? scale_x : scale_y;
+    double off_x   = ((double)src_w - (double)dst_w * scale) * 0.5;
+    double off_y   = ((double)src_h - (double)dst_h * scale) * 0.5;
+
+    pixman_transform_t xform;
+    pixman_transform_init_identity(&xform);
+    xform.matrix[0][0] = pixman_double_to_fixed(scale);
+    xform.matrix[1][1] = pixman_double_to_fixed(scale);
+    xform.matrix[0][2] = pixman_double_to_fixed(off_x);
+    xform.matrix[1][2] = pixman_double_to_fixed(off_y);
+
+    pixman_image_set_transform(src_img, &xform);
+    pixman_image_set_filter(src_img, PIXMAN_FILTER_BILINEAR, NULL, 0);
+    pixman_image_set_repeat(src_img, PIXMAN_REPEAT_PAD);
+
+    pixman_image_composite32(PIXMAN_OP_SRC,
+                             src_img, NULL, dst_surface,
+                             0, 0, 0, 0, 0, 0,
+                             (int)dst_w, (int)dst_h);
+
+    pixman_image_unref(src_img);
+    free(src_pixels);
+    return true;
+}
+
 zx_status_t init_desktop_wallpaper(void) {
     uint32_t* wp_pixels = (uint32_t*)calloc((size_t)g_fb_width * g_fb_height, sizeof(uint32_t));
     if (!wp_pixels) {
@@ -507,25 +732,28 @@ zx_status_t init_desktop_wallpaper(void) {
         return ZX_ERR_NO_MEMORY;
     }
 
-    /* Create smooth diagonal/vertical linear gradient across desktop using Pixman */
-    pixman_point_fixed_t p1 = { pixman_int_to_fixed(0), pixman_int_to_fixed(0) };
-    pixman_point_fixed_t p2 = { pixman_int_to_fixed((int)g_fb_width), pixman_int_to_fixed((int)g_fb_height) };
+    /* 1. Try loading photographic wallpaper from /System/Resources/wallpaper.qoi with dynamic aspect-fill */
+    if (!load_qoi_wallpaper_aspect_fill(WALLPAPER_QOI_PATH, g_wallpaper_surface, g_fb_width, g_fb_height)) {
+        /* 2. Fallback: smooth diagonal/vertical linear gradient across desktop using Pixman */
+        pixman_point_fixed_t p1 = { pixman_int_to_fixed(0), pixman_int_to_fixed(0) };
+        pixman_point_fixed_t p2 = { pixman_int_to_fixed((int)g_fb_width), pixman_int_to_fixed((int)g_fb_height) };
 
-    pixman_gradient_stop_t stops[3] = {
-        { 0x00000, argb_to_pixman_color(0xFF181825u) }, /* Catppuccin Mantle */
-        { 0x08000, argb_to_pixman_color(0xFF1E1E2Eu) }, /* Catppuccin Base   */
-        { 0x10000, argb_to_pixman_color(0xFF313244u) }  /* Catppuccin Surface0 */
-    };
+        pixman_gradient_stop_t stops[3] = {
+            { 0x00000, argb_to_pixman_color(0xFF181825u) }, /* Catppuccin Mantle */
+            { 0x08000, argb_to_pixman_color(0xFF1E1E2Eu) }, /* Catppuccin Base   */
+            { 0x10000, argb_to_pixman_color(0xFF313244u) }  /* Catppuccin Surface0 */
+        };
 
-    pixman_image_t* grad = pixman_image_create_linear_gradient(&p1, &p2, stops, 3);
-    if (grad) {
-        pixman_image_composite32(PIXMAN_OP_SRC,
-                                 grad, NULL, g_wallpaper_surface,
-                                 0, 0, 0, 0, 0, 0,
-                                 (int)g_fb_width, (int)g_fb_height);
-        pixman_image_unref(grad);
-    } else {
-        fill_rect_pixman(g_wallpaper_surface, 0, 0, g_fb_width, g_fb_height, 0xFF1E1E2Eu);
+        pixman_image_t* grad = pixman_image_create_linear_gradient(&p1, &p2, stops, 3);
+        if (grad) {
+            pixman_image_composite32(PIXMAN_OP_SRC,
+                                     grad, NULL, g_wallpaper_surface,
+                                     0, 0, 0, 0, 0, 0,
+                                     (int)g_fb_width, (int)g_fb_height);
+            pixman_image_unref(grad);
+        } else {
+            fill_rect_pixman(g_wallpaper_surface, 0, 0, g_fb_width, g_fb_height, 0xFF1E1E2Eu);
+        }
     }
 
     /* Render 28px top desktop menu bar (#11111B) with 1px bottom border (#45475A) */
@@ -568,8 +796,27 @@ zx_status_t init_desktop_wallpaper(void) {
 }
 
 /* ==============================================================================
- * Window Compositing Pipeline
+ * Window Compositing Pipeline (With Damage Culling & Occlusion Fast-Path)
  * ============================================================================== */
+
+static comp_dirty_rect_t g_active_clip = { 0, 0, 0, 0 };
+
+static inline bool rects_intersect(int32_t ax, int32_t ay, int32_t aw, int32_t ah,
+                                   int32_t bx, int32_t by, int32_t bw, int32_t bh) {
+    if (aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0) {
+        return false;
+    }
+    return (ax < bx + bw) && (ax + aw > bx) &&
+           (ay < by + bh) && (ay + ah > by);
+}
+
+static inline bool rect_contains(int32_t outer_x, int32_t outer_y, int32_t outer_w, int32_t outer_h,
+                                 int32_t inner_x, int32_t inner_y, int32_t inner_w, int32_t inner_h) {
+    return (inner_x >= outer_x) &&
+           (inner_y >= outer_y) &&
+           (inner_x + inner_w <= outer_x + outer_w) &&
+           (inner_y + inner_h <= outer_y + outer_h);
+}
 
 void composite_window(const comp_window_t* win, bool is_focused) {
     if (!win || !win->client_surface) {
@@ -585,41 +832,65 @@ void composite_window(const comp_window_t* win, bool is_focused) {
         return;
     }
 
-    uint32_t border_color   = is_focused ? 0xFF89B4FAu : 0xFF585B70u;
-    uint32_t titlebar_color = is_focused ? 0xFF313244u : 0xFF181825u;
-    uint32_t title_fg_color = is_focused ? 0xFFCDD6F4u : 0xFF9399B2u;
+    /* Quick reject if window does not intersect the active damage clip */
+    if (g_active_clip.w > 0 && g_active_clip.h > 0) {
+        if (!rects_intersect(win->x, win->y, (int32_t)frame_w, (int32_t)frame_h,
+                             g_active_clip.x, g_active_clip.y,
+                             (int32_t)g_active_clip.w, (int32_t)g_active_clip.h)) {
+            return;
+        }
+    }
 
-    /* 1. Outer 1px border around entire window frame */
-    fill_rect_pixman(g_backbuf_surface, win->x, win->y, frame_w, IRIS_WIN_BORDER_PX, border_color);
-    fill_rect_pixman(g_backbuf_surface, win->x, win->y + (int32_t)frame_h - IRIS_WIN_BORDER_PX,
-                     frame_w, IRIS_WIN_BORDER_PX, border_color);
-    fill_rect_pixman(g_backbuf_surface, win->x, win->y, IRIS_WIN_BORDER_PX, frame_h, border_color);
-    fill_rect_pixman(g_backbuf_surface, win->x + (int32_t)frame_w - IRIS_WIN_BORDER_PX, win->y,
-                     IRIS_WIN_BORDER_PX, frame_h, border_color);
-
-    /* 2. 24px Title Bar inside 1px border */
-    int32_t tb_x = win->x + IRIS_WIN_BORDER_PX;
-    int32_t tb_y = win->y + IRIS_WIN_BORDER_PX;
-    fill_rect_pixman(g_backbuf_surface, tb_x, tb_y, win->client_w, IRIS_WIN_TITLEBAR_H - 1, titlebar_color);
-    fill_rect_pixman(g_backbuf_surface, tb_x, tb_y + IRIS_WIN_TITLEBAR_H - 1,
-                     win->client_w, 1, border_color);
-
-    /* Window control buttons (Close, Minimize, Maximize) */
-    fill_rect_pixman(g_backbuf_surface, tb_x + 10, tb_y + 8, 8, 8, 0xFFF38BA8u);
-    fill_rect_pixman(g_backbuf_surface, tb_x + 24, tb_y + 8, 8, 8, 0xFFF9E2AFu);
-    fill_rect_pixman(g_backbuf_surface, tb_x + 38, tb_y + 8, 8, 8, 0xFFA6E3A1u);
-
-    /* Window title string */
-    draw_text_ft_styled(g_backbuf_pixels, g_fb_width, g_fb_height,
-                        tb_x + 58, tb_y + 5, 13, FONT_STYLE_BOLD, win->title, title_fg_color);
-
-    /* 3. Blend client VMO surface onto backbuffer with strict boundary clipping */
     int32_t client_dst_x = win->x + IRIS_WIN_BORDER_PX;
     int32_t client_dst_y = win->y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H;
 
+    /* Check if damage is strictly contained inside the client content area */
+    bool client_only = (g_active_clip.w > 0 && g_active_clip.h > 0) &&
+                       rect_contains(client_dst_x, client_dst_y,
+                                     (int32_t)win->client_w, (int32_t)win->client_h,
+                                     g_active_clip.x, g_active_clip.y,
+                                     (int32_t)g_active_clip.w, (int32_t)g_active_clip.h);
+
+    if (!client_only) {
+        uint32_t border_color   = is_focused ? 0xFF89B4FAu : 0xFF585B70u;
+        uint32_t titlebar_color = is_focused ? 0xFF313244u : 0xFF181825u;
+        uint32_t title_fg_color = is_focused ? 0xFFCDD6F4u : 0xFF9399B2u;
+
+        /* 1. Outer 1px border around entire window frame */
+        fill_rect_pixman(g_backbuf_surface, win->x, win->y, frame_w, IRIS_WIN_BORDER_PX, border_color);
+        fill_rect_pixman(g_backbuf_surface, win->x, win->y + (int32_t)frame_h - IRIS_WIN_BORDER_PX,
+                         frame_w, IRIS_WIN_BORDER_PX, border_color);
+        fill_rect_pixman(g_backbuf_surface, win->x, win->y, IRIS_WIN_BORDER_PX, frame_h, border_color);
+        fill_rect_pixman(g_backbuf_surface, win->x + (int32_t)frame_w - IRIS_WIN_BORDER_PX, win->y,
+                         IRIS_WIN_BORDER_PX, frame_h, border_color);
+
+        /* 2. 24px Title Bar inside 1px border (only if titlebar overlaps damage) */
+        int32_t tb_x = win->x + IRIS_WIN_BORDER_PX;
+        int32_t tb_y = win->y + IRIS_WIN_BORDER_PX;
+        bool tb_intersects = (g_active_clip.w == 0 || g_active_clip.h == 0) ||
+                             rects_intersect(tb_x, tb_y, (int32_t)win->client_w, IRIS_WIN_TITLEBAR_H,
+                                             g_active_clip.x, g_active_clip.y,
+                                             (int32_t)g_active_clip.w, (int32_t)g_active_clip.h);
+        if (tb_intersects) {
+            fill_rect_pixman(g_backbuf_surface, tb_x, tb_y, win->client_w, IRIS_WIN_TITLEBAR_H - 1, titlebar_color);
+            fill_rect_pixman(g_backbuf_surface, tb_x, tb_y + IRIS_WIN_TITLEBAR_H - 1,
+                             win->client_w, 1, border_color);
+
+            /* Window control buttons (Close, Minimize, Maximize) */
+            fill_rect_pixman(g_backbuf_surface, tb_x + 10, tb_y + 8, 8, 8, 0xFFF38BA8u);
+            fill_rect_pixman(g_backbuf_surface, tb_x + 24, tb_y + 8, 8, 8, 0xFFF9E2AFu);
+            fill_rect_pixman(g_backbuf_surface, tb_x + 38, tb_y + 8, 8, 8, 0xFFA6E3A1u);
+
+            /* Window title string (uses O(1) cached glyph bitmaps) */
+            draw_text_ft_styled(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                tb_x + 58, tb_y + 5, 13, FONT_STYLE_BOLD, win->title, title_fg_color);
+        }
+    }
+
+    /* 3. Blit client VMO surface onto backbuffer with strict boundary clipping */
     blit_surface_clamped(win->client_surface, (int32_t)win->client_w, (int32_t)win->client_h,
                          g_backbuf_surface, (int32_t)g_fb_width, (int32_t)g_fb_height,
-                         client_dst_x, client_dst_y, PIXMAN_OP_OVER);
+                         client_dst_x, client_dst_y, PIXMAN_OP_SRC);
 }
 
 /* ==============================================================================
@@ -693,12 +964,14 @@ void update_screen(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h)
     int32_t sw = (int32_t)g_fb_width;
     int32_t sh = (int32_t)g_fb_height;
 
+    int32_t ox = g_last_cursor_x - CURSOR_HOTSPOT_X;
+    int32_t oy = g_last_cursor_y - CURSOR_HOTSPOT_Y;
+    int32_t ow = CURSOR_SPRITE_W;
+    int32_t oh = CURSOR_SPRITE_H;
+    bool has_old_cursor = false;
+
     /* 1. Copy old_cursor_rect from g_backbuf_surface to g_scanout_surface (PIXMAN_OP_SRC) */
     if (g_cursor_visible) {
-        int32_t ox = g_last_cursor_x;
-        int32_t oy = g_last_cursor_y;
-        int32_t ow = CURSOR_SPRITE_W;
-        int32_t oh = CURSOR_SPRITE_H;
         if (clamp_rect_to_screen(&ox, &oy, &ow, &oh, sw, sh)) {
             pixman_image_composite32(PIXMAN_OP_SRC,
                                      g_backbuf_surface,
@@ -708,7 +981,10 @@ void update_screen(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h)
                                      0, 0,
                                      ox, oy,
                                      ow, oh);
-            expand_flush_bounds(ox, oy, ow, oh, &flush_min_x, &flush_min_y, &flush_max_x, &flush_max_y, &has_flush);
+            has_old_cursor = true;
+            if (dmg_w > 0 && dmg_h > 0) {
+                expand_flush_bounds(ox, oy, ow, oh, &flush_min_x, &flush_min_y, &flush_max_x, &flush_max_y, &has_flush);
+            }
         }
     }
 
@@ -732,12 +1008,14 @@ void update_screen(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h)
     }
 
     /* 3. Copy new_cursor_rect from g_backbuf_surface to g_scanout_surface (PIXMAN_OP_SRC),
-     *    and then composite g_cursor_surface onto g_scanout_surface at (g_cursor_x, g_cursor_y) using PIXMAN_OP_OVER */
+     *    and then composite g_cursor_surface onto g_scanout_surface using PIXMAN_OP_OVER */
+    int32_t nx = g_cursor_x - CURSOR_HOTSPOT_X;
+    int32_t ny = g_cursor_y - CURSOR_HOTSPOT_Y;
+    int32_t nw = CURSOR_SPRITE_W;
+    int32_t nh = CURSOR_SPRITE_H;
+    bool has_new_cursor = false;
+
     if (g_cursor_surface != NULL) {
-        int32_t nx = g_cursor_x;
-        int32_t ny = g_cursor_y;
-        int32_t nw = CURSOR_SPRITE_W;
-        int32_t nh = CURSOR_SPRITE_H;
         if (clamp_rect_to_screen(&nx, &ny, &nw, &nh, sw, sh)) {
             pixman_image_composite32(PIXMAN_OP_SRC,
                                      g_backbuf_surface,
@@ -747,19 +1025,39 @@ void update_screen(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h)
                                      0, 0,
                                      nx, ny,
                                      nw, nh);
-            expand_flush_bounds(nx, ny, nw, nh, &flush_min_x, &flush_min_y, &flush_max_x, &flush_max_y, &has_flush);
+            has_new_cursor = true;
+            if (dmg_w > 0 && dmg_h > 0) {
+                expand_flush_bounds(nx, ny, nw, nh, &flush_min_x, &flush_min_y, &flush_max_x, &flush_max_y, &has_flush);
+            }
         }
 
         blit_surface_clamped(g_cursor_surface, CURSOR_SPRITE_W, CURSOR_SPRITE_H,
                              g_scanout_surface, sw, sh,
-                             g_cursor_x, g_cursor_y, PIXMAN_OP_OVER);
+                             g_cursor_x - CURSOR_HOTSPOT_X,
+                             g_cursor_y - CURSOR_HOTSPOT_Y,
+                             PIXMAN_OP_OVER);
 
         g_cursor_visible = true;
         g_last_cursor_x  = g_cursor_x;
         g_last_cursor_y  = g_cursor_y;
     }
 
-    /* 4. Flush dirty bounding box to VirtIO GPU scanout */
+    /* 4. Flush dirty region(s) to VirtIO GPU scanout */
+    if (dmg_w == 0 && dmg_h == 0) {
+        if (has_old_cursor && has_new_cursor &&
+            !rects_intersect(ox, oy, ow, oh, nx, ny, nw, nh)) {
+            flush_gpu_scanout((uint32_t)ox, (uint32_t)oy, (uint32_t)ow, (uint32_t)oh);
+            flush_gpu_scanout((uint32_t)nx, (uint32_t)ny, (uint32_t)nw, (uint32_t)nh);
+            return;
+        }
+        if (has_old_cursor) {
+            expand_flush_bounds(ox, oy, ow, oh, &flush_min_x, &flush_min_y, &flush_max_x, &flush_max_y, &has_flush);
+        }
+        if (has_new_cursor) {
+            expand_flush_bounds(nx, ny, nw, nh, &flush_min_x, &flush_min_y, &flush_max_x, &flush_max_y, &has_flush);
+        }
+    }
+
     if (has_flush && flush_max_x > flush_min_x && flush_max_y > flush_min_y) {
         flush_gpu_scanout((uint32_t)flush_min_x, (uint32_t)flush_min_y,
                           (uint32_t)(flush_max_x - flush_min_x),
@@ -797,21 +1095,53 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
     pixman_region32_init_rect(&clip, dmg_x, dmg_y, dmg_w, dmg_h);
     pixman_image_set_clip_region32(g_backbuf_surface, &clip);
 
-    /* 1. Blit desktop wallpaper for the damaged region into backbuffer */
-    pixman_image_composite32(PIXMAN_OP_SRC,
-                             g_wallpaper_surface,
-                             NULL,
-                             g_backbuf_surface,
-                             dmg_x, dmg_y,
-                             0, 0,
-                             dmg_x, dmg_y,
-                             (int)dmg_w, (int)dmg_h);
+    g_active_clip.x = dmg_x;
+    g_active_clip.y = dmg_y;
+    g_active_clip.w = dmg_w;
+    g_active_clip.h = dmg_h;
 
-    /* 2. Composite windows in Z-order */
+    /* Front-to-back occlusion check: find highest Z-order window that completely covers dmg_rect */
+    size_t start_win_idx = 0;
+    bool   skip_wallpaper = false;
+
+    if (g_num_windows == 0 && g_welcome_surface != NULL) {
+        uint32_t fw = g_welcome_win.client_w + (2u * IRIS_WIN_BORDER_PX);
+        uint32_t fh = g_welcome_win.client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
+        if (rect_contains(g_welcome_win.x, g_welcome_win.y, (int32_t)fw, (int32_t)fh,
+                          dmg_x, dmg_y, (int32_t)dmg_w, (int32_t)dmg_h)) {
+            skip_wallpaper = true;
+        }
+    } else if (g_num_windows > 0) {
+        for (size_t i = g_num_windows; i > 0; --i) {
+            const comp_window_t* w = &g_windows[i - 1];
+            uint32_t fw = w->client_w + (2u * IRIS_WIN_BORDER_PX);
+            uint32_t fh = w->client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
+            if (rect_contains(w->x, w->y, (int32_t)fw, (int32_t)fh,
+                              dmg_x, dmg_y, (int32_t)dmg_w, (int32_t)dmg_h)) {
+                start_win_idx  = i - 1;
+                skip_wallpaper = true;
+                break;
+            }
+        }
+    }
+
+    /* 1. Blit desktop wallpaper for the damaged region into backbuffer (unless occluded) */
+    if (!skip_wallpaper) {
+        pixman_image_composite32(PIXMAN_OP_SRC,
+                                 g_wallpaper_surface,
+                                 NULL,
+                                 g_backbuf_surface,
+                                 dmg_x, dmg_y,
+                                 0, 0,
+                                 dmg_x, dmg_y,
+                                 (int)dmg_w, (int)dmg_h);
+    }
+
+    /* 2. Composite visible windows in Z-order starting from first non-occluded layer */
     if (g_num_windows == 0 && g_welcome_surface != NULL) {
         composite_window(&g_welcome_win, !g_crash_dialog_active);
     } else {
-        for (size_t i = 0; i < g_num_windows; ++i) {
+        for (size_t i = start_win_idx; i < g_num_windows; ++i) {
             bool is_top = (i + 1 == g_num_windows) && !g_crash_dialog_active;
             composite_window(&g_windows[i], is_top);
         }
@@ -821,6 +1151,9 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
     if (g_crash_dialog_active && g_crash_surface != NULL) {
         composite_window(&g_crash_win, true);
     }
+
+    g_active_clip.w = 0;
+    g_active_clip.h = 0;
 
     /* Clear clip region on backbuffer */
     pixman_image_set_clip_region32(g_backbuf_surface, NULL);

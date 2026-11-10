@@ -1235,6 +1235,47 @@ static zx_handle_t iris_fshost_create_client_channel(zx_handle_t fs_ch) {
     return child_ch;
 }
 
+static zx_handle_t iris_fshost_get_exec_vmo(zx_handle_t fs_ch, const char* path) {
+    if (fs_ch == ZX_HANDLE_INVALID || !path) return ZX_HANDLE_INVALID;
+
+    uint8_t req_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_fs_get_exec_vmo_req_t)] __attribute__((aligned(8)));
+    iris_msg_hdr_t* hdr = reinterpret_cast<iris_msg_hdr_t*>(req_buf);
+    iris_fs_get_exec_vmo_req_t* req = reinterpret_cast<iris_fs_get_exec_vmo_req_t*>(req_buf + sizeof(iris_msg_hdr_t));
+    memset(req, 0, sizeof(*req));
+    size_t plen = strlen(path);
+    if (plen >= sizeof(req->path)) plen = sizeof(req->path) - 1;
+    memcpy(req->path, path, plen);
+
+    uint32_t txid = ++g_vfs_txid;
+    iris_msg_hdr_init(hdr, IRIS_PROTO_FS, IRIS_FS_OP_GET_EXEC_VMO, txid, sizeof(*req));
+
+    zx_status_t st = zx_channel_write(fs_ch, 0, req_buf, sizeof(req_buf), nullptr, 0);
+    if (st != ZX_OK) return ZX_HANDLE_INVALID;
+
+    zx_signals_t obs = 0;
+    st = zx_object_wait_one(fs_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                            ZX_TIME_INFINITE, &obs);
+    if (st != ZX_OK || (obs & ZX_CHANNEL_PEER_CLOSED)) return ZX_HANDLE_INVALID;
+
+    uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_fs_get_exec_vmo_resp_t) + 32] __attribute__((aligned(8)));
+    zx_handle_t exec_vmo = ZX_HANDLE_INVALID;
+    uint32_t act_bytes = 0, act_handles = 0;
+    st = zx_channel_read(fs_ch, 0, rep_buf, &exec_vmo, sizeof(rep_buf), 1,
+                         &act_bytes, &act_handles);
+    if (st != ZX_OK || act_bytes < sizeof(iris_msg_hdr_t) || act_handles < 1) {
+        if (exec_vmo != ZX_HANDLE_INVALID) zx_handle_close(exec_vmo);
+        return ZX_HANDLE_INVALID;
+    }
+
+    const iris_msg_hdr_t* rep_hdr = reinterpret_cast<const iris_msg_hdr_t*>(rep_buf);
+    if (!iris_msg_hdr_is_valid(rep_hdr, IRIS_PROTO_FS) || rep_hdr->txid != txid || rep_hdr->status != ZX_OK) {
+        if (exec_vmo != ZX_HANDLE_INVALID) zx_handle_close(exec_vmo);
+        return ZX_HANDLE_INVALID;
+    }
+
+    return exec_vmo;
+}
+
 static zx_handle_t iris_compositor_create_client_channel(zx_handle_t comp_ch) {
     if (comp_ch == ZX_HANDLE_INVALID) return ZX_HANDLE_INVALID;
 
@@ -2169,99 +2210,108 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
         }
     }
 
-    // 2. Open binary from VFS
-    int exec_fd = -1;
-    int err = sys_open(exec_path, O_RDONLY, 0, &exec_fd);
-    if (err != 0) {
-        return err;
-    }
-
-    // 3. Inspect header for shebang (#!/bin/sh)
-    char head[256];
-    ssize_t head_read = 0;
-    sys_read(exec_fd, head, sizeof(head) - 1, &head_read);
-    if (head_read >= 2 && head[0] == '#' && head[1] == '!') {
-        head[head_read] = '\0';
-        char* line_end = iris_strchr(head, '\n');
-        if (line_end) *line_end = '\0';
-        char* r_end = iris_strchr(head, '\r');
-        if (r_end) *r_end = '\0';
-
-        char* p = head + 2;
-        while (*p == ' ' || *p == '\t') p++;
-        char* interp = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        char* interp_arg = nullptr;
-        if (*p) {
-            *p = '\0';
-            p++;
-            while (*p == ' ' || *p == '\t') p++;
-            if (*p) interp_arg = p;
-        }
-
-        sys_close(exec_fd);
-
-        // Build new argv: [interp, (interp_arg), exec_path, argv[1], ...]
-        const char* new_argv[64];
-        uint32_t na = 0;
-        new_argv[na++] = interp;
-        if (interp_arg && *interp_arg) {
-            new_argv[na++] = interp_arg;
-        }
-        new_argv[na++] = exec_path;
-        for (uint32_t i = 1; i < argc && na < 62; i++) {
-            new_argv[na++] = argv[i];
-        }
-        new_argv[na] = nullptr;
-
-        return sys_spawn(res, interp, file_actions, attrs, const_cast<char* const*>(new_argv), envp);
-    }
-
-    // 4. ELF Binary: determine size and load into executable VMO
-    struct stat exec_stat;
-    err = sys_fstat(exec_fd, &exec_stat);
-    if (err != 0 || exec_stat.st_size <= 0) {
-        sys_close(exec_fd);
-        return (err != 0) ? err : ENOEXEC;
-    }
-
-    zx_handle_t vmo = ZX_HANDLE_INVALID;
-    zx_status_t vst = zx_vmo_create(static_cast<uint64_t>(exec_stat.st_size), 0, &vmo);
-    if (vst != ZX_OK) {
-        sys_close(exec_fd);
-        return ENOMEM;
-    }
-
-    off_t dummy_off = 0;
-    sys_seek(exec_fd, 0, SEEK_SET, &dummy_off);
-
-    uint8_t load_buf[32768];
-    uint64_t cur_pos = 0;
-    uint64_t total_size = static_cast<uint64_t>(exec_stat.st_size);
-
-    while (cur_pos < total_size) {
-        size_t chunk = sizeof(load_buf);
-        if (cur_pos + chunk > total_size) {
-            chunk = static_cast<size_t>(total_size - cur_pos);
-        }
-        ssize_t n_read = 0;
-        int r_err = sys_read(exec_fd, load_buf, chunk, &n_read);
-        if (r_err != 0 || n_read <= 0) {
-            break;
-        }
-        zx_vmo_write(vmo, load_buf, cur_pos, static_cast<size_t>(n_read));
-        cur_pos += static_cast<uint64_t>(n_read);
-    }
-    sys_close(exec_fd);
-
-    if (cur_pos < total_size) {
-        zx_handle_close(vmo);
-        return EIO;
-    }
-
+    // 2. Fast-path: 1-IPC cached executable VMO acquisition for /System ELF binaries
     zx_handle_t exec_vmo = ZX_HANDLE_INVALID;
-    if (zx_vmo_replace_as_executable(vmo, ZX_HANDLE_INVALID, &exec_vmo) != ZX_OK) {
-        exec_vmo = vmo;
+    zx_handle_t vmo_fs_ch = iris_get_fshost_channel();
+    if (vmo_fs_ch != ZX_HANDLE_INVALID &&
+        (iris_strncmp(exec_path, "/System/", 8) == 0 || iris_strncmp(exec_path, "/bin/", 5) == 0)) {
+        exec_vmo = iris_fshost_get_exec_vmo(vmo_fs_ch, exec_path);
+    }
+
+    if (exec_vmo == ZX_HANDLE_INVALID) {
+        // Fallback: open binary from VFS, check for shebang (#!/bin/sh), or stream into VMO
+        int exec_fd = -1;
+        int err = sys_open(exec_path, O_RDONLY, 0, &exec_fd);
+        if (err != 0) {
+            return err;
+        }
+
+        // 3. Inspect header for shebang (#!/bin/sh)
+        char head[256];
+        ssize_t head_read = 0;
+        sys_read(exec_fd, head, sizeof(head) - 1, &head_read);
+        if (head_read >= 2 && head[0] == '#' && head[1] == '!') {
+            head[head_read] = '\0';
+            char* line_end = iris_strchr(head, '\n');
+            if (line_end) *line_end = '\0';
+            char* r_end = iris_strchr(head, '\r');
+            if (r_end) *r_end = '\0';
+
+            char* p = head + 2;
+            while (*p == ' ' || *p == '\t') p++;
+            char* interp = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            char* interp_arg = nullptr;
+            if (*p) {
+                *p = '\0';
+                p++;
+                while (*p == ' ' || *p == '\t') p++;
+                if (*p) interp_arg = p;
+            }
+
+            sys_close(exec_fd);
+
+            // Build new argv: [interp, (interp_arg), exec_path, argv[1], ...]
+            const char* new_argv[64];
+            uint32_t na = 0;
+            new_argv[na++] = interp;
+            if (interp_arg && *interp_arg) {
+                new_argv[na++] = interp_arg;
+            }
+            new_argv[na++] = exec_path;
+            for (uint32_t i = 1; i < argc && na < 62; i++) {
+                new_argv[na++] = argv[i];
+            }
+            new_argv[na] = nullptr;
+
+            return sys_spawn(res, interp, file_actions, attrs, const_cast<char* const*>(new_argv), envp);
+        }
+
+        // 4. ELF Binary: determine size and load into executable VMO
+        struct stat exec_stat;
+        err = sys_fstat(exec_fd, &exec_stat);
+        if (err != 0 || exec_stat.st_size <= 0) {
+            sys_close(exec_fd);
+            return (err != 0) ? err : ENOEXEC;
+        }
+
+        zx_handle_t vmo = ZX_HANDLE_INVALID;
+        zx_status_t vst = zx_vmo_create(static_cast<uint64_t>(exec_stat.st_size), 0, &vmo);
+        if (vst != ZX_OK) {
+            sys_close(exec_fd);
+            return ENOMEM;
+        }
+
+        off_t dummy_off = 0;
+        sys_seek(exec_fd, 0, SEEK_SET, &dummy_off);
+
+        uint8_t load_buf[32768];
+        uint64_t cur_pos = 0;
+        uint64_t total_size = static_cast<uint64_t>(exec_stat.st_size);
+
+        while (cur_pos < total_size) {
+            size_t chunk = sizeof(load_buf);
+            if (cur_pos + chunk > total_size) {
+                chunk = static_cast<size_t>(total_size - cur_pos);
+            }
+            ssize_t n_read = 0;
+            int r_err = sys_read(exec_fd, load_buf, chunk, &n_read);
+            if (r_err != 0 || n_read <= 0) {
+                break;
+            }
+            zx_vmo_write(vmo, load_buf, cur_pos, static_cast<size_t>(n_read));
+            cur_pos += static_cast<uint64_t>(n_read);
+        }
+        sys_close(exec_fd);
+
+        if (cur_pos < total_size) {
+            zx_handle_close(vmo);
+            return EIO;
+        }
+
+        if (zx_vmo_replace_as_executable(vmo, ZX_HANDLE_INVALID, &exec_vmo) != ZX_OK) {
+            exec_vmo = vmo;
+        }
     }
 
     iris_spawn_action_t actions[IRIS_SPAWN_MAX_ACTIONS];

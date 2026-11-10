@@ -437,7 +437,7 @@ static void uart_rx_thread_entry(uintptr_t arg) {
             }
             pty_try_fulfill_pending_reads();
         } else {
-            zx_nanosleep(zx_deadline_after(ZX_MSEC(10)));
+            zx_nanosleep(zx_deadline_after(ZX_MSEC(2)));
         }
     }
     zx_thread_exit();
@@ -855,7 +855,7 @@ int main(int argc, char** argv) {
         }
 
         zx_status_t wait_st = zx_object_wait_many(wait_items, cur_clients,
-                                                  zx_deadline_after(ZX_MSEC(10)));
+                                                  zx_deadline_after(ZX_MSEC(2)));
         if (wait_st != ZX_OK && wait_st != ZX_ERR_TIMED_OUT) {
             break;
         }

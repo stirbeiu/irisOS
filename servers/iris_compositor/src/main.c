@@ -270,6 +270,21 @@ static zx_status_t handle_damage_window(const iris_compositor_damage_req_t* req)
         return ZX_ERR_NOT_FOUND;
     }
 
+    if (req->w > 0 && req->h > 0 && req->x < win->client_w && req->y < win->client_h) {
+        uint32_t cw = req->w;
+        uint32_t ch = req->h;
+        if (req->x + cw > win->client_w) {
+            cw = win->client_w - req->x;
+        }
+        if (req->y + ch > win->client_h) {
+            ch = win->client_h - req->y;
+        }
+        dirty_rect_union(win->x + IRIS_WIN_BORDER_PX + (int32_t)req->x,
+                         win->y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H + (int32_t)req->y,
+                         cw, ch);
+        return ZX_OK;
+    }
+
     uint32_t frame_w = win->client_w + (2u * IRIS_WIN_BORDER_PX);
     uint32_t frame_h = win->client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
 
@@ -527,7 +542,13 @@ static void run_compositor_loop(void) {
             }
         }
 
-        /* 3. Render Tick Pacing: when deadline reached, perform AT MOST one render pass */
+        /* 3. Immediate low-latency cursor update (250 Hz / <=4ms) when no window damage is pending */
+        if (g_cursor_dirty && !g_dirty_active) {
+            update_screen(0, 0, 0, 0);
+            g_cursor_dirty = false;
+        }
+
+        /* 4. Render Tick Pacing: when deadline reached, perform AT MOST one full window/desktop render pass */
         zx_time_t now = zx_clock_get_monotonic();
         if (now >= next_frame_deadline) {
             if (g_dirty_active) {
@@ -545,10 +566,13 @@ static void run_compositor_loop(void) {
             }
         }
 
-        /* 4. Sleep or wait on channel readability until next frame tick */
+        /* 4. Sleep or wait on channel readability until next frame tick (cap at 4ms for 250Hz input sampling) */
         now = zx_clock_get_monotonic();
         if (next_frame_deadline > now) {
             zx_duration_t wait_dur = next_frame_deadline - now;
+            if (g_num_input_devs > 0 && wait_dur > ZX_MSEC(4)) {
+                wait_dur = ZX_MSEC(4);
+            }
             zx_wait_item_t items[MAX_COMP_CLIENTS];
             int item_map[MAX_COMP_CLIENTS];
             uint32_t count = 0;

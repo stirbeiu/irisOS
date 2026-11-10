@@ -1119,7 +1119,7 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         };
         const char* crypt_argv_wait[] = { "iris_crypt", "--wait-unlock", NULL };
         zx_handle_t proc_crypt = ZX_HANDLE_INVALID;
-        if (g_test_mode) {
+        if (g_test_mode || has_gpu) {
             spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 0, NULL, crypt_hnds, 3, &proc_crypt);
         } else {
             spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 2, crypt_argv_wait, crypt_hnds, 3, &proc_crypt);
@@ -1128,20 +1128,22 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         log_status(STATUS_OKAY, "iris_init", "Spawned Storage Encryption Daemon (bin/iris_crypt).");
 
         zx_handle_t pty_client = ZX_HANDLE_INVALID, pty_server = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &pty_client, &pty_server);
-        zx_handle_t root_res_pty = ZX_HANDLE_INVALID;
-        g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_pty);
-        spawn_handle_t pty_hnds[] = {
-            { pty_server,   PA_HND(PA_USER0, 0) },
-            { root_res_pty, PA_HND(PA_RESOURCE, 0) }
-        };
         zx_handle_t proc_pty = ZX_HANDLE_INVALID;
-        spawn_bootfs_binary("iris_pty", "bin/iris_pty", 0, NULL, pty_hnds, 2, &proc_pty);
-        g_zx_handle_close(pty_server);
-        log_status(STATUS_OKAY, "iris_init", "Spawned Pseudo-Terminal Server (bin/iris_pty).");
+        if (g_test_mode || !has_gpu) {
+            g_zx_channel_create(0, &pty_client, &pty_server);
+            zx_handle_t root_res_pty = ZX_HANDLE_INVALID;
+            g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_pty);
+            spawn_handle_t pty_hnds[] = {
+                { pty_server,   PA_HND(PA_USER0, 0) },
+                { root_res_pty, PA_HND(PA_RESOURCE, 0) }
+            };
+            spawn_bootfs_binary("iris_pty", "bin/iris_pty", 0, NULL, pty_hnds, 2, &proc_pty);
+            g_zx_handle_close(pty_server);
+            log_status(STATUS_OKAY, "iris_init", "Spawned Pseudo-Terminal Server (bin/iris_pty).");
+        }
 
-        if (!g_test_mode) {
-            /* Step 5.3: Interactive mode — spawn apps/sysutils/passphrase on iris_pty
+        if (!g_test_mode && !has_gpu) {
+            /* Step 5.3: Headless interactive mode — spawn apps/sysutils/passphrase on iris_pty
              *           to unlock the Data partition before iris_fshost mounts /Users. */
             zx_handle_t pw_pty = request_pty_client_channel(pty_client);
             zx_handle_t pw_fd0 = ZX_HANDLE_INVALID, pw_fd1 = ZX_HANDLE_INVALID, pw_fd2 = ZX_HANDLE_INVALID;
@@ -1167,19 +1169,6 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 g_zx_handle_close(proc_pw);
             } else {
                 log_status(STATUS_FAIL, "iris_init", "Failed to spawn bin/passphrase (%d).", pw_st);
-            }
-
-            /* In GUI boot mode, release iris_pty after passphrase unlock so iris_compositor
-             * has exclusive access to VirtIO Input (keyboard + tablet) and UART serial. */
-            if (has_gpu && pty_client != ZX_HANDLE_INVALID) {
-                g_zx_handle_close(pty_client);
-                pty_client = ZX_HANDLE_INVALID;
-                if (proc_pty != ZX_HANDLE_INVALID) {
-                    zx_signals_t pty_obs = 0;
-                    g_zx_object_wait_one(proc_pty, ZX_PROCESS_TERMINATED, iris_deadline_after(ZX_SEC(5)), &pty_obs);
-                    g_zx_handle_close(proc_pty);
-                    proc_pty = ZX_HANDLE_INVALID;
-                }
             }
         }
 

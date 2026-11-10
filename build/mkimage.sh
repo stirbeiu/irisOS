@@ -131,11 +131,15 @@ mkdir -p "${IMAGES_DIR}"
 ESP_IMG="${IMAGES_DIR}/esp_${ARCH_NAME}.img"
 echo "==> Formatting NVMe ESP image (${ESP_IMG}, 64 MB FAT32)..."
 
+ESP_CMDLINE_FILE="${BUILD_DIR}/efi_cmdline.txt"
+printf "bootloader.timeout=0 bootloader.default=local\n" > "${ESP_CMDLINE_FILE}"
+
 rm -f "${ESP_IMG}"
 dd if=/dev/zero of="${ESP_IMG}" bs=1M count=64 status=none
 /opt/homebrew/bin/mformat -i "${ESP_IMG}" -F -v "ESP" ::
 /opt/homebrew/bin/mmd -i "${ESP_IMG}" ::EFI
 /opt/homebrew/bin/mmd -i "${ESP_IMG}" ::EFI/BOOT
+/opt/homebrew/bin/mcopy -i "${ESP_IMG}" "${ESP_CMDLINE_FILE}" "::cmdline"
 /opt/homebrew/bin/mcopy -i "${ESP_IMG}" "${EFI_SRC}" "::EFI/BOOT/${EFI_BIN_NAME}"
 /opt/homebrew/bin/mcopy -i "${ESP_IMG}" "${IRIS_ZBI_A}" "::EFI/BOOT/iris_a.zbi"
 /opt/homebrew/bin/mcopy -i "${ESP_IMG}" "${IRIS_ZBI_B}" "::EFI/BOOT/iris_b.zbi"
@@ -148,6 +152,7 @@ dd if=/dev/zero of="${PART1_ESP}" bs=512 count=65536 status=none
 /opt/homebrew/bin/mformat -i "${PART1_ESP}" -v "ESP" ::
 /opt/homebrew/bin/mmd -i "${PART1_ESP}" ::EFI
 /opt/homebrew/bin/mmd -i "${PART1_ESP}" ::EFI/BOOT
+/opt/homebrew/bin/mcopy -i "${PART1_ESP}" "${ESP_CMDLINE_FILE}" "::cmdline"
 /opt/homebrew/bin/mcopy -i "${PART1_ESP}" "${EFI_SRC}" "::EFI/BOOT/${EFI_BIN_NAME}"
 /opt/homebrew/bin/mcopy -i "${PART1_ESP}" "${IRIS_ZBI_A}" "::EFI/BOOT/iris_a.zbi"
 /opt/homebrew/bin/mcopy -i "${PART1_ESP}" "${IRIS_ZBI_B}" "::EFI/BOOT/iris_b.zbi"
@@ -158,6 +163,11 @@ SYS_B_IMG="${IMAGES_DIR}/system_b_${ARCH_NAME}.ufs2"
 INTER_REGULAR="${ROOT_DIR}/resources/fonts/InterDisplay-Regular.otf"
 INTER_BOLD="${ROOT_DIR}/resources/fonts/InterDisplay-Bold.otf"
 INTER_ITALIC="${ROOT_DIR}/resources/fonts/InterDisplay-Italic.otf"
+WALLPAPER_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper.qoi"
+if [[ ! -f "${WALLPAPER_QOI}" ]]; then
+    echo "==> Fetching Unsplash wallpaper (${WALLPAPER_QOI})..."
+    python3 "${ROOT_DIR}/scripts/fetch_wallpaper.py"
+fi
 SYS_LIBS=(
     "${BUILD_DIR}/lib/libzircon.so"
     "${BUILD_DIR}/lib/libiris.so"
@@ -171,6 +181,7 @@ SYS_LIBS=(
     "${INTER_REGULAR}"
     "${INTER_BOLD}"
     "${INTER_ITALIC}"
+    "${WALLPAPER_QOI}"
 )
 echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries & Inter Display Fonts..."
 "${HOST_TOOLS}/mkufs2" "${SYS_A_IMG}" 65536 system System_A "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
@@ -180,9 +191,9 @@ echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2
 DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
 DATA_IMG="${IMAGES_DIR}/data_${ARCH_NAME}.crypt"
 
-# If disk_${ARCH_NAME}.raw already exists with valid size, preserve existing Partition 4 (Data)
+# If disk_${ARCH_NAME}.raw already exists with valid size (and not packaging clean test image), preserve Partition 4 (Data)
 RAW_SIZE=$(stat -f%z "${DISK_RAW}" 2>/dev/null || stat -c%s "${DISK_RAW}" 2>/dev/null || echo 0)
-if [[ -f "${DISK_RAW}" && ${RAW_SIZE} -ge 134217728 ]]; then
+if [[ "${IRIS_MODE}" != "test" && -f "${DISK_RAW}" && ${RAW_SIZE} -ge 134217728 ]]; then
     echo "==> Preserving existing Partition 4 (Data) from ${DISK_RAW}..."
     dd if="${DISK_RAW}" of="${DATA_IMG}" bs=512 skip=198656 count=61440 status=none
 else

@@ -242,6 +242,31 @@ typedef struct virtio_gpu_resource_flush {
     uint32_t              padding;
 } virtio_gpu_resource_flush_t;
 
+/**
+ * @brief Cursor position descriptor for VIRTIO_GPU_CMD_UPDATE_CURSOR / MOVE_CURSOR.
+ */
+typedef struct virtio_gpu_cursor_pos {
+    uint32_t scanout_id;
+    uint32_t x;
+    uint32_t y;
+    uint32_t padding;
+} virtio_gpu_cursor_pos_t;
+
+/**
+ * @brief Command payload for VIRTIO_GPU_CMD_UPDATE_CURSOR and VIRTIO_GPU_CMD_MOVE_CURSOR
+ *        submitted on Virtqueue 1 (`cursorq`).
+ */
+typedef struct virtio_gpu_update_cursor {
+    virtio_gpu_ctrl_hdr_t   hdr;
+    virtio_gpu_cursor_pos_t pos;
+    uint32_t                resource_id;
+    uint32_t                hot_x;
+    uint32_t                hot_y;
+    uint32_t                padding;
+} virtio_gpu_update_cursor_t;
+
+_Static_assert(sizeof(virtio_gpu_update_cursor_t) == 56, "virtio_gpu_update_cursor_t must be 56 bytes");
+
 #pragma pack(pop)
 
 #ifdef __cplusplus

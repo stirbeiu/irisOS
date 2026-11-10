@@ -284,3 +284,30 @@ zx_status_t iris_window_move(iris_window_t *win, int32_t x, int32_t y) {
     }
     return resp_hdr.status;
 }
+
+zx_status_t iris_window_poll_event(iris_window_t *win, iris_compositor_poll_event_resp_t *out_event) {
+    if (!win || !out_event || win->comp_channel == ZX_HANDLE_INVALID || win->window_id == 0) {
+        return ZX_ERR_INVALID_ARGS;
+    }
+
+    iris_compositor_poll_event_req_t req;
+    req.window_id = win->window_id;
+
+    iris_msg_hdr_t req_hdr;
+    iris_msg_hdr_t resp_hdr;
+    uint32_t act_payload = 0;
+    uint32_t txid = ++g_gui_txid;
+    iris_msg_hdr_init(&req_hdr, IRIS_PROTO_COMPOSITOR,
+                      IRIS_COMPOSITOR_OP_POLL_EVENT, txid, sizeof(req));
+
+    zx_status_t st = iris_channel_call(win->comp_channel,
+                                       &req_hdr, &req,
+                                       NULL, 0,
+                                       &resp_hdr, out_event, sizeof(*out_event), &act_payload,
+                                       NULL, 0, NULL,
+                                       ZX_TIME_INFINITE);
+    if (st != ZX_OK) {
+        return st;
+    }
+    return resp_hdr.status;
+}

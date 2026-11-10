@@ -1,309 +1,135 @@
 # Project Specification: irisOS
 
-## 1. Role & Objective
-You are assisting in the architecture and development of **irisOS**, a modern, 64-bit, microkernel-based operating system. 
-Always adhere strictly to the architectural rules, licensing boundaries, directory structure, and 7-phase roadmap defined below. Do not introduce legacy 32-bit/BIOS code, GPL contamination in shared libraries, or upper-layer Google Fuchsia frameworks.
-
----
-
-## 2. Core Constraints & Philosophy
-* **OS Name:** `irisOS` (one word).
+## 1. Role & Core Constraints
+You are assisting in the architecture and development of **`irisOS`** (one word), a modern 64-bit microkernel operating system.
 * **Target Architectures:** `x86_64` and `AArch64` (`aarch64`) ONLY.
-* **Zero Legacy Bloat:** UEFI boot only. No 16-bit/32-bit real/protected mode code, no legacy BIOS.
-* **Microkernel Architecture:** Based on a stripped-down **Zircon** microkernel (`bringup` target only). All hardware drivers, filesystems, encryption layers, and window compositors run as isolated user-space processes in **Ring 3 (x86_64) / EL0 (AArch64)**.
-* **No Google UI/Runtime Frameworks:** Use ONLY the Zircon microkernel, its C vDSO (`libzircon.so`), and the `zbi` host packaging tool. Strictly exclude Dart, Flutter, FIDL, Scenic, and Fuchsia's component framework.
-* **Reuse Proven FOSS:** Avoid reinventing wheels. Use battle-tested open-source libraries in `vendor/`.
+* **Zero Legacy Bloat:** Pure UEFI boot only (`Gigaboot` -> `BOOTX64.EFI` / `BOOTAA64.EFI`). No 16/32-bit real/protected mode or BIOS code. Limine is excluded.
+* **Microkernel Architecture:** Based on a standalone pinned **Zircon** microkernel (`bringup` target only). All hardware drivers, filesystems, encryption layers, and window compositors run as isolated user-space processes in **Ring 3 (`x86_64`) / EL0 (`AArch64`)**.
+* **No Google UI/Runtime Frameworks:** Use ONLY the Zircon microkernel, its C vDSO (`libzircon.so`), and the `zbi` host packaging tool. Strictly exclude Dart, Flutter, FIDL, Scenic, Fuchsia Component Manager, `jiri`, and full Fuchsia `GN`.
+* **Reuse Proven FOSS:** Use battle-tested open-source libraries in `vendor/`.
 
 ---
 
-## 3. Two-Zone Licensing Policy (CRITICAL)
-End-users and businesses must be able to develop and distribute **100% proprietary, closed-source applications and hardware drivers** on `irisOS` without legal obligation to disclose their source code.
-
-1. **Zone 1 — SDK & Shared Libraries (STRICTLY MIT / BSD / ISC / Apache 2.0 / FTL ONLY):**
-   * Any library linked by user-space applications or drivers MUST use a permissive license.
-   * **Strictly NO GPL or LGPL** in `sdk/` or core system libraries (`libiris`, `libiris_gui`, `mlibc`, `pixman`, `freetype`, `libzircon.so`). FreeType is explicitly designated as `FTL (Permissive BSD-style)`.
-2. **Zone 2 — Standalone Programs & Utilities (MIT / BSD / GPL Allowed):**
-   * Standalone executables that run in their own address space and communicate only via IPC or standard streams (`toybox`, and optional user-installable packages like `bash`, `coreutils`, or `nano`) may use any FOSS license.
+## 2. Two-Zone Licensing Policy (CRITICAL)
+End-users and businesses must be able to develop and distribute **100% proprietary, closed-source applications and hardware drivers** on `irisOS` without source disclosure obligations.
+1. **Zone 1 — SDK, Kernel & Shared Libraries (STRICTLY MIT / BSD / ISC / Apache 2.0 / FTL ONLY):**
+   * Strictly **NO GPL or LGPL** in `kernel/`, `sdk/`, or shared libraries (`libiris`, `libiris_gui`, `mlibc`, `frigg`, `libufs`, `fatfs`, `mbedtls`, `pixman`, `freetype`, `libzircon.so`). FreeType is explicitly elected under the **FreeType License (`FTL`, Permissive BSD-style)**.
+2. **Zone 2 — Standalone User-Space Executables (MIT / BSD / GPL Allowed):**
+   * Standalone executables running in their own address space and communicating only via IPC or standard streams (`toybox`, optional CLI tools) may use any FOSS license.
 
 ---
 
-## 4. Locked-In Technical Stack
+## 3. Locked-In Technical Stack
 
-### 4.1 Host Environment & Cross-Toolchain (macOS Apple Silicon)
-* **Host Platform:** macOS (`Darwin arm64`, Apple Silicon).
-* **Required Host Tools:**
-  ```bash
-  brew install llvm cmake ninja meson qemu xorriso mtools
-  ```
-* **Toolchain Binaries:** Apple's native `/usr/bin/clang` targets Mach-O only and lacks `ld.lld`. All cross-compilation toolchains in `build/toolchains/` (`x86_64-iris.cmake`, `arm64-iris.cmake`, `meson-x86_64.txt`, `meson-arm64.txt`) MUST explicitly use Homebrew LLVM binaries:
-  * Compiler: `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`
-  * Linker: `/opt/homebrew/opt/llvm/bin/ld.lld`
-  * Archiver & Utilities: `/opt/homebrew/opt/llvm/bin/llvm-ar`, `/opt/homebrew/opt/llvm/bin/llvm-objcopy`
-  * Target Triples: `x86_64-unknown-elf` and `aarch64-unknown-elf`
+### 3.1 Host Environment & Cross-Toolchain (`Darwin arm64`, Apple Silicon)
+* **Required Host Packages:** `brew install llvm cmake ninja meson qemu xorriso mtools`
+* **Toolchain Binaries:** Apple's `/usr/bin/clang` targets Mach-O only and lacks `ld.lld`. All toolchain definitions in `build/toolchains/` (`x86_64-iris.cmake`, `arm64-iris.cmake`, `meson-x86_64.txt`, `meson-arm64.txt`) MUST explicitly use Homebrew LLVM (`/opt/homebrew/opt/llvm/bin/{clang,clang++,ld.lld,llvm-ar,llvm-objcopy,llvm-ranlib}`) with target triples `x86_64-unknown-elf` and `aarch64-unknown-elf` (or `*-unknown-linux-gnu` for SysV ELF ABI selection in `mlibc`).
 
-### 4.2 Zircon Kernel Source, Version Pinning & Build System
-* **No `jiri` or Full Fuchsia `GN`:** Avoid Google's multi-gigabyte Fuchsia monorepo build infrastructure.
-* **Source Fetching:** `scripts/fetch_zircon.sh` fetches a pinned commit SHA of the standalone Zircon kernel source tree into `kernel/zircon/`.
-* **Build Wrapper:** Compile the Zircon microkernel, `libzircon.so` (vDSO), and the host `zbi` tool using irisOS's standalone CMake/Ninja build wrapper configured with Homebrew LLVM (falling back to a lightweight Linux container only if strictly required for a specific legacy assembly step).
+### 3.2 Bootloader, Dual-ZBI & Bootstrap ABI (`Gigaboot` -> `userboot` -> `iris_init`)
+* **Dual-ZBI Layout on FAT32 ESP:** Stores `/EFI/BOOT/iris_a.zbi` (Slot A) and `/EFI/BOOT/iris_b.zbi` (Slot B). Gigaboot reads GPT partition attributes (`Priority`, `Tries Remaining`, `Successful`) to boot the active slot.
+* **Bootstrap Handle Extraction (`<zircon/processargs.h>`):** `iris_init` is launched by `userboot` without standard `argc`/`argv` and extracts:
+  1. `PA_HND(PA_RESOURCE, 0)`: Root Resource handle (derives MMIO, PCIe ECAM, IRQ, and BTI capabilities).
+  2. `PA_HND(PA_VMO_BOOTFS, 0)`: BOOTFS VMO handle (early servers and drivers).
+  3. `PA_HND(PA_JOB_DEFAULT, 0)`: Root Job handle (spawns isolated child jobs/daemons).
+  4. `PA_HND(PA_VMO_VDSO, 0)`: vDSO VMO handle (`libzircon.so`).
+  5. Early serial logging via `zx_debuglog_create(root_resource, 0, &log_handle)`.
 
-### 4.3 Bootloader & Dual-ZBI A/B Image Format (Gigaboot)
-* **Bootloader:** **Gigaboot** (Zircon's native UEFI bootloader stub) compiled for UEFI x86_64 (`BOOTX64.EFI`) and AArch64 (`BOOTAA64.EFI`). Limine is excluded.
-* **Dual-ZBI Layout on ESP:** To ensure kernel and early BOOTFS updates have full A/B rollback protection alongside `/System`, the FAT32 `ESP` stores two boot images:
-  * `/EFI/BOOT/iris_a.zbi` (Kernel + Slot A BOOTFS)
-  * `/EFI/BOOT/iris_b.zbi` (Kernel + Slot B BOOTFS)
-* **Slot Selection:** Gigaboot reads GPT partition attributes (Priority, Tries Remaining, Successful) to select the active slot (`A` or `B`) and passes the active slot command line to `iris_init`.
-
-### 4.4 Kernel-to-Userspace Bootstrap ABI (`userboot` -> `iris_init`)
-* **No `argc`/`argv` Entry:** `iris_init` does not use standard C runtime entry (`int main`). It is launched directly by Zircon's `userboot` and receives its initial bootstrap channel via `<zircon/processargs.h>` (`zx_proc_args_t`).
-* **Bootstrap Handle Extraction:** `iris_init` extracts the following essential capabilities from the bootstrap message:
-  1. `PA_HND(PA_RESOURCE, 0)`: **Root Resource handle**, required to derive MMIO, IRQ, and I/O port capabilities for Ring 3 device drivers.
-  2. `PA_HND(PA_VMO_BOOTFS, 0)`: **BOOTFS VMO handle**, containing early user-space binaries and drivers.
-  3. `PA_HND(PA_JOB_DEFAULT, 0)`: **Root Job handle**, used to spawn isolated child jobs and server processes.
-  4. `PA_HND(PA_VMO_VDSO, 0)`: **vDSO VMO handle** (`libzircon.so`), required to map system calls into child address spaces.
-  5. **Early Serial Logging:** Created immediately via `zx_debuglog_create(root_resource, 0, &log_handle)` to stream console output to UART before `iris_pty` is initialized.
-
-### 4.5 Inter-Process Communication (IPC Wire Protocol)
-* **No FIDL:** Communication across Ring 3 processes uses raw Zircon channels (`zx_channel_*`) structured by a standard 24-byte C-ABI header defined in `sdk/libiris/include/iris/ipc.h`:
+### 3.3 IPC Wire Protocol (`sdk/libiris/include/iris/ipc.h`)
+* All Ring 3 processes communicate over raw Zircon channels (`zx_channel_*`) using a packed **24-byte C-ABI header**:
   ```c
-  #include <stdint.h>
-  #include <zircon/types.h>
-
-  #define IRIS_IPC_MAGIC 0x49524953 // 'IRIS'
-
+  #define IRIS_IPC_MAGIC 0x49524953u // 'IRIS'
   #pragma pack(push, 4)
   typedef struct iris_msg_hdr {
-      uint32_t magic;       // Must be IRIS_IPC_MAGIC
-      uint32_t protocol;    // Subsystem ID (e.g. FS, CRYPT, COMPOSITOR, PTY)
+      uint32_t magic;       // Must equal IRIS_IPC_MAGIC
+      uint32_t protocol;    // IRIS_PROTO_{SYSTEM,FS,CRYPT,COMPOSITOR,PTY,DRIVER}
       uint32_t opcode;      // Subsystem command/event opcode
       uint32_t txid;        // Transaction ID for request/response pairing
-      int32_t  status;      // zx_status_t (ZX_OK, ZX_ERR_*, etc.)
-      uint32_t payload_len; // Length of payload following this header in bytes
+      int32_t  status;      // zx_status_t (ZX_OK or negative error)
+      uint32_t payload_len; // Trailing payload bytes (max 65,512)
   } iris_msg_hdr_t;
   #pragma pack(pop)
   ```
-* All Ring 3 servers (`iris_fshost`, `iris_crypt`, `iris_compositor`, `iris_pty`) and client libraries (`libiris`, `libiris_gui`, `mlibc-sysdeps`) communicate using this common wire protocol.
 
-### 4.6 Capability Model, VFS & POSIX Emulation (`mlibc`)
-* **Process Model (No `fork()`):** Zircon does not support copy-on-write `fork()`. Process creation is implemented via **`posix_spawn()`** over `zx_process_create()` and `zx_process_start()`.
-* **C Library & Dynamic Linker:** **`mlibc`** (MIT) with irisOS sysdeps in `sdk/mlibc-sysdeps/iris/` producing `libc.so` and `ld-iris.so`.
-* **VFS Router:** `iris_fshost` is a monolithic VFS mount manager and path router handling `/System`, `/Users`, `/Applications`, and the compatibility symlinks (`/bin`, `/lib`).
-* **Client-Side File Descriptor Table:** `sdk/mlibc-sysdeps/iris/` maintains an internal table mapping `int fd -> zx_handle_t channel`. File operations (`sys_open`, `sys_read`, `sys_write`, `sys_seek`, `sys_close`) issue IPC messages to `iris_fshost`.
-* **FD Inheritance:** `posix_spawn()` transfers open file descriptors to child processes using Zircon's standard `PA_HND(PA_FD, fd)` handle info tags in `zx_proc_args_t`.
+### 3.4 Capability Model, POSIX Runtime (`mlibc`) & VFS (`iris_fshost`)
+* **No `fork()`:** Process creation uses **`posix_spawn()`** (`iris_spawn` over `zx_process_create` + `zx_process_start`), inheriting open FDs via `PA_HND(PA_FD, fd)`.
+* **C Library & Dynamic Loader:** `vendor/mlibc` + `sdk/mlibc-sysdeps/iris/` producing `libc.a`, `libc.so`, and `ld-iris.so`.
+* **1-IPC Executable VMO Spawning:** `sys_spawn()` requests cached read-only executable VMOs for `/System` binaries via `IRIS_FS_OP_GET_EXEC_VMO` before falling back to `#!` script or streaming reads.
 
-### 4.7 Storage, Encryption & A/B Updates
-* **Unified PCIe Device Discovery:** Standardize on **PCIe (ECAM)** for VirtIO devices (`virtio-blk-pci`, `virtio-gpu-pci`, `virtio-input-pci`) on BOTH `x86_64` (QEMU `-M q35`) and `AArch64` (QEMU `-M virt`). This allows `iris_init` and Ring 3 drivers to share a single PCIe enumeration codebase.
-* **Block Driver:** User-space `virtio-blk-pci` using Zircon **BTI (`zx_bti_pin`)** for safe DMA and `zx_interrupt_wait()` for PCIe MSI/INTx interrupts.
-* **Block-Level Encryption (`iris_crypt`):**
-  * Sits as a block filter between `libufs` and `virtio-blk-pci`: `[libufs] <==> [iris_crypt] <==> [virtio-blk-pci]`.
-  * Encrypts the `Data` partition with **AES-256-XTS** + **Argon2** using `mbedtls`.
-  * **Metadata Header:** Sector 0 (first 4 KB) of the `Data` partition is reserved for the `iris_crypt` metadata header (Argon2 salt, cost parameters, and encrypted master key).
-  * **Phase 4 Test Vector:** For automated testing prior to Phase 5's interactive passphrase prompt, `iris_crypt` supports a deterministic development test key fallback.
-* **Partition Table (GPT with 4 Partitions):**
-  1. `ESP` (FAT32 via **FatFs** — Gigaboot, `iris_a.zbi`, `iris_b.zbi`).
-  2. `System_A` (Active immutable read-only **UFS2** via **libufs**).
-  3. `System_B` (Inactive slot for seamless A/B updates with rollback watchdog).
-  4. `Data` (Read-Write **UFS2** via **libufs**, block-encrypted by `iris_crypt`).
-* **Developer Mode Override:** Optional writable RAM `OverlayFS` over `/System` when unlocked by the user.
-
-### 4.8 Graphics & Windowing
-* **Drivers:** UEFI GOP Framebuffer fallback + `virtio-gpu-pci` and `virtio-input-pci`.
-* **Compositor (`iris_compositor`):** Zero-copy shared memory windowing using Zircon **VMOs** + IPC damage notifications.
-* **Rendering Libraries:** **Pixman** (MIT) for 2D SIMD compositing + **FreeType** (FTL (Permissive BSD-style)) for font rendering.
-* **System Shell & CLI Utilities:** **`Toybox`** (0BSD) compiled as a single binary providing `sh` and 200+ POSIX utilities without relying on `fork()`.
-
-### 4.9 Multi-Build System Orchestrator (`build/`)
-* A master top-level `Makefile` and helper orchestrator scripts inside `build/` coordinate the heterogeneous build systems across submodules:
-  * CMake: `libufs`, `mbedtls`, `kernel/zircon`
-  * Meson: `mlibc`, `pixman`, `freetype`
-  * Makefile/kconfig: `toybox`
-* The orchestrator automatically propagates Homebrew LLVM paths, cross-compilation target triples (`--target=x86_64-unknown-elf`, `--target=aarch64-unknown-elf`), and sysroot header/library search paths to all subprojects.
+### 3.5 PCIe Discovery, Storage, Encryption & Graphics
+* **Unified PCIe (ECAM):** Used on both `x86_64` (QEMU `q35`, `0xE0000000`) and `aarch64` (QEMU `virt`, `0x4010000000`) for `virtio-blk-pci`, `virtio-gpu-pci`, and `virtio-input-pci`. Drivers use Zircon BTI (`zx_bti_pin` with `ZX_BTI_CONTIGUOUS`) for safe DMA.
+* **4-Partition GPT Disk (`128 MB`):**
+  1. `ESP` (`32 MB` FAT32 — Gigaboot + `iris_a.zbi` / `iris_b.zbi`).
+  2. `System_A` (`32 MB` Read-Only FreeBSD UFS2 via `libufs`).
+  3. `System_B` (`32 MB` Inactive Read-Only UFS2 slot for A/B updates).
+  4. `Data` (`30 MB` Read-Write UFS2 encrypted by `iris_crypt`).
+* **Block Encryption (`iris_crypt`):** Sits between `libufs` and `virtio_blk` (`[libufs] <==> [iris_crypt] <==> [virtio_blk]`), encrypting `Data` with **AES-256-XTS + Argon2id** (`mbedtls`). Physical sectors `0..7` (4 KB) store `iris_crypt_header_t`; logical sectors start at `+8`.
+* **Graphics & Shell:** `virtio_gpu` + UEFI GOP fallback (`gop_fb`), `iris_compositor` (zero-copy shared VMO surfaces, Pixman SIMD compositing with occlusion culling, and O(1) FreeType glyph cache), `libiris_gui`, `iris_pty`, and `Toybox` (`0BSD`).
 
 ---
 
-## 5. Git Repository Structure
-Maintain this exact directory layout:
+## 4. Repository Layout & Runtime VFS Hierarchy
 
+### 4.1 Git Repository Structure
 ```text
 irisOS/
-├── build/                    # Master build scripts & multi-toolchain orchestrator
-│   ├── Makefile              # Top-level orchestrator calling CMake, Meson, and Make subprojects
-│   ├── toolchains/           # Homebrew LLVM configs (x86_64-iris.cmake, arm64-iris.cmake, meson-x86_64.txt, etc.)
-│   └── mkimage.sh            # Packs dual ZBIs (.zbi), System_A/B images, and GPT disk.img
-├── docs/                     # Subsystem documentation (architecture, IPC, VFS, build guides)
-├── scripts/
-│   ├── fetch_zircon.sh       # Fetches pinned commit of Zircon kernel + vDSO + zbi tool
-│   └── run_qemu.sh           # Launches QEMU (x86_64 q35 or aarch64 virt) with UEFI & PCIe VirtIO
-├── kernel/                   # [Kernel Zone - MIT]
-│   └── zircon/               # Pinned Zircon microkernel source tree
-├── sdk/                      # [SDK Zone - STRICTLY MIT / BSD ONLY]
-│   ├── libiris/              # Native C wrapper for Zircon primitives & 24-byte IPC wire protocol
-│   │   └── include/iris/ipc.h# iris_msg_hdr_t IPC definition
-│   ├── libiris_gui/          # Client windowing library (wraps Pixman + FreeType + VMO surfaces)
-│   └── mlibc-sysdeps/        # irisOS sysdeps (sysdeps/iris/) injected into vendor/mlibc
-├── servers/                  # [Server Zone - MIT / BSD] (Ring 3 User-Space Daemons)
-│   ├── iris_init/            # Bootstrap process: extracts userboot handles, scans PCIe, launches servers
-│   ├── iris_fshost/          # Monolithic VFS router, GPT parser, A/B slot selector, UFS2/libufs server
-│   ├── iris_crypt/           # Block-level AES-256-XTS encryption proxy for the Data partition
-│   ├── iris_compositor/      # Zero-copy VMO window server & input event router
-│   ├── iris_pty/             # Pseudo-terminal server for line buffering and signals (Ctrl+C)
-│   └── drivers/              # Ring 3 PCIe hardware drivers (virtio-blk-pci, virtio-gpu-pci, virtio-input-pci, uart)
-├── apps/                     # [App Zone - MIT / BSD / GPL Allowed]
-│   ├── terminal/             # Graphical terminal emulator app
-│   └── sysutils/             # Passphrase prompt, A/B update client, system tools
-├── vendor/                   # [Third-Party FOSS Submodules - Untouched Upstream]
-│   ├── mlibc/                # (MIT) Standard C library + dynamic linker [Meson]
-│   ├── toybox/               # (0BSD) Shell and 200+ CLI utilities [Makefile]
-│   ├── libufs/               # (BSD 2-Clause) FreeBSD UFS2/FFS filesystem library [CMake]
-│   ├── fatfs/                # (BSD) FAT32 library for ESP partition [CMake]
-│   ├── mbedtls/              # (Apache 2.0) AES-256-XTS & Argon2 crypto [CMake]
-│   ├── pixman/               # (MIT) 2D pixel manipulation library [Meson]
-│   └── freetype/             # (FTL (Permissive BSD-style)) Font engine [Meson/CMake]
-├── PROGRESS.md               # Live step-by-step milestone and progress tracker
-└── out/                      # Git-ignored build output & QEMU disk images
+├── Makefile / iris           # Top-level CLI & build/run/test entrypoints
+├── build/                    # CMakeLists.txt, Makefile, toolchains/, mkimage.sh
+├── docs/                     # Concise subsystem guides (build, IPC, sysdeps, storage, drivers)
+├── scripts/                  # fetch_*.sh, run_qemu.sh, verify_qemu.py, mk_gpt_disk.py
+├── kernel/zircon/            # [Kernel Zone - MIT] Pinned Zircon microkernel source
+├── sdk/                      # [SDK Zone - MIT/BSD ONLY] libiris, libiris_gui, mlibc-sysdeps/iris
+├── servers/                  # [Server Zone - MIT/BSD] iris_init, iris_fshost, iris_crypt,
+│                             #   iris_compositor, iris_pty, drivers/{pci,virtio_blk,virtio_gpu,virtio_input,gop_fb}
+├── apps/                     # [App Zone] terminal, sysutils/{passphrase,abctl,sys_overlay}, tests/its_irisOS
+├── vendor/                   # Untouched upstream FOSS (mlibc, frigg, toybox, libufs, fatfs, mbedtls, pixman, freetype)
+├── PROGRESS.md               # Concise milestone tracker (NO raw boot logs)
+└── out/                      # Git-ignored build artifacts & disk images
 ```
 
----
-
-## 6. Runtime Filesystem Hierarchy (macOS-Style)
-
-`iris_fshost` exposes this exact directory tree at runtime **(do NOT use traditional Linux `/usr` clutter or Fuchsia namespaces)**:
-
+### 4.2 Runtime VFS Hierarchy (`iris_fshost` — macOS-Style, No `/usr` Clutter)
 ```text
 /
 ├── System/                   # Mounted Read-Only from active GPT slot (System_A or System_B)
-│   ├── Bin/                  # toybox binary and command symlinks (sh, ls, cp, cat, etc.)
-│   ├── Libraries/            # ld-iris.so, libc.so, libzircon.so, libiris.so, libpixman.so
-│   ├── Servers/              # iris_compositor, non-boot drivers, background daemons
-│   └── Resources/            # System fonts (.ttf), icons, default configs
-├── Users/                    # Mounted Read-Write from AES-256-XTS encrypted Data partition
-│   └── admin/                # User home directory
+│   ├── Bin/                  # toybox binary, POSIX symlinks (sh, ls, cat, etc.), sysutils
+│   ├── Libraries/            # ld-iris.so, libc.so, libzircon.so, libiris.so, libpixman-1.so, libfreetype.so
+│   ├── Servers/              # iris_compositor, drivers, background daemons
+│   └── Resources/            # Fonts (InterDisplay-*.otf), system release metadata
+├── Users/admin/              # Mounted Read-Write from AES-256-XTS encrypted Data partition
 ├── Applications/             # Mounted Read-Write from encrypted Data partition
-├── bin -> /System/Bin        # Virtual symlink in RAM for POSIX script compatibility (#!/bin/sh)
-└── lib -> /System/Libraries  # Virtual symlink in RAM for ELF dynamic loader compatibility
+├── bin -> /System/Bin        # In-memory virtual symlink for POSIX compatibility (#!/bin/sh)
+└── lib -> /System/Libraries  # In-memory virtual symlink for ELF dynamic loader
 ```
 
 ---
 
-## 7. Phased Implementation Roadmap
-
-### Phase 1 & 2: Toolchain, Pinned Zircon Build & iris_init Handoff
-
-* Verify host requirements (`brew install llvm cmake ninja meson qemu xorriso mtools`).
-* Create `build/toolchains/` targeting Homebrew's LLVM (`/opt/homebrew/opt/llvm/bin/clang`, `ld.lld`).
-* Implement `scripts/fetch_zircon.sh` to fetch a pinned commit SHA of the standalone Zircon kernel.
-* Build the Zircon bringup kernel, `libzircon.so` (vDSO), and the host `zbi` tool using the CMake/Ninja wrapper.
-* Compile **Gigaboot** as the UEFI bootloader (`BOOTX64.EFI` / `BOOTAA64.EFI`).
-* Write a freestanding `iris_init` binary linked against `libzircon.so` that:
-  1. Receives `zx_proc_args_t` from `userboot`.
-  2. Extracts `PA_RESOURCE`, `PA_VMO_BOOTFS`, `PA_JOB_DEFAULT`, and `PA_VMO_VDSO`.
-  3. Creates an early debug log via `zx_debuglog_create` and logs "Hello from irisOS" over serial.
-* Pack `iris_a.zbi` using `zbi` and boot in QEMU via Gigaboot on both `x86_64` (q35) and `aarch64` (virt).
-* **Milestone:** `iris_init` boots from BOOTFS in QEMU on both architectures and prints "Hello from irisOS" to the debug serial log.
-
-### Phase 3: Native SDK (`libiris`) & `mlibc` Integration
-
-* Build `sdk/libiris` (MIT) providing:
-  * C wrappers for Zircon handles, channels, VMOs, and ports.
-  * The 24-byte `iris_msg_hdr_t` IPC wire protocol (`<iris/ipc.h>`).
-  * Process spawning primitives (`posix_spawn` via `zx_process_create`, `zx_process_start`, passing `PA_HND(PA_FD, fd)`).
-* Implement `sdk/mlibc-sysdeps/iris/` (`sys_anon_allocate`, `sys_vm_map`, `sys_write`, `sys_exit`, `sys_spawn`, `sys_futex`) hooking into `libzircon.so` and `libiris`.
-* Build a client-side FD table in `mlibc-sysdeps` mapping file descriptors to Zircon channels.
-* Cross-compile `vendor/mlibc` using Meson + Homebrew LLVM (static first, then shared `libc.so` + `ld-iris.so`).
-* **Milestone:** A standard C program using `#include <stdio.h>`, `malloc()`, and `printf()` compiles with Clang and runs on irisOS.
-
-### Phase 4: PCIe Drivers, Storage Encryption & Filesystems
-
-* Implement ECAM PCIe bus scanning in `iris_init` / Ring 3 drivers to discover VirtIO devices across `x86_64` and `aarch64`.
-* Build the Ring 3 `virtio-blk-pci` driver using Zircon BTI (`zx_bti_pin`) for DMA and `zx_interrupt_wait()`.
-* Build `iris_crypt` using `vendor/mbedtls` (AES-256-XTS + Argon2):
-  * Acts as a block-level IPC channel proxy above `virtio-blk-pci`.
-  * Manages the 4 KB Sector 0 metadata header on `Data`.
-  * Implements the development test key fallback for automated boots.
-* Build `iris_fshost` incorporating:
-  * GPT partition parser reading slot attributes.
-  * FatFs for reading/writing `ESP`.
-  * `libufs` for mounting `System_A`/`System_B` and decrypted `Data`.
-* Connect `mlibc` file syscalls (`sys_open`, `sys_read`, `sys_write`) to `iris_fshost` over `iris_msg_hdr_t` channels.
-* **Milestone:** irisOS boots in QEMU, reads the GPT layout, mounts `/System` read-only from `System_A`, decrypts and mounts `/Users` read-write from `Data`, and reads/writes persistent files.
-
-### Phase 5: Root System, PTY Server & Toybox Shell
-
-* Place early boot servers (`iris_init`, `virtio-blk-pci`, `iris_crypt`, `iris_fshost`) into BOOTFS (`iris_a.zbi`).
-* Build `iris_pty` (pseudo-terminal server) and PCIe input drivers (`virtio-input-pci` / UART).
-* Build `apps/sysutils/passphrase` to prompt for the `Data` partition unlock key.
-* Cross-compile `vendor/toybox` against `mlibc` using `posix_spawn()` and install into `/System/Bin`.
-* Implement the A/B watchdog confirmation (`boot_successful = 1` in GPT attributes) in `iris_init` once the shell prompt starts.
-* **Milestone:** irisOS boots, prompts for the disk passphrase, unlocks `/Users`, marks the active A/B slot successful, and drops into an interactive Toybox `sh` prompt with persistent storage.
-
-### Phase 6: Zero-Copy Window System (iris_compositor) & GUI
-
-* Build `virtio-gpu-pci` driver and UEFI GOP Framebuffer fallback.
-* Cross-compile `vendor/pixman` and `vendor/freetype` into `/System/Libraries` using Meson/CMake.
-* Build `iris_compositor` and `libiris_gui`: clients allocate shared window VMOs, render 2D graphics/fonts locally in RAM, and send lightweight IPC damage notifications to composite at 60 Hz.
-* Build the graphical terminal app running Toybox `sh` inside a desktop window.
-* **Milestone:** irisOS boots into a graphical desktop with a working mouse cursor and an interactive Terminal window.
-
-### Phase 7: Service Supervision & Hardening
-
-* Implement service supervision, daemon health monitoring, and structured IPC lifecycle notifications in `iris_init`.
-* Wire `poweroff` and `reboot` commands to `iris_init` to coordinate orderly reverse-dependency service termination.
-* Enforce blocking terminal input in `apps/sysutils/passphrase` and remove the interactive `IRIS_CRYPT_DEV_PASSPHRASE` fallback.
-* **Milestone:** System services shut down gracefully in reverse dependency order with DMA cleanly unpinned and encryption keys safely zeroed before ACPI hardware poweroff.
-
-### Technical Debt & Phase 7 Hardening Notes
-- **Graceful Shutdown vs. Immediate ACPI Cut-Off:**
-  - *Current Behavior (Phase 5):* `poweroff` and `reboot` invoke `sync()` followed directly by `zx_system_powerctl()`, immediately cutting ACPI power in QEMU.
-  - *Target Behavior (Phase 7):* Wire `poweroff` to send an IPC request to `iris_init`. `iris_init` will broadcast a shutdown notice, terminate daemons in reverse dependency order (allowing `iris_crypt` to zero keys and `virtio_blk` to unpin DMA), and then trigger hardware poweroff.
-- **Interactive Passphrase Blocking Input & Dev Fallback (`apps/sysutils/passphrase`):**
-  - *Current Behavior (Phase 5):* `apps/sysutils/passphrase` currently falls back to `IRIS_CRYPT_DEV_PASSPHRASE` immediately because `read()` does not block on empty input in raw mode.
-  - *Target Behavior (Phase 7):* Schedule blocking terminal input in raw mode and removal of the interactive `IRIS_CRYPT_DEV_PASSPHRASE` fallback for Phase 7 hardening.
+## 5. Phased Implementation Roadmap
+* **Phase 1 & 2 (Complete):** Homebrew LLVM toolchains, standalone Zircon + vDSO + `zbi`, Gigaboot UEFI, `iris_init` bootstrap handoff on `x86_64` & `aarch64`.
+* **Phase 3 (Complete):** `sdk/libiris` (24-byte IPC, VMO, `iris_spawn`), `sdk/mlibc-sysdeps/iris/`, client FD table, `libc.a` / `libc.so` / `ld-iris.so`.
+* **Phase 4 (Complete):** ECAM PCIe discovery, `virtio_blk` (BTI DMA), `iris_crypt` (AES-256-XTS + Argon2id), `iris_fshost` (GPT + `libufs` UFS2 RO `/System` & RW `/Users`).
+* **Phase 5 (Complete):** `iris_pty`, `virtio_input` + UART fallback, `passphrase`, `toybox` shell (`posix_spawn`), A/B GPT watchdog confirmation (`boot_successful = 1`).
+* **Phase 6 (In Progress):**
+  * Steps 6.1–6.3 (Complete): `virtio_gpu` + `gop_fb`, `pixman` + `freetype` ports, `iris_compositor` + `libiris_gui` with O(1) glyph cache & damage culling.
+  * Step 6.4 (Next Up): Graphical terminal emulator app (`apps/terminal`) running Toybox `sh` in a desktop window.
+* **Phase 7 (Pending):** Service supervision & crash recovery in `iris_init`, reverse-dependency graceful shutdown (`poweroff`/`reboot` IPC to `iris_init` to zero keys and unpin BTI DMA before ACPI poweroff), and strict blocking input in `apps/sysutils/passphrase` (removing `IRIS_CRYPT_DEV_PASSPHRASE` interactive fallback).
 
 ---
 
-## 8. Documentation & Progress Tracking Policy
-
-To maintain code quality, ease onboarding, and ensure smooth collaboration between developers and AI agents, the following documentation and tracking rules are strictly enforced:
-
-### 8.1 Code Documentation
-* **Public APIs & Headers (`sdk/`):** Every public header file in `sdk/libiris` and `sdk/libiris_gui` must have doc-comments detailing the function/struct purpose, argument definitions, return codes (`zx_status_t`), and any capability handle requirements (e.g., handles consumed, transferred, or created).
-* **Servers & Drivers (`servers/`):** Every server (`iris_init`, `iris_fshost`, `iris_crypt`, `iris_compositor`, `iris_pty`) and driver in `servers/drivers/` must include high-level module documentation explaining its lifecycle, channel endpoints, and capability dependencies.
-* **Complex Low-Level Logic:** Intricate operations—including IPC message packing/unpacking, direct system calls, DMA buffer pinning (`zx_bti_pin`), interrupt handling, and cryptographic key derivations—MUST include inline comments explaining *why* the implementation is designed that way.
-
-### 8.2 Subsystem Documentation (`docs/`)
-* Maintain dedicated, concise Markdown guides in `docs/`:
-  * `docs/build_system.md`: Explaining the multi-toolchain build orchestrator, Homebrew LLVM setup, and target triples.
-  * `docs/ipc_protocol.md`: Detailing the 24-byte `iris_msg_hdr_t` wire protocol, opcode spaces, transaction semantics, and channel lifecycle.
-  * `docs/storage_and_vfs.md`: Detailing partition schemes, GPT slot management, `iris_crypt` sector headers, and VFS routing.
-  * Additional subsystem guides as components are implemented.
-
-### 8.3 Live Progress Tracking (`PROGRESS.md`)
-* `PROGRESS.md` is a living document tracking the exact state of implementation across all roadmap phases.
-* **Immediate Update Rule:** Upon completing any verifiable step or milestone:
-  1. Record what was implemented and added.
-  2. Record the exact verification command(s) and test output proving it works.
-  3. Clearly state the immediate next step so any agent or developer can seamlessly pick up where the last task ended.
+## 6. Documentation & Context Efficiency Policy
+1. **Code Documentation:** Public SDK headers (`sdk/`) require doc-comments detailing purpose, arguments, `zx_status_t` returns, and handle ownership. Servers/drivers (`servers/`) require module lifecycle headers and inline explanations for DMA (`zx_bti_pin`), IPC packing, and crypto.
+2. **Concise Markdown & Zero Boot Logs:** Never paste raw multi-line QEMU boot logs or duplicate prose into `PROGRESS.md` or `docs/*.md`. Keep all Markdown files concise, structured in tables/lists, and token-efficient.
+3. **Live Progress Tracking (`PROGRESS.md`):** Upon completing a milestone, record the concise capability added, the exact verification command (`./iris test all`), and the immediate next step.
 
 ---
 
-## 9. Anti-Reward Hacking & Strict Verification Policy (CRITICAL)
+## 7. Anti-Reward Hacking & Strict Verification Policy (CRITICAL)
 
-To prevent superficial implementations, stubbed syscalls, hardcoded offsets, or falsified test passes, all development and verification MUST adhere to the following non-negotiable rules:
+### 7.1 Zero Shortcuts & No Fake Plumbing
+* **No Hardcoded Magic Offsets:** Servers and drivers must dynamically parse on-disk/hardware structures (MBR, GPT headers, UFS2 superblocks, ELF headers, PCIe capabilities). Hardcoding sector numbers generated by `mkimage.sh` is forbidden.
+* **No RAM-Backed Persistence Fakes:** Writes to `/Users` and `/Applications` must genuinely traverse `mlibc -> iris_fshost -> libufs -> iris_crypt -> virtio_blk` and persist to disk. Caching is permitted ONLY for immutable read-only `/System` VMOs/blocks and write-through UFS2 indirect pointer lookups.
+* **No Silent Syscall Stubs:** Unimplemented functions in `sdk/mlibc-sysdeps/iris/` must log an explicit warning and return `ENOSYS` (never silently `return 0`).
 
-### 9.1 Zero Shortcuts & No Fake Plumbing
-* **No Hardcoded Magic Offsets:** Servers (`iris_fshost`, `iris_crypt`, drivers) must dynamically parse on-disk structures (MBR, GPT headers, UFS2 superblocks, ELF headers, PCIe capabilities). Hardcoding sector numbers or memory offsets generated by `mkimage.sh` is strictly forbidden.
-* **No RAM-Backed Persistence Fakes:** Filesystem writes to `/Users` and `/Applications` must genuinely traverse the full stack (`mlibc` $\rightarrow$ `iris_fshost` $\rightarrow$ `libufs` $\rightarrow$ `iris_crypt` $\rightarrow$ `virtio_blk`) and flush to disk. Caching writes solely in a RAM buffer to pass single-boot readback tests is prohibited.
-* **No Silent Syscall Stubs:** Functions in `sdk/mlibc-sysdeps/iris/` must not silently `return 0` (success) for unimplemented functionality. If a syscall is not yet implemented, it must log an explicit warning and return `ENOSYS` so missing functionality is immediately visible.
-
-### 9.2 Strict Test Integrity (`its_irisOS`)
-* **Full Payload & EOF Verification:** Tests reading from pipes, sockets, PTYs, or files must loop `read()` until EOF (`0` bytes) and assert the **entire** expected string or byte buffer. Partial substring checks or single-read truncations are invalid.
-* **End-to-End POSIX Pathing:** User-space tests must exercise standard C/POSIX library calls (`open`, `read`, `write`, `readdir`, `stat`, `posix_spawn`) rather than bypassing `mlibc` with raw handcrafted IPC messages, unless specifically testing low-level driver wire protocols.
-* **Cross-Reboot Persistence Verification:** Any storage or filesystem milestone is considered incomplete unless verified across two separate QEMU boots:
-  1. **Boot 1:** Create, write, and close a file on `/Users`, then cleanly flush and power off.
-  2. **Boot 2 (without recreating disk images):** Boot the existing disk image and verify the file and its contents persist intact.
-
-### 9.3 Zero-Warning Acceptance Criteria
-* A build or test run is an automatic **`FAIL`**—even if the test binary exits with `0`—if the console output contains:
-  * Any `mlibc warning` or unimplemented syscall error (e.g., `Failed to flush file`).
-  * Any unhandled Zircon kernel exception, bad handle fault, or BTI/PMT memory leak warning on teardown.
-  * Corrupted, interleaved, or vertically split terminal output.
-* **Transparency Rule:** If an implementation hits a blocker, limitation, or bug, report it candidly. Never weaken a test assertion, silence an error log, or hardcode a return value to make a milestone appear complete.
+### 7.2 Strict Test Integrity (`its_irisOS`) & Zero-Warning Criteria
+* **Full Payload & EOF Verification:** Tests reading from pipes, PTYs, or files must loop `read()` until EOF (`0`) and assert the entire expected buffer.
+* **End-to-End POSIX Pathing:** User-space tests must exercise standard POSIX APIs (`open`, `read`, `write`, `readdir`, `stat`, `posix_spawn`) rather than bypassing `mlibc` with raw IPC, unless specifically testing low-level driver wire protocols.
+* **Cross-Reboot Persistence Verification:** Storage milestones must be verified across two separate QEMU boots (Boot 1 writes and flushes; Boot 2 verifies persistence without recreating disk images).
+* **Zero-Warning Acceptance:** Any build or test run is an automatic **`FAIL`** if console output contains any `mlibc warning`, unhandled Zircon exception, bad handle fault, BTI/PMT leak on teardown, or corrupted terminal output. Report blockers candidly; never weaken assertions.

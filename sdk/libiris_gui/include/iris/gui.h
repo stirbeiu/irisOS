@@ -60,6 +60,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <zircon/types.h>
+#include <iris/ipc.h>
 #include <pixman.h>
 
 #ifdef __cplusplus
@@ -163,6 +164,15 @@ pixman_image_t* iris_window_get_surface(iris_window_t *win);
  * @return `ZX_OK` on success, or negative `zx_status_t` error code.
  */
 zx_status_t iris_window_move(iris_window_t *win, int32_t x, int32_t y);
+
+/**
+ * @brief Poll pending keyboard and mouse input events for a client window.
+ *
+ * @param win       Pointer to target `iris_window_t`.
+ * @param out_event Output structure receiving mouse coordinates, buttons, and queued keys.
+ * @return `ZX_OK` on success, or negative `zx_status_t` error code.
+ */
+zx_status_t iris_window_poll_event(iris_window_t *win, iris_compositor_poll_event_resp_t *out_event);
 
 #ifdef __cplusplus
 }

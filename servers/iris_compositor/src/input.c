@@ -38,7 +38,7 @@ static void uart_rx_thread_entry(uintptr_t arg) {
             }
             uart_unlock();
         } else {
-            zx_nanosleep(zx_deadline_after(ZX_MSEC(10)));
+            zx_nanosleep(zx_deadline_after(ZX_MSEC(2)));
         }
     }
     zx_thread_exit();

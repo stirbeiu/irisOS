@@ -183,7 +183,118 @@ zx_status_t init_font_subsystem(void) {
     return ZX_OK;
 }
 
+/* ==============================================================================
+ * O(1) FreeType Glyph Bitmap & Metrics Cache
+ * ============================================================================== */
+
+#define GLYPH_CACHE_MIN_CHAR   32u
+#define GLYPH_CACHE_MAX_CHAR   126u
+#define GLYPH_CACHE_NUM_CHARS  (GLYPH_CACHE_MAX_CHAR - GLYPH_CACHE_MIN_CHAR + 1u)
+#define GLYPH_CACHE_MAX_SIZES  8u
+
+typedef struct cached_glyph {
+    bool     valid;
+    bool     load_failed;
+    int16_t  bitmap_left;
+    int16_t  bitmap_top;
+    int16_t  advance_x;
+    uint16_t width;
+    uint16_t rows;
+    uint8_t* alpha;
+} cached_glyph_t;
+
+typedef struct cached_size_bucket {
+    uint32_t       pixel_size;
+    cached_glyph_t glyphs[GLYPH_CACHE_NUM_CHARS];
+} cached_size_bucket_t;
+
+static cached_size_bucket_t g_glyph_cache[FONT_STYLE_COUNT][GLYPH_CACHE_MAX_SIZES];
+
+static const cached_glyph_t* get_cached_glyph(font_style_t style, FT_Face face,
+                                              uint32_t pixel_size, uint8_t ch) {
+    if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR || style >= FONT_STYLE_COUNT) {
+        return NULL;
+    }
+
+    cached_size_bucket_t* buckets = g_glyph_cache[style];
+    cached_size_bucket_t* bucket  = NULL;
+
+    for (uint32_t i = 0; i < GLYPH_CACHE_MAX_SIZES; ++i) {
+        if (buckets[i].pixel_size == pixel_size) {
+            bucket = &buckets[i];
+            break;
+        }
+        if (buckets[i].pixel_size == 0 && bucket == NULL) {
+            buckets[i].pixel_size = pixel_size;
+            bucket = &buckets[i];
+            break;
+        }
+    }
+
+    /* If all size buckets are full, evict bucket 0 */
+    if (!bucket) {
+        bucket = &buckets[0];
+        for (uint32_t c = 0; c < GLYPH_CACHE_NUM_CHARS; ++c) {
+            if (bucket->glyphs[c].alpha) {
+                free(bucket->glyphs[c].alpha);
+            }
+        }
+        memset(bucket, 0, sizeof(*bucket));
+        bucket->pixel_size = pixel_size;
+    }
+
+    uint32_t idx = (uint32_t)(ch - GLYPH_CACHE_MIN_CHAR);
+    cached_glyph_t* g = &bucket->glyphs[idx];
+    if (g->valid) {
+        return g->load_failed ? NULL : g;
+    }
+
+    g->valid = true;
+    FT_Set_Pixel_Sizes(face, 0, pixel_size);
+    if (FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_RENDER) != 0) {
+        g->load_failed = true;
+        return NULL;
+    }
+
+    FT_GlyphSlot slot = face->glyph;
+    FT_Bitmap*   bmp  = &slot->bitmap;
+
+    g->bitmap_left = (int16_t)slot->bitmap_left;
+    g->bitmap_top  = (int16_t)slot->bitmap_top;
+    g->advance_x   = (int16_t)(slot->advance.x >> 6);
+    g->width       = (uint16_t)bmp->width;
+    g->rows        = (uint16_t)bmp->rows;
+    g->alpha       = NULL;
+
+    if (bmp->buffer != NULL && bmp->width > 0 && bmp->rows > 0) {
+        size_t total = (size_t)bmp->width * (size_t)bmp->rows;
+        g->alpha = (uint8_t*)malloc(total);
+        if (g->alpha) {
+            int pitch = bmp->pitch < 0 ? -bmp->pitch : bmp->pitch;
+            for (unsigned int r = 0; r < bmp->rows; ++r) {
+                memcpy(g->alpha + ((size_t)r * bmp->width),
+                       bmp->buffer + ((size_t)r * (unsigned int)pitch),
+                       bmp->width);
+            }
+        }
+    }
+
+    return g;
+}
+
 void cleanup_font_subsystem(void) {
+    for (int s = 0; s < FONT_STYLE_COUNT; ++s) {
+        for (uint32_t b = 0; b < GLYPH_CACHE_MAX_SIZES; ++b) {
+            for (uint32_t c = 0; c < GLYPH_CACHE_NUM_CHARS; ++c) {
+                if (g_glyph_cache[s][b].glyphs[c].alpha != NULL) {
+                    free(g_glyph_cache[s][b].glyphs[c].alpha);
+                    g_glyph_cache[s][b].glyphs[c].alpha = NULL;
+                }
+            }
+        }
+    }
+    memset(g_glyph_cache, 0, sizeof(g_glyph_cache));
+
     for (int i = 0; i < FONT_STYLE_COUNT; ++i) {
         if (g_ft_faces[i] != NULL) {
             /* If bold or italic pointed to regular, avoid double free */
@@ -208,11 +319,10 @@ void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
         return;
     }
 
-    FT_Face face = NULL;
-    if (style < FONT_STYLE_COUNT) {
-        face = g_ft_faces[style];
-    }
+    font_style_t resolved_style = (style < FONT_STYLE_COUNT) ? style : FONT_STYLE_REGULAR;
+    FT_Face face = g_ft_faces[resolved_style];
     if (!face) {
+        resolved_style = FONT_STYLE_REGULAR;
         face = g_ft_faces[FONT_STYLE_REGULAR];
     }
     if (!face) {
@@ -220,41 +330,36 @@ void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
         return;
     }
 
-    FT_Set_Pixel_Sizes(face, 0, pixel_size);
-
     uint32_t fg_r = (argb_color >> 16) & 0xFFu;
     uint32_t fg_g = (argb_color >>  8) & 0xFFu;
     uint32_t fg_b = (argb_color >>  0) & 0xFFu;
+    uint32_t solid_fg = 0xFF000000u | (fg_r << 16) | (fg_g << 8) | fg_b;
 
     int32_t pen_x      = x;
     int32_t baseline_y = y + (int32_t)pixel_size - 2;
 
     for (size_t i = 0; str[i] != '\0'; ++i) {
         uint8_t ch = (uint8_t)str[i];
-        if (ch < 32) {
-            continue;
-        }
-        if (FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_RENDER) != 0) {
+        if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR) {
             continue;
         }
 
-        FT_GlyphSlot slot = face->glyph;
-        FT_Bitmap*   bmp  = &slot->bitmap;
+        const cached_glyph_t* g = get_cached_glyph(resolved_style, face, pixel_size, ch);
+        if (!g) {
+            continue;
+        }
 
-        if (bmp->buffer != NULL && bmp->width > 0 && bmp->rows > 0) {
-            int pitch = bmp->pitch;
-            if (pitch < 0) pitch = -pitch;
-
-            for (unsigned int row = 0; row < bmp->rows; ++row) {
-                int32_t dst_y = baseline_y - slot->bitmap_top + (int32_t)row;
+        if (g->alpha != NULL && g->width > 0 && g->rows > 0) {
+            for (uint16_t row = 0; row < g->rows; ++row) {
+                int32_t dst_y = baseline_y - g->bitmap_top + (int32_t)row;
                 if (dst_y < 0 || (uint32_t)dst_y >= buf_h) {
                     continue;
                 }
-                const uint8_t* src_row = bmp->buffer + (row * (unsigned int)pitch);
+                const uint8_t* src_row = g->alpha + ((size_t)row * g->width);
                 uint32_t*      dst_row = pixels + ((size_t)dst_y * buf_w);
 
-                for (unsigned int col = 0; col < bmp->width; ++col) {
-                    int32_t dst_x = pen_x + slot->bitmap_left + (int32_t)col;
+                for (uint16_t col = 0; col < g->width; ++col) {
+                    int32_t dst_x = pen_x + g->bitmap_left + (int32_t)col;
                     if (dst_x < 0 || (uint32_t)dst_x >= buf_w) {
                         continue;
                     }
@@ -263,23 +368,26 @@ void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                         continue;
                     }
                     if (cov >= 255u) {
-                        dst_row[dst_x] = 0xFF000000u | (fg_r << 16) | (fg_g << 8) | fg_b;
+                        dst_row[dst_x] = solid_fg;
                     } else {
                         uint32_t bg    = dst_row[dst_x];
                         uint32_t bg_r  = (bg >> 16) & 0xFFu;
                         uint32_t bg_g  = (bg >>  8) & 0xFFu;
                         uint32_t bg_b  = (bg >>  0) & 0xFFu;
                         uint32_t inv   = 255u - cov;
-                        uint32_t out_r = (fg_r * cov + bg_r * inv + 127u) / 255u;
-                        uint32_t out_g = (fg_g * cov + bg_g * inv + 127u) / 255u;
-                        uint32_t out_b = (fg_b * cov + bg_b * inv + 127u) / 255u;
+                        uint32_t tr    = fg_r * cov + bg_r * inv + 128u;
+                        uint32_t tg    = fg_g * cov + bg_g * inv + 128u;
+                        uint32_t tb    = fg_b * cov + bg_b * inv + 128u;
+                        uint32_t out_r = (tr + (tr >> 8)) >> 8;
+                        uint32_t out_g = (tg + (tg >> 8)) >> 8;
+                        uint32_t out_b = (tb + (tb >> 8)) >> 8;
                         dst_row[dst_x] = 0xFF000000u | (out_r << 16) | (out_g << 8) | out_b;
                     }
                 }
             }
         }
 
-        pen_x += (int32_t)(slot->advance.x >> 6);
+        pen_x += g->advance_x;
         if (pen_x >= (int32_t)buf_w) {
             break;
         }

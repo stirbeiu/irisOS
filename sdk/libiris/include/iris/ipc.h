@@ -154,6 +154,7 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_FS_OP_READLINK      0x001Cu /**< Read symlink target */
 #define IRIS_FS_OP_OPEN_CLIENT   0x001Du /**< Request new VFS client channel endpoint */
 #define IRIS_FS_OP_CONFIRM_BOOT  0x001Eu /**< Confirm active A/B GPT slot boot_successful = 1 */
+#define IRIS_FS_OP_GET_EXEC_VMO  0x001Fu /**< Acquire cached read-only executable VMO for /System ELF binary */
 
 #pragma pack(push, 4)
 /**
@@ -292,6 +293,20 @@ typedef struct iris_fs_readlink_resp {
     uint32_t target_len; /**< Length of symlink target */
     char     target[256];/**< Symlink target string */
 } iris_fs_readlink_resp_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_GET_EXEC_VMO.
+ */
+typedef struct iris_fs_get_exec_vmo_req {
+    char     path[256];  /**< Null-terminated absolute VFS path */
+} iris_fs_get_exec_vmo_req_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_GET_EXEC_VMO (accompanied by VMO handle at handles[0]).
+ */
+typedef struct iris_fs_get_exec_vmo_resp {
+    uint64_t size;       /**< Executable file size in bytes */
+} iris_fs_get_exec_vmo_resp_t;
 #pragma pack(pop)
 
 /**
@@ -504,6 +519,7 @@ typedef struct iris_pty_signal_req {
 
 #define IRIS_GPU_OP_GET_INFO     0x0060u /**< Query framebuffer resolution, pitch, format, and shared VMO */
 #define IRIS_GPU_OP_FLUSH        0x0061u /**< Transfer damaged rectangle to host 2D resource and flush scanout */
+#define IRIS_GPU_OP_MOVE_CURSOR  0x0062u /**< Move hardware cursor on VirtIO-GPU cursorq (Queue 1) */
 
 #pragma pack(push, 4)
 /**
@@ -547,6 +563,16 @@ typedef struct iris_gpu_flush_req {
     uint32_t width;        /**< Damaged rectangle width in pixels (0 = full width) */
     uint32_t height;       /**< Damaged rectangle height in pixels (0 = full height) */
 } iris_gpu_flush_req_t;
+
+/**
+ * @brief GPU hardware cursor position update payload for IRIS_GPU_OP_MOVE_CURSOR.
+ */
+typedef struct iris_gpu_move_cursor_req {
+    uint32_t x;            /**< Cursor X coordinate on scanout 0 */
+    uint32_t y;            /**< Cursor Y coordinate on scanout 0 */
+    uint32_t hot_x;        /**< Cursor hotspot X offset */
+    uint32_t hot_y;        /**< Cursor hotspot Y offset */
+} iris_gpu_move_cursor_req_t;
 #pragma pack(pop)
 
 /* ==============================================================================

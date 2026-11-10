@@ -109,11 +109,20 @@ static uintptr_t g_doorbell_vaddr = 0;
 static uint16_t g_queue_size    = 0;
 static uint16_t g_last_used_idx = 0;
 
+/* Virtqueue 1 (cursorq) state */
+static uint16_t  g_cursor_queue_size    = 0;
+static uint16_t  g_cursor_last_used_idx = 0;
+static uintptr_t g_cursor_doorbell_vaddr = 0;
+static zx_vaddr_t g_cursor_vq_desc_vaddr  = 0;
+static zx_vaddr_t g_cursor_vq_avail_vaddr = 0;
+static zx_vaddr_t g_cursor_vq_used_vaddr  = 0;
+
 /* BTI & Pinned Memory Tokens (PMTs) for clean teardown */
-static zx_handle_t g_bti     = ZX_HANDLE_INVALID;
-static zx_handle_t g_vq_pmt  = ZX_HANDLE_INVALID;
-static zx_handle_t g_cmd_pmt = ZX_HANDLE_INVALID;
-static zx_handle_t g_fb_pmt  = ZX_HANDLE_INVALID;
+static zx_handle_t g_bti           = ZX_HANDLE_INVALID;
+static zx_handle_t g_vq_pmt        = ZX_HANDLE_INVALID;
+static zx_handle_t g_cursor_vq_pmt = ZX_HANDLE_INVALID;
+static zx_handle_t g_cmd_pmt       = ZX_HANDLE_INVALID;
+static zx_handle_t g_fb_pmt        = ZX_HANDLE_INVALID;
 
 /* Virtqueue 0 (ctrlq) memory mappings */
 static zx_vaddr_t g_vq_desc_vaddr  = 0;
@@ -264,6 +273,54 @@ static zx_status_t virtio_gpu_flush_rect(uint32_t x, uint32_t y, uint32_t width,
     flush.resource_id = VIRTIO_GPU_RESOURCE_ID_FB;
 
     return virtio_gpu_exec_cmd(&flush, sizeof(flush), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+}
+
+/**
+ * @brief Submit a hardware cursor movement command on Virtqueue 1 (`cursorq`).
+ */
+static zx_status_t virtio_gpu_move_cursor(uint32_t x, uint32_t y, uint32_t hot_x, uint32_t hot_y) {
+    if (!g_cmd_vaddr || !g_cursor_vq_desc_vaddr || !g_cursor_doorbell_vaddr || g_cursor_queue_size == 0) {
+        return ZX_ERR_NOT_SUPPORTED;
+    }
+
+    virtio_gpu_update_cursor_t* cur = (virtio_gpu_update_cursor_t*)(g_cmd_vaddr + 7936u);
+    memset(cur, 0, sizeof(*cur));
+    cur->hdr.type       = VIRTIO_GPU_CMD_MOVE_CURSOR;
+    cur->pos.scanout_id = 0;
+    cur->pos.x          = x;
+    cur->pos.y          = y;
+    cur->resource_id    = 0;
+    cur->hot_x          = hot_x;
+    cur->hot_y          = hot_y;
+
+    volatile vring_desc_t*  desc  = (volatile vring_desc_t*)g_cursor_vq_desc_vaddr;
+    volatile vring_avail_t* avail = (volatile vring_avail_t*)g_cursor_vq_avail_vaddr;
+    volatile vring_used_t*  used  = (volatile vring_used_t*)g_cursor_vq_used_vaddr;
+
+    desc[0].addr  = g_cmd_paddr + 7936u;
+    desc[0].len   = sizeof(*cur);
+    desc[0].flags = 0;
+    desc[0].next  = 0;
+
+    uint16_t avail_idx = avail->idx;
+    avail->ring[avail_idx % g_cursor_queue_size] = 0;
+    __sync_synchronize();
+    avail->idx = avail_idx + 1;
+    __sync_synchronize();
+
+    *(volatile uint16_t*)g_cursor_doorbell_vaddr = 1;
+    __sync_synchronize();
+
+    uint16_t last_used = g_cursor_last_used_idx;
+    zx_time_t deadline = zx_deadline_after(ZX_SEC(1));
+    while (used->idx == last_used) {
+        __sync_synchronize();
+        if (zx_clock_get_monotonic() > deadline) {
+            return ZX_ERR_TIMED_OUT;
+        }
+    }
+    g_cursor_last_used_idx = used->idx;
+    return ZX_OK;
 }
 
 /**
@@ -439,6 +496,45 @@ static zx_status_t init_virtio_gpu_device(void) {
                        g_pci_dev.notify_offset +
                        ((uintptr_t)notify_off * g_pci_dev.notify_mult);
 
+    /* 3b. Configure Virtqueue 1 (cursorq) */
+    g_common_cfg->queue_select = 1;
+    g_cursor_queue_size = g_common_cfg->queue_size;
+    if (g_cursor_queue_size > 0) {
+        zx_handle_t cvq_vmo = ZX_HANDLE_INVALID;
+        if (zx_vmo_create_contiguous(g_bti, vq_bytes, 0, &cvq_vmo) == ZX_OK) {
+            zx_paddr_t cvq_paddr = 0;
+            if (zx_bti_pin(g_bti, ZX_BTI_PERM_READ | ZX_BTI_PERM_WRITE | ZX_BTI_CONTIGUOUS,
+                           cvq_vmo, 0, vq_bytes, &cvq_paddr, 1, &g_cursor_vq_pmt) == ZX_OK) {
+                zx_vaddr_t cvq_vaddr = 0;
+                if (zx_vmar_map(zx_vmar_root_self(), ZX_VM_PERM_READ | ZX_VM_PERM_WRITE,
+                                0, cvq_vmo, 0, vq_bytes, &cvq_vaddr) == ZX_OK) {
+                    memset((void*)cvq_vaddr, 0, vq_bytes);
+                    size_t c_desc_size  = g_cursor_queue_size * sizeof(vring_desc_t);
+                    size_t c_avail_size = sizeof(vring_avail_t) + (g_cursor_queue_size * sizeof(uint16_t));
+                    uint64_t c_used_off = align_page(c_desc_size + c_avail_size);
+
+                    g_cursor_vq_desc_vaddr  = cvq_vaddr;
+                    g_cursor_vq_avail_vaddr = cvq_vaddr + c_desc_size;
+                    g_cursor_vq_used_vaddr  = cvq_vaddr + c_used_off;
+
+                    g_common_cfg->queue_desc   = cvq_paddr;
+                    g_common_cfg->queue_driver = cvq_paddr + c_desc_size;
+                    g_common_cfg->queue_device = cvq_paddr + c_used_off;
+                    __sync_synchronize();
+
+                    g_common_cfg->queue_enable = 1;
+                    __sync_synchronize();
+
+                    uint16_t c_notify_off = g_common_cfg->queue_notify_off;
+                    g_cursor_doorbell_vaddr = g_pci_dev.bars[g_pci_dev.notify_bar].vaddr +
+                                              g_pci_dev.notify_offset +
+                                              ((uintptr_t)c_notify_off * g_pci_dev.notify_mult);
+                }
+            }
+            zx_handle_close(cvq_vmo);
+        }
+    }
+
     /* Allocate 8 KB DMA buffer for control queue command & response payloads */
     size_t cmd_bytes = 8192u;
     status = zx_vmo_create_contiguous(g_bti, cmd_bytes, 0, &g_cmd_vmo);
@@ -597,6 +693,11 @@ static void cleanup_virtio_gpu_device(void) {
         g_vq_pmt = ZX_HANDLE_INVALID;
     }
 
+    if (g_cursor_vq_pmt != ZX_HANDLE_INVALID) {
+        zx_pmt_unpin(g_cursor_vq_pmt);
+        g_cursor_vq_pmt = ZX_HANDLE_INVALID;
+    }
+
     if (g_fb_vmo != ZX_HANDLE_INVALID) {
         zx_handle_close(g_fb_vmo);
         g_fb_vmo = ZX_HANDLE_INVALID;
@@ -735,6 +836,18 @@ static void run_ipc_server(void) {
                     }
                     zx_status_t fl_st = virtio_gpu_flush_rect(rx, ry, rw, rh);
                     iris_msg_hdr_init_reply(rep_hdr, req_hdr, fl_st, 0);
+                    break;
+                }
+
+                case IRIS_GPU_OP_MOVE_CURSOR: {
+                    if (req_hdr->payload_len < sizeof(iris_gpu_move_cursor_req_t)) {
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                        break;
+                    }
+                    const iris_gpu_move_cursor_req_t* creq =
+                        (const iris_gpu_move_cursor_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                    zx_status_t mv_st = virtio_gpu_move_cursor(creq->x, creq->y, creq->hot_x, creq->hot_y);
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, mv_st, 0);
                     break;
                 }
 
