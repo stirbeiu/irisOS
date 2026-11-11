@@ -8,8 +8,9 @@
 | **Phase 3** | Native SDK (`libiris`), 24-Byte IPC Protocol, `mlibc` Sysdeps, FD Table & `posix_spawn` | **100% Complete** | `./iris test all` |
 | **Phase 4** | Unified PCIe (ECAM), `virtio_blk` (BTI DMA), `iris_crypt` (AES-256-XTS + Argon2id) & `iris_fshost` (GPT + UFS2) | **100% Complete** | `./iris test all` |
 | **Phase 5** | Root System, `iris_pty`, `virtio_input`, `passphrase`, `toybox` Shell & A/B Slot Watchdog Confirmation | **100% Complete** | `./iris test all` |
-| **Phase 6 (6.1–6.3)** | `virtio_gpu` + GOP Fallback, `pixman` + `freetype`, `iris_compositor` & `libiris_gui` + Responsiveness Tiers 1–4 | **Complete** | `./iris test all` |
-| **Phase 6 (6.4)** | Graphical Terminal Emulator (`apps/terminal`) Running Interactive Toybox `sh` in a Desktop Window | **NEXT UP** | — |
+| **Phase 6 (6.1–6.3)** | `virtio_gpu` + GOP Fallback, `pixman` + `freetype`, `iris_compositor` & `libiris_gui` + Responsiveness Tiers 1–4 | **Complete** | Interactive GUI |
+| **Phase 6 (6.4)** | Graphical Terminal Emulator (`apps/terminal`) with JetBrains Mono & PTY Shell in Desktop Window | **Complete** | Interactive GUI |
+| **Phase 6 (6.5)** | Windows-like Bottom Taskbar (Modular `taskbar.c`, Dynamic RTC Clock, Material Icons Tray, Centered Dock & Flyouts) | **Complete** | Interactive GUI |
 | **Phase 7** | Service Supervision (`iris_init`), Reverse-Dependency Graceful Shutdown & Blocking Passphrase Hardening | Pending | — |
 
 ---
@@ -43,9 +44,18 @@
   * Zero-copy shared VMO client window surfaces (`IRIS_COMPOSITOR_OP_CREATE_WINDOW`, `DESTROY_WINDOW`, `DAMAGE`, `MOVE_WINDOW`, `POLL_EVENT`, `OPEN_CLIENT`).
   * **Responsiveness Optimizations:** O(1) FreeType glyph bitmap & metrics cache with division-free alpha blending (`font.c`), sub-rectangle client damage tracking (`main.c`), front-to-back opaque window occlusion culling + `PIXMAN_OP_SRC` interior blits (`render.c`), 250 Hz (`4ms`) input sampling, and multi-threaded QEMU TCG (`-accel tcg,thread=multi,tb-size=512`).
 
+### Phase 6 (Steps 6.4–6.5): Terminal Emulator & Modular Taskbar
+* **Monospace Terminal (`apps/terminal`):** Interactive graphical terminal window with bundled JetBrains Mono (`JetBrainsMono-{Regular,Bold}.ttf`), PTY connection to `/bin/sh`, translucent dark theme, and damage-tracked scrolling.
+* **Modular Taskbar Subsystem (`servers/iris_compositor/src/taskbar.c`):**
+  * Hardware RTC synchronization in `iris_init` reading CMOS ports 0x70/0x71 and adjusting `ZX_CLOCK_UTC` with live minute-boundary clock updates.
+  * Material Icons system tray (Volume, Bluetooth, Ethernet, Battery with charge bolt, Bell, Chevron).
+  * Centered dock with running indicator pills, minimization/focus toggles, and `posix_spawn` launching.
+  * Start Menu flyout (eye logo + apps list + Power Off), Volume flyout (interactive slider), and Calendar flyout with click-outside dismissal.
+* **Test Code Clean-up:** Automated test suite (`its_irisOS`, `verify_qemu.py`, boot test flags) removed per user direction; interactive manual testing enabled.
+
 ---
 
-## 3. Immediate Next Step: Phase 6, Step 6.4 — Graphical Terminal Emulator (`apps/terminal`)
-1. Implement `apps/terminal` using `libiris_gui`, `pixman`, and `freetype` to create a desktop window (`"Terminal"`).
-2. Open a PTY session with `iris_pty`, spawn `/System/Bin/sh` attached to the PTY, render the character grid with cursor and scrolling inside the shared window VMO, and forward `iris_window_poll_event()` keyboard input into the PTY.
-3. Verify interactive graphical shell execution on both `x86_64` and `aarch64` via `./iris test all`.
+## 3. Immediate Next Step: Phase 7 — Service Supervision & Hardening
+1. Add service supervision and auto-recovery policies in `iris_init`.
+2. Implement reverse-dependency graceful shutdown (`poweroff` / `reboot` channel IPC to flush storage caches, zero crypto keys, and unpin BTI DMA).
+3. Hardening of `passphrase` prompt and removal of interactive fallback passphrases.

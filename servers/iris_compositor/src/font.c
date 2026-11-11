@@ -371,17 +371,20 @@ void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                         dst_row[dst_x] = solid_fg;
                     } else {
                         uint32_t bg    = dst_row[dst_x];
+                        uint32_t bg_a  = (bg >> 24) & 0xFFu;
                         uint32_t bg_r  = (bg >> 16) & 0xFFu;
                         uint32_t bg_g  = (bg >>  8) & 0xFFu;
                         uint32_t bg_b  = (bg >>  0) & 0xFFu;
                         uint32_t inv   = 255u - cov;
+                        uint32_t ta    = 255u * cov + bg_a * inv + 128u;
                         uint32_t tr    = fg_r * cov + bg_r * inv + 128u;
                         uint32_t tg    = fg_g * cov + bg_g * inv + 128u;
                         uint32_t tb    = fg_b * cov + bg_b * inv + 128u;
+                        uint32_t out_a = (ta + (ta >> 8)) >> 8;
                         uint32_t out_r = (tr + (tr >> 8)) >> 8;
                         uint32_t out_g = (tg + (tg >> 8)) >> 8;
                         uint32_t out_b = (tb + (tb >> 8)) >> 8;
-                        dst_row[dst_x] = 0xFF000000u | (out_r << 16) | (out_g << 8) | out_b;
+                        dst_row[dst_x] = (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
                     }
                 }
             }

@@ -98,6 +98,17 @@ zx_status_t iris_pty_read(zx_handle_t pty_ch, void* buf, size_t max_len, size_t*
  */
 zx_status_t iris_pty_write(zx_handle_t pty_ch, const void* buf, size_t len);
 
+/**
+ * @brief Non-blocking read of echoed/written PTY console output bytes for graphical terminals.
+ *
+ * @param pty_ch Channel handle to iris_pty server.
+ * @param buf Destination buffer.
+ * @param max_len Maximum bytes to read.
+ * @param out_read Actual bytes returned (0 if no pending output).
+ * @return ZX_OK on success, or negative error code.
+ */
+zx_status_t iris_pty_read_output(zx_handle_t pty_ch, void* buf, size_t max_len, size_t* out_read);
+
 #ifdef __cplusplus
 }
 #endif

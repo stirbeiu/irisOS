@@ -2623,8 +2623,12 @@ int sys_stat(fsfd_target fsfdt, int fd, const char *path, int flags, struct stat
 }
 
 int sys_clock_get(int clock, time_t *secs, long *nanos) {
-    (void)clock;
-    zx_time_t now = zx_clock_get_monotonic();
+    zx_time_t now = 0;
+    if (clock == CLOCK_REALTIME && pfn_zx_clock_get) {
+        now = pfn_zx_clock_get(ZX_CLOCK_UTC);
+    } else {
+        now = zx_clock_get_monotonic();
+    }
     if (secs) {
         *secs = static_cast<time_t>(now / 1000000000ULL);
     }

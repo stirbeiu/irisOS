@@ -952,16 +952,10 @@ function(iris_add_userland_executable TARGET_NAME)
 endfunction()
 
 # ==============================================================================
-# Userland Targets (Test Suite, Drivers & Servers)
+# Userland Targets (Applications, Drivers & Servers)
 # ==============================================================================
 
-# 1. Interactive Test Suite
-iris_add_userland_executable(its_irisOS
-    SOURCES "${IRIS_ROOT}/apps/tests/its_irisOS/main.c"
-    LIBRARIES iris_gui_static pixman freetype
-)
-
-# 1b. Persistent interactive shell launcher (boot mode "shell")
+# 1. Persistent interactive shell launcher (boot mode "shell")
 iris_add_userland_executable(iris_shell
     SOURCES "${IRIS_ROOT}/apps/sysutils/iris_shell/main.c"
 )
@@ -969,6 +963,12 @@ iris_add_userland_executable(iris_shell
 # 1c. Interactive Disk Passphrase Prompt (Step 5.3)
 iris_add_userland_executable(passphrase
     SOURCES "${IRIS_ROOT}/apps/sysutils/passphrase/main.c"
+)
+
+# 1d. Graphical Terminal Emulator Application (Step 6.4)
+iris_add_userland_executable(terminal
+    SOURCES "${IRIS_ROOT}/apps/terminal/main.c"
+    LIBRARIES iris_gui_static pixman freetype
 )
 
 # 2. VirtIO Block Driver Daemon
@@ -1027,6 +1027,7 @@ iris_add_userland_executable(iris_compositor
         "${IRIS_ROOT}/servers/iris_compositor/src/font.c"
         "${IRIS_ROOT}/servers/iris_compositor/src/render.c"
         "${IRIS_ROOT}/servers/iris_compositor/src/input.c"
+        "${IRIS_ROOT}/servers/iris_compositor/src/taskbar.c"
         "${IRIS_ROOT}/servers/drivers/virtio_input/src/virtio_input.c"
     LIBRARIES pixman freetype
     INCLUDES

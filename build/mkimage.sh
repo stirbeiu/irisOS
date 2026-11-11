@@ -4,7 +4,7 @@
 #
 # Generates:
 #  1. Dual Bootable ZBIs (iris_a.zbi, iris_b.zbi) containing Zircon kernel,
-#     cmdline, and BOOTFS (iris_init, virtio_blk, iris_crypt, iris_fshost, its_irisOS)
+#     cmdline, and BOOTFS (iris_init, virtio_blk, iris_crypt, iris_fshost)
 #  2. Partition 1 (ESP):      32 MB FAT32 (Gigaboot + iris_a.zbi + iris_b.zbi)
 #  3. Partition 2 (System_A): 32 MB FreeBSD UFS2 (active immutable system root)
 #  4. Partition 3 (System_B): 32 MB FreeBSD UFS2 (inactive A/B rollback slot)
@@ -23,10 +23,8 @@ ZIRCON_DIR="${ROOT_DIR}/kernel/zircon"
 
 ARCH="${1:-x86_64}"
 
-# Boot mode (kernel cmdline iris.mode=): "shell" (interactive /bin/sh, default for
-# ./iris run) or "test" (automated its_irisOS suite, used by ./iris test).
+# Boot mode (kernel cmdline iris.mode=): "shell" (interactive graphical desktop + shell)
 IRIS_MODE="${IRIS_MODE:-shell}"
-case "${IRIS_MODE}" in shell|test) ;; *) echo "Error: IRIS_MODE must be 'shell' or 'test'."; exit 1 ;; esac
 
 case "${ARCH}" in
     x86_64)
@@ -65,8 +63,8 @@ fi
 echo "==> Building host mkufs2 formatter (creates /System/Bin symlinks: reboot -> toybox, help -> toybox, poweroff -> toybox, etc.)..."
 make -C "${ROOT_DIR}/build" mkufs2
 
-# 2. Ensure iris_init, its_irisOS, passphrase, virtio_blk, virtio_gpu, iris_compositor, iris_crypt, iris_fshost, iris_pty, pixman, freetype, libiris_gui, and toybox exist
-if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/its_irisOS" || ! -f "${BUILD_DIR}/bin/iris_shell" || ! -f "${BUILD_DIR}/bin/passphrase" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/virtio_gpu" || ! -f "${BUILD_DIR}/bin/iris_compositor" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" || ! -f "${BUILD_DIR}/lib/libpixman-1.a" || ! -f "${BUILD_DIR}/lib/libfreetype.a" || ! -f "${BUILD_DIR}/lib/libiris_gui.a" ]]; then
+# 2. Ensure iris_init, terminal, passphrase, virtio_blk, virtio_gpu, iris_compositor, iris_crypt, iris_fshost, iris_pty, pixman, freetype, libiris_gui, and toybox exist
+if [[ ! -f "${BUILD_DIR}/bin/iris_init" || ! -f "${BUILD_DIR}/bin/terminal" || ! -f "${BUILD_DIR}/bin/iris_shell" || ! -f "${BUILD_DIR}/bin/passphrase" || ! -f "${BUILD_DIR}/bin/virtio_blk" || ! -f "${BUILD_DIR}/bin/virtio_gpu" || ! -f "${BUILD_DIR}/bin/iris_compositor" || ! -f "${BUILD_DIR}/bin/iris_crypt" || ! -f "${BUILD_DIR}/bin/iris_fshost" || ! -f "${BUILD_DIR}/bin/iris_pty" || ! -f "${BUILD_DIR}/lib/libpixman-1.a" || ! -f "${BUILD_DIR}/lib/libfreetype.a" || ! -f "${BUILD_DIR}/lib/libiris_gui.a" ]]; then
     echo "==> Building server binaries and SDK libraries for ${ARCH_NAME}..."
     make -C "${ROOT_DIR}/build" "build-${ARCH_NAME}"
 fi
@@ -112,7 +110,6 @@ fi
     ${EXTRA_ZBI_INPUTS[@]+"${EXTRA_ZBI_INPUTS[@]}"} \
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
-            -e "bin/its_irisOS=${BUILD_DIR}/bin/its_irisOS" \
             -e "bin/iris_shell=${BUILD_DIR}/bin/iris_shell" \
             -e "bin/passphrase=${BUILD_DIR}/bin/passphrase" \
             -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk" \
@@ -121,6 +118,7 @@ fi
             -e "bin/iris_crypt=${BUILD_DIR}/bin/iris_crypt" \
             -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost" \
             -e "bin/iris_pty=${BUILD_DIR}/bin/iris_pty" \
+            -e "bin/terminal=${BUILD_DIR}/bin/terminal" \
             -e "bin/toybox=${BUILD_DIR}/bin/toybox"
 
 cp -f "${IRIS_ZBI_A}" "${IRIS_ZBI_B}"
@@ -163,7 +161,10 @@ SYS_B_IMG="${IMAGES_DIR}/system_b_${ARCH_NAME}.ufs2"
 INTER_REGULAR="${ROOT_DIR}/resources/fonts/InterDisplay-Regular.otf"
 INTER_BOLD="${ROOT_DIR}/resources/fonts/InterDisplay-Bold.otf"
 INTER_ITALIC="${ROOT_DIR}/resources/fonts/InterDisplay-Italic.otf"
+JETBRAINS_REGULAR="${ROOT_DIR}/resources/fonts/JetBrainsMono-Regular.ttf"
+JETBRAINS_BOLD="${ROOT_DIR}/resources/fonts/JetBrainsMono-Bold.ttf"
 WALLPAPER_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper.qoi"
+EYE_LIGHT_SVG="${ROOT_DIR}/resources/icons/eye_light.svg"
 if [[ ! -f "${WALLPAPER_QOI}" ]]; then
     echo "==> Fetching Unsplash wallpaper (${WALLPAPER_QOI})..."
     python3 "${ROOT_DIR}/scripts/fetch_wallpaper.py"
@@ -178,10 +179,14 @@ SYS_LIBS=(
     "${BUILD_DIR}/lib/libpixman-1.a"
     "${BUILD_DIR}/lib/libfreetype.a"
     "${BUILD_DIR}/bin/iris_compositor"
+    "${BUILD_DIR}/bin/terminal"
     "${INTER_REGULAR}"
     "${INTER_BOLD}"
     "${INTER_ITALIC}"
+    "${JETBRAINS_REGULAR}"
+    "${JETBRAINS_BOLD}"
     "${WALLPAPER_QOI}"
+    "${EYE_LIGHT_SVG}"
 )
 echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries & Inter Display Fonts..."
 "${HOST_TOOLS}/mkufs2" "${SYS_A_IMG}" 65536 system System_A "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"

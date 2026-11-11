@@ -409,21 +409,82 @@ void dirty_rect_union_window(const comp_window_t* win) {
  * Desktop Wallpaper, Welcome Window & Crash Dialog
  * ============================================================================== */
 
+/* ==============================================================================
+ * Blocky Pixel-Art Banner ("codename:alexia") & Translucent Default Terminal
+ * ============================================================================== */
+
+#define WELCOME_BG_TRANSLUCENT 0xC8101014u /* ~78% opacity premultiplied dark */
+
+/* Tall 5x9 condensed blocky bitmap glyphs for "codename:alexia" */
+static const uint8_t k_block_glyphs[11][9] = {
+    /* 0: 'c' */ {0x00, 0x00, 0x1F, 0x18, 0x18, 0x18, 0x18, 0x1F, 0x00},
+    /* 1: 'o' */ {0x00, 0x00, 0x1F, 0x1B, 0x1B, 0x1B, 0x1B, 0x1F, 0x00},
+    /* 2: 'd' */ {0x03, 0x03, 0x1F, 0x1B, 0x1B, 0x1B, 0x1B, 0x1F, 0x00},
+    /* 3: 'e' */ {0x00, 0x00, 0x1F, 0x1B, 0x1F, 0x18, 0x18, 0x1F, 0x00},
+    /* 4: 'n' */ {0x00, 0x00, 0x1F, 0x1B, 0x1B, 0x1B, 0x1B, 0x1B, 0x00},
+    /* 5: 'a' */ {0x00, 0x00, 0x1F, 0x03, 0x1F, 0x1B, 0x1B, 0x1F, 0x00},
+    /* 6: 'm' */ {0x00, 0x00, 0x1F, 0x15, 0x15, 0x15, 0x15, 0x15, 0x00},
+    /* 7: ':' */ {0x00, 0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00, 0x00},
+    /* 8: 'l' */ {0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0E, 0x00},
+    /* 9: 'x' */ {0x00, 0x00, 0x1B, 0x1B, 0x0E, 0x0E, 0x1B, 0x1B, 0x00},
+    /* 10:'i' */ {0x0C, 0x00, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x00}
+};
+
+static int block_glyph_index(char ch) {
+    switch (ch) {
+        case 'c': return 0;
+        case 'o': return 1;
+        case 'd': return 2;
+        case 'e': return 3;
+        case 'n': return 4;
+        case 'a': return 5;
+        case 'm': return 6;
+        case ':': return 7;
+        case 'l': return 8;
+        case 'x': return 9;
+        case 'i': return 10;
+        default:  return -1;
+    }
+}
+
+static void draw_codename_banner(pixman_image_t* surf, int32_t x, int32_t y) {
+    const char* text = "codename:alexia";
+    const uint32_t sx = 3u;
+    const uint32_t sy = 4u;
+    int32_t pen_x = x;
+    for (size_t i = 0; text[i] != '\0'; ++i) {
+        int idx = block_glyph_index(text[i]);
+        if (idx >= 0) {
+            for (int r = 0; r < 9; ++r) {
+                uint8_t row_bits = k_block_glyphs[idx][r];
+                for (int c = 0; c < 5; ++c) {
+                    if (row_bits & (0x10u >> c)) {
+                        fill_rect_pixman(surf,
+                                         pen_x + c * (int32_t)sx,
+                                         y + r * (int32_t)sy,
+                                         sx, sy, 0xFFFFFFFFu);
+                    }
+                }
+            }
+        }
+        pen_x += (text[i] == ':' || text[i] == 'i' || text[i] == 'l') ? 14 : 18;
+    }
+}
+
 void redraw_welcome_input_strip(void) {
-    if (!g_welcome_surface || !g_welcome_pixels) return;
+    if (!g_welcome_surface || !g_welcome_pixels || g_welcome_win.is_minimized) return;
     uint32_t ww = g_welcome_win.client_w;
     uint32_t wh = g_welcome_win.client_h;
 
-    /* ONLY redraw the 32px input box strip (y = 174..206) */
-    fill_rect_pixman(g_welcome_surface, 24, 174, ww - 48u, 32u, 0xFF181825u);
-    char input_line[80];
-    snprintf(input_line, sizeof(input_line), "Focused Input: %s_", g_welcome_typed);
-    draw_text_ft(g_welcome_pixels, ww, wh, 32, 183, 13, input_line, 0xFFF5E0DCu);
+    /* Redraw the prompt line strip (y = 58..84) with translucent background */
+    fill_rect_pixman(g_welcome_surface, 8, 58, ww - 16u, 26u, WELCOME_BG_TRANSLUCENT);
+    char input_line[96];
+    snprintf(input_line, sizeof(input_line), "admin@irisOS-dev [~] $ %s", g_welcome_typed);
+    draw_text_ft(g_welcome_pixels, ww, wh, 12, 62, 13, input_line, 0xFFE5E7EBu);
 
-    /* Union this strip's desktop coordinates with g_dirty_rect */
-    int32_t strip_x = g_welcome_win.x + IRIS_WIN_BORDER_PX + 24;
-    int32_t strip_y = g_welcome_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H + 174;
-    dirty_rect_union(strip_x, strip_y, ww - 48u, 32u);
+    int32_t strip_x = g_welcome_win.x + IRIS_WIN_BORDER_PX + 8;
+    int32_t strip_y = g_welcome_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H + 58;
+    dirty_rect_union(strip_x, strip_y, ww - 16u, 26u);
 }
 
 void render_welcome_surface_contents(void) {
@@ -433,28 +494,16 @@ void render_welcome_surface_contents(void) {
     uint32_t ww = g_welcome_win.client_w;
     uint32_t wh = g_welcome_win.client_h;
 
-    fill_rect_pixman(g_welcome_surface, 0, 0, ww, wh, 0xFF1E1E2Eu);
-    fill_rect_pixman(g_welcome_surface, 16, 16, ww - 32u, 38u, 0xFF313244u);
+    /* Fill surface with premultiplied translucent dark (0xC8101014) */
+    fill_rect_pixman(g_welcome_surface, 0, 0, ww, wh, WELCOME_BG_TRANSLUCENT);
 
-    draw_text_ft_styled(g_welcome_pixels, ww, wh, 28, 26, 15,
-                        FONT_STYLE_BOLD, "irisOS Zero-Copy Window Compositor (1280x800)", 0xFF89B4FAu);
-    draw_text_ft(g_welcome_pixels, ww, wh, 24, 72, 13,
-                 "Protocol:     IRIS_PROTO_COMPOSITOR (24-byte IPC)", 0xFFCDD6F4u);
-    draw_text_ft(g_welcome_pixels, ww, wh, 24, 96, 13,
-                 "Typography:   FreeType 2 + Inter Display (Regular/Bold/Italic)", 0xFFCDD6F4u);
-    draw_text_ft(g_welcome_pixels, ww, wh, 24, 120, 13,
-                 "Input:        VirtIO Tablet (EV_ABS) + Keyboard + UART", 0xFFA6E3A1u);
-    draw_text_ft_styled(g_welcome_pixels, ww, wh, 24, 144, 13,
-                        FONT_STYLE_ITALIC, "Interaction:  Drag title bar with mouse or type below", 0xFFF9E2AFu);
+    /* Render blocky pixel banner "codename:alexia" */
+    draw_codename_banner(g_welcome_surface, 12, 14);
 
-    /* Initial render of the input echo box */
-    fill_rect_pixman(g_welcome_surface, 24, 174, ww - 48u, 32u, 0xFF181825u);
-    char input_line[80];
-    snprintf(input_line, sizeof(input_line), "Focused Input: %s_", g_welcome_typed);
-    draw_text_ft(g_welcome_pixels, ww, wh, 32, 183, 13, input_line, 0xFFF5E0DCu);
-
-    /* Subtle accent bar at bottom of welcome surface */
-    fill_rect_pixman(g_welcome_surface, 24, wh - 20u, ww - 48u, 4u, 0xFF89B4FAu);
+    /* Render dynamic-style shell prompt line */
+    char input_line[96];
+    snprintf(input_line, sizeof(input_line), "admin@irisOS-dev [~] $ %s", g_welcome_typed);
+    draw_text_ft(g_welcome_pixels, ww, wh, 12, 62, 13, input_line, 0xFFE5E7EBu);
 }
 
 void close_crash_dialog(void) {
@@ -716,6 +765,278 @@ static bool load_qoi_wallpaper_aspect_fill(const char* path, pixman_image_t* dst
     return true;
 }
 
+/* ==============================================================================
+ * SVG Cubic-Bezier Path Rasterizer for /System/Resources/eye_light.svg
+ * ============================================================================== */
+
+typedef struct svg_seg {
+    float x0, y0, x1, y1;
+} svg_seg_t;
+
+#define MAX_SVG_SEGS 512
+
+typedef struct svg_path_poly {
+    svg_seg_t segs[MAX_SVG_SEGS];
+    size_t    num_segs;
+    bool      is_gradient;
+} svg_path_poly_t;
+
+static const char* const k_eye_light_paths[9] = {
+    "M329.845 58.8253L315.171 68.016C315.171 68.016 312.978 64.7302 307.943 59.7036C310.791 55.5469 313.195 51.6085 315.171 47.6765C324.586 54.2416 329.845 58.8253 329.845 58.8253Z",
+    "M323.053 0C323.053 0 328.088 22.0868 315.171 47.6766C311.444 45.051 306.846 42.2081 301.812 38.9297C312.541 28.209 320.641 15.3045 323.053 0Z",
+    "M315.171 47.6766C313.195 51.6085 310.79 55.547 307.943 59.7037C304.216 56.2071 298.964 51.8258 291.953 47.2421C295.455 44.8337 298.739 41.9898 301.812 38.9297C306.846 42.208 311.444 45.0509 315.171 47.6766Z",
+    "M307.943 59.7038C298.964 72.1645 285.168 84.6335 263.92 95.3468C250.117 89.4429 234.353 84.6335 216.831 81.3626C228.44 78.5113 264.791 68.2334 291.954 47.2422C298.964 51.8259 304.216 56.2073 307.943 59.7038Z",
+    "M290.421 108.251C307.29 109.781 349.99 108.912 380 67.5808C380 67.5808 373.869 122.903 318.455 128.59C311.009 121.808 301.812 114.816 290.421 108.251Z",
+    "M178.722 129.25C180.254 136.242 184.199 142.153 189.895 145.867C192.081 151.337 193.178 157.459 193.178 163.791C193.178 188.075 175.874 207.964 154.85 207.964C133.601 207.964 116.305 188.075 116.305 163.791C116.305 139.303 133.601 119.617 154.85 119.617C163.829 119.617 172.154 123.338 178.722 129.25Z",
+    "M160.546 11.8154C221.212 0.435396 272.02 21.6513 301.812 38.9297C298.739 41.9898 295.456 44.8337 291.954 47.2421C273.778 35.4257 243.332 22.5222 195.147 19.0257C104.471 12.469 28.2584 98.6325 23.6603 103.877C37.6733 86.1644 73.815 28.2089 160.546 11.8154Z",
+    "M242.236 107.816C263.92 206.876 203.908 245.153 146.308 245.153C143.46 245.153 140.837 245.153 138.208 244.935C79.2919 241.215 73.815 153.302 87.3919 120.937C109.076 103.877 132.505 90.5308 153.753 88.5644C180.473 85.9462 213.33 95.1294 242.236 107.816ZM229.537 123.338C229.537 108.686 218.146 96.6669 203.908 96.6669C189.676 96.6669 178.061 108.686 178.061 123.338C178.061 125.304 178.278 127.277 178.722 129.25C172.154 123.338 163.829 119.617 154.85 119.617C133.601 119.617 116.305 139.303 116.305 163.791C116.305 188.075 133.601 207.964 154.85 207.964C175.874 207.964 193.178 188.075 193.178 163.791C193.178 157.459 192.081 151.337 189.895 145.867C193.832 148.704 198.649 150.241 203.908 150.241C218.146 150.241 229.537 138.207 229.537 123.338Z",
+    "M318.454 128.59C331.378 139.956 338.164 150.459 338.606 155.928C340.14 172.981 290.421 232.249 282.096 236.181C273.996 239.901 262.605 231.154 262.605 231.154C262.605 231.154 293.704 201.632 308.161 178.893C312.977 171.233 316.043 164.24 315.171 159.424C313.639 148.486 281.216 124.869 242.236 107.816C213.33 95.1295 180.473 85.9462 153.753 88.5645C132.505 90.5309 109.076 103.877 87.3919 120.938C56.2853 145.643 28.913 177.79 16.8676 194.85C12.0445 201.414 9.42226 205.999 9.42226 207.529C9.85743 214.754 38.5529 229.841 38.5529 229.841C38.5529 229.841 0 227.868 0 210.38C0 192.877 42.9334 76.3285 159.667 75.8782C180.473 75.8782 199.535 77.8586 216.831 81.3625C234.353 84.6334 250.117 89.4428 263.92 95.3468C273.777 99.2852 282.539 103.659 290.421 108.251C301.812 114.815 311.009 121.807 318.454 128.59Z"
+};
+
+static const char* svg_skip_ws(const char* p) {
+    while (*p == ' ' || *p == ',' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return p;
+}
+
+static float svg_parse_float(const char** io_p) {
+    const char* p = svg_skip_ws(*io_p);
+    float sign = 1.0f;
+    if (*p == '-') { sign = -1.0f; p++; }
+    else if (*p == '+') { p++; }
+    float val = 0.0f;
+    while (*p >= '0' && *p <= '9') {
+        val = val * 10.0f + (float)(*p - '0');
+        p++;
+    }
+    if (*p == '.') {
+        p++;
+        float frac = 0.1f;
+        while (*p >= '0' && *p <= '9') {
+            val += (float)(*p - '0') * frac;
+            frac *= 0.1f;
+            p++;
+        }
+    }
+    *io_p = p;
+    return val * sign;
+}
+
+static void svg_add_seg(svg_path_poly_t* poly, float x0, float y0, float x1, float y1) {
+    if (poly->num_segs < MAX_SVG_SEGS && (x0 != x1 || y0 != y1)) {
+        poly->segs[poly->num_segs++] = (svg_seg_t){ x0, y0, x1, y1 };
+    }
+}
+
+static void svg_parse_path_string(const char* d_str, bool is_grad, svg_path_poly_t* out_poly) {
+    memset(out_poly, 0, sizeof(*out_poly));
+    out_poly->is_gradient = is_grad;
+
+    const char* p = d_str;
+    float cur_x = 0.0f, cur_y = 0.0f;
+    float start_x = 0.0f, start_y = 0.0f;
+    char cmd = 0;
+
+    while (*p) {
+        p = svg_skip_ws(p);
+        if (!*p) break;
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
+            cmd = *p++;
+        }
+        if (cmd == 'M') {
+            cur_x = start_x = svg_parse_float(&p);
+            cur_y = start_y = svg_parse_float(&p);
+            cmd = 'L';
+        } else if (cmd == 'L') {
+            float nx = svg_parse_float(&p);
+            float ny = svg_parse_float(&p);
+            svg_add_seg(out_poly, cur_x, cur_y, nx, ny);
+            cur_x = nx;
+            cur_y = ny;
+        } else if (cmd == 'C') {
+            float x1 = svg_parse_float(&p);
+            float y1 = svg_parse_float(&p);
+            float x2 = svg_parse_float(&p);
+            float y2 = svg_parse_float(&p);
+            float x3 = svg_parse_float(&p);
+            float y3 = svg_parse_float(&p);
+            float px = cur_x, py = cur_y;
+            const int steps = 10;
+            for (int s = 1; s <= steps; ++s) {
+                float t = (float)s / (float)steps;
+                float u = 1.0f - t;
+                float b0 = u * u * u;
+                float b1 = 3.0f * u * u * t;
+                float b2 = 3.0f * u * t * t;
+                float b3 = t * t * t;
+                float qx = b0 * cur_x + b1 * x1 + b2 * x2 + b3 * x3;
+                float qy = b0 * cur_y + b1 * y1 + b2 * y2 + b3 * y3;
+                svg_add_seg(out_poly, px, py, qx, qy);
+                px = qx;
+                py = qy;
+            }
+            cur_x = x3;
+            cur_y = y3;
+        } else if (cmd == 'Z' || cmd == 'z') {
+            svg_add_seg(out_poly, cur_x, cur_y, start_x, start_y);
+            cur_x = start_x;
+            cur_y = start_y;
+            cmd = 0;
+        } else {
+            p++;
+        }
+    }
+}
+
+static bool svg_point_in_poly(const svg_path_poly_t* poly, float px, float py) {
+    bool inside = false;
+    for (size_t i = 0; i < poly->num_segs; ++i) {
+        float x0 = poly->segs[i].x0, y0 = poly->segs[i].y0;
+        float x1 = poly->segs[i].x1, y1 = poly->segs[i].y1;
+        if (((y0 > py) != (y1 > py)) &&
+            (px < (x1 - x0) * (py - y0) / (y1 - y0) + x0)) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+void render_eye_light_svg(uint32_t* dst_pixels, uint32_t fb_w, uint32_t fb_h,
+                          int32_t dst_x, int32_t dst_y, uint32_t dst_w, uint32_t dst_h) {
+    svg_path_poly_t* polys = (svg_path_poly_t*)calloc(9, sizeof(svg_path_poly_t));
+    if (!polys) return;
+
+    size_t num_polys = 0;
+    /* Attempt to parse /System/Resources/eye_light.svg directly from VFS */
+    FILE* fp = fopen(EYE_LIGHT_SVG_PATH, "rb");
+    if (fp) {
+        char svg_buf[4096];
+        size_t nr = fread(svg_buf, 1, sizeof(svg_buf) - 1, fp);
+        fclose(fp);
+        svg_buf[nr] = '\0';
+
+        const char* cur = svg_buf;
+        while (num_polys < 9 && (cur = strstr(cur, "<path")) != NULL) {
+            const char* tag_end = strchr(cur, '>');
+            if (!tag_end) break;
+            const char* d_attr = strstr(cur, "d=\"");
+            if (d_attr && d_attr < tag_end) {
+                d_attr += 3;
+                const char* d_end = strchr(d_attr, '"');
+                if (d_end && d_end < tag_end) {
+                    size_t d_len = (size_t)(d_end - d_attr);
+                    char d_copy[1024];
+                    if (d_len >= sizeof(d_copy)) d_len = sizeof(d_copy) - 1;
+                    memcpy(d_copy, d_attr, d_len);
+                    d_copy[d_len] = '\0';
+
+                    const char* fill_url = strstr(cur, "fill=\"url(");
+                    bool is_grad = (fill_url != NULL && fill_url < tag_end);
+                    svg_parse_path_string(d_copy, is_grad, &polys[num_polys++]);
+                }
+            }
+            cur = tag_end + 1;
+        }
+    }
+
+    /* Fallback to embedded paths from eye_light.svg if VFS file was not loaded */
+    if (num_polys == 0) {
+        for (size_t i = 0; i < 9; ++i) {
+            svg_parse_path_string(k_eye_light_paths[i], (i == 7), &polys[i]);
+        }
+        num_polys = 9;
+    }
+
+    const float vb_w = 380.0f;
+    const float vb_h = 248.0f;
+
+    for (uint32_t py = 0; py < dst_h; ++py) {
+        int32_t sy_screen = dst_y + (int32_t)py;
+        if (sy_screen < 0 || (uint32_t)sy_screen >= fb_h) continue;
+
+        for (uint32_t px = 0; px < dst_w; ++px) {
+            int32_t sx_screen = dst_x + (int32_t)px;
+            if (sx_screen < 0 || (uint32_t)sx_screen >= fb_w) continue;
+
+            uint32_t sum_r = 0, sum_g = 0, sum_b = 0, sum_a = 0;
+
+            /* 4x4 subpixel supersampling in SVG viewBox (0..380 x 0..248) */
+            for (int sub_y = 0; sub_y < 4; ++sub_y) {
+                float vy = ((float)py + ((float)sub_y + 0.5f) * 0.25f) * (vb_h / (float)dst_h);
+                for (int sub_x = 0; sub_x < 4; ++sub_x) {
+                    float vx = ((float)px + ((float)sub_x + 0.5f) * 0.25f) * (vb_w / (float)dst_w);
+
+                    bool hit = false;
+                    bool hit_grad = false;
+                    for (size_t p = 0; p < num_polys; ++p) {
+                        if (svg_point_in_poly(&polys[p], vx, vy)) {
+                            hit = true;
+                            hit_grad = polys[p].is_gradient;
+                        }
+                    }
+
+                    if (hit) {
+                        sum_a += 255u;
+                        if (hit_grad) {
+                            /* Linear gradient #54B5FF (y=88.12) -> #326C99 (y=245.15) */
+                            float t = (vy - 88.1167f) / (245.153f - 88.1167f);
+                            if (t < 0.0f) t = 0.0f;
+                            else if (t > 1.0f) t = 1.0f;
+                            sum_r += (uint32_t)(84.0f  + (50.0f  - 84.0f)  * t);
+                            sum_g += (uint32_t)(181.0f + (108.0f - 181.0f) * t);
+                            sum_b += (uint32_t)(255.0f + (153.0f - 255.0f) * t);
+                        } else {
+                            sum_r += 12u;
+                            sum_g += 14u;
+                            sum_b += 18u;
+                        }
+                    }
+                }
+            }
+
+            if (sum_a > 0) {
+                uint32_t cov = (sum_a + 8u) >> 4;
+                uint32_t fg_r = sum_r / (sum_a / 255u);
+                uint32_t fg_g = sum_g / (sum_a / 255u);
+                uint32_t fg_b = sum_b / (sum_a / 255u);
+
+                uint32_t* dst_px = &dst_pixels[(size_t)sy_screen * fb_w + (size_t)sx_screen];
+                uint32_t bg = *dst_px;
+                uint32_t bg_r = (bg >> 16) & 0xFFu;
+                uint32_t bg_g = (bg >> 8)  & 0xFFu;
+                uint32_t bg_b = bg & 0xFFu;
+                uint32_t inv = 255u - cov;
+
+                uint32_t out_r = (fg_r * cov + bg_r * inv + 127u) / 255u;
+                uint32_t out_g = (fg_g * cov + bg_g * inv + 127u) / 255u;
+                uint32_t out_b = (fg_b * cov + bg_b * inv + 127u) / 255u;
+                *dst_px = 0xFF000000u | (out_r << 16) | (out_g << 8) | out_b;
+            }
+        }
+    }
+
+    free(polys);
+}
+
+/* ==============================================================================
+ * Windows-Like Bottom Taskbar (Start Eye Logo, Terminal Icon & System Tray)
+ * ============================================================================== */
+
+static void draw_line_thick(pixman_image_t* surf, int32_t x0, int32_t y0,
+                            int32_t x1, int32_t y1, uint32_t color) {
+    int32_t dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int32_t dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+    int32_t steps = (dx > dy) ? dx : dy;
+    if (steps == 0) {
+        fill_rect_pixman(surf, x0, y0, 2, 2, color);
+        return;
+    }
+    for (int32_t s = 0; s <= steps; ++s) {
+        int32_t px = x0 + (x1 - x0) * s / steps;
+        int32_t py = y0 + (y1 - y0) * s / steps;
+        fill_rect_pixman(surf, px, py, 2, 2, color);
+    }
+}
+
 zx_status_t init_desktop_wallpaper(void) {
     uint32_t* wp_pixels = (uint32_t*)calloc((size_t)g_fb_width * g_fb_height, sizeof(uint32_t));
     if (!wp_pixels) {
@@ -756,22 +1077,11 @@ zx_status_t init_desktop_wallpaper(void) {
         }
     }
 
-    /* Render 28px top desktop menu bar (#11111B) with 1px bottom border (#45475A) */
-    fill_rect_pixman(g_wallpaper_surface, 0, 0, g_fb_width, IRIS_TOPBAR_H - 1, 0xFF11111Bu);
-    fill_rect_pixman(g_wallpaper_surface, 0, IRIS_TOPBAR_H - 1, g_fb_width, 1, 0xFF45475Au);
+    /* 3. Pure photographic wallpaper surface (taskbar rendered dynamically on top) */
 
-    draw_text_ft_styled(wp_pixels, g_fb_width, g_fb_height,
-                        16, 7, 14, FONT_STYLE_BOLD, "irisOS", 0xFF89B4FAu);
-    draw_text_ft(wp_pixels, g_fb_width, g_fb_height,
-                 84, 7, 13, "Desktop     System     Window     Help", 0xFFCDD6F4u);
-    if (g_fb_width >= 320u) {
-        draw_text_ft(wp_pixels, g_fb_width, g_fb_height,
-                     (int32_t)g_fb_width - 230, 7, 13, "1280x800  |  Zircon 1011", 0xFFA6ADC8u);
-    }
-
-    /* Initialize default welcome window surface */
-    uint32_t ww = 520u;
-    uint32_t wh = 236u;
+    /* 4. Initialize default translucent terminal welcome window ("toybox - ~/") */
+    uint32_t ww = 580u;
+    uint32_t wh = 360u;
     g_welcome_pixels = (uint32_t*)calloc((size_t)ww * wh, sizeof(uint32_t));
     if (g_welcome_pixels) {
         g_welcome_surface = pixman_image_create_bits(PIXMAN_a8r8g8b8,
@@ -783,10 +1093,11 @@ zx_status_t init_desktop_wallpaper(void) {
             g_welcome_win.window_id      = 0xFFFFu;
             g_welcome_win.client_w       = ww;
             g_welcome_win.client_h       = wh;
-            g_welcome_win.x              = (int32_t)(g_fb_width  - (ww + 2u * IRIS_WIN_BORDER_PX)) / 2;
-            g_welcome_win.y              = (int32_t)(g_fb_height - (wh + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX)) / 2;
+            g_welcome_win.flags          = IRIS_WIN_FLAG_TRANSLUCENT;
+            g_welcome_win.x              = 52;
+            g_welcome_win.y              = 72;
             g_welcome_win.client_surface = g_welcome_surface;
-            memcpy(g_welcome_win.title, "irisOS Compositor", 18);
+            memcpy(g_welcome_win.title, "toybox - ~/", 12);
 
             render_welcome_surface_contents();
         }
@@ -819,7 +1130,7 @@ static inline bool rect_contains(int32_t outer_x, int32_t outer_y, int32_t outer
 }
 
 void composite_window(const comp_window_t* win, bool is_focused) {
-    if (!win || !win->client_surface) {
+    if (!win || !win->client_surface || win->is_minimized) {
         return;
     }
 
@@ -852,9 +1163,9 @@ void composite_window(const comp_window_t* win, bool is_focused) {
                                      (int32_t)g_active_clip.w, (int32_t)g_active_clip.h);
 
     if (!client_only) {
-        uint32_t border_color   = is_focused ? 0xFF89B4FAu : 0xFF585B70u;
-        uint32_t titlebar_color = is_focused ? 0xFF313244u : 0xFF181825u;
-        uint32_t title_fg_color = is_focused ? 0xFFCDD6F4u : 0xFF9399B2u;
+        uint32_t border_color   = is_focused ? 0xFFD4D8E0u : 0xFF9CA3AFu;
+        uint32_t titlebar_color = is_focused ? 0xFFF4F5F7u : 0xFFE5E7EBu;
+        uint32_t title_fg_color = is_focused ? 0xFF141418u : 0xFF6B7280u;
 
         /* 1. Outer 1px border around entire window frame */
         fill_rect_pixman(g_backbuf_surface, win->x, win->y, frame_w, IRIS_WIN_BORDER_PX, border_color);
@@ -864,7 +1175,7 @@ void composite_window(const comp_window_t* win, bool is_focused) {
         fill_rect_pixman(g_backbuf_surface, win->x + (int32_t)frame_w - IRIS_WIN_BORDER_PX, win->y,
                          IRIS_WIN_BORDER_PX, frame_h, border_color);
 
-        /* 2. 24px Title Bar inside 1px border (only if titlebar overlaps damage) */
+        /* 2. 30px Windows-style Light Title Bar with Left Title & Right Caption Buttons */
         int32_t tb_x = win->x + IRIS_WIN_BORDER_PX;
         int32_t tb_y = win->y + IRIS_WIN_BORDER_PX;
         bool tb_intersects = (g_active_clip.w == 0 || g_active_clip.h == 0) ||
@@ -872,25 +1183,43 @@ void composite_window(const comp_window_t* win, bool is_focused) {
                                              g_active_clip.x, g_active_clip.y,
                                              (int32_t)g_active_clip.w, (int32_t)g_active_clip.h);
         if (tb_intersects) {
-            fill_rect_pixman(g_backbuf_surface, tb_x, tb_y, win->client_w, IRIS_WIN_TITLEBAR_H - 1, titlebar_color);
-            fill_rect_pixman(g_backbuf_surface, tb_x, tb_y + IRIS_WIN_TITLEBAR_H - 1,
-                             win->client_w, 1, border_color);
+            fill_rect_pixman(g_backbuf_surface, tb_x, tb_y, win->client_w, IRIS_WIN_TITLEBAR_H, titlebar_color);
 
-            /* Window control buttons (Close, Minimize, Maximize) */
-            fill_rect_pixman(g_backbuf_surface, tb_x + 10, tb_y + 8, 8, 8, 0xFFF38BA8u);
-            fill_rect_pixman(g_backbuf_surface, tb_x + 24, tb_y + 8, 8, 8, 0xFFF9E2AFu);
-            fill_rect_pixman(g_backbuf_surface, tb_x + 38, tb_y + 8, 8, 8, 0xFFA6E3A1u);
+            /* Left-aligned window title string */
+            draw_text_ft(g_backbuf_pixels, g_fb_width, g_fb_height,
+                         tb_x + 10, tb_y + 8, 13, win->title, title_fg_color);
 
-            /* Window title string (uses O(1) cached glyph bitmaps) */
-            draw_text_ft_styled(g_backbuf_pixels, g_fb_width, g_fb_height,
-                                tb_x + 58, tb_y + 5, 13, FONT_STYLE_BOLD, win->title, title_fg_color);
+            /* Right-aligned Windows-like dark square caption buttons (Minimize, Maximize, Close) */
+            if (win->client_w >= 84u) {
+                int32_t btn_y     = tb_y + 6;
+                int32_t btn_min_x = tb_x + (int32_t)win->client_w - 64;
+                int32_t btn_max_x = tb_x + (int32_t)win->client_w - 42;
+                int32_t btn_cls_x = tb_x + (int32_t)win->client_w - 20;
+
+                /* Minimize button ([_]) */
+                fill_rect_pixman(g_backbuf_surface, btn_min_x, btn_y, 16, 18, 0xFF141418u);
+                fill_rect_pixman(g_backbuf_surface, btn_min_x + 3, btn_y + 12, 10, 2, 0xFFFFFFFFu);
+
+                /* Maximize button ([[]]) */
+                fill_rect_pixman(g_backbuf_surface, btn_max_x, btn_y, 16, 18, 0xFF141418u);
+                fill_rect_pixman(g_backbuf_surface, btn_max_x + 3, btn_y + 4,  10, 3, 0xFFFFFFFFu);
+                fill_rect_pixman(g_backbuf_surface, btn_max_x + 3, btn_y + 12, 10, 2, 0xFFFFFFFFu);
+                fill_rect_pixman(g_backbuf_surface, btn_max_x + 3, btn_y + 4,  2, 10, 0xFFFFFFFFu);
+                fill_rect_pixman(g_backbuf_surface, btn_max_x + 11, btn_y + 4, 2, 10, 0xFFFFFFFFu);
+
+                /* Close button ([X]) */
+                fill_rect_pixman(g_backbuf_surface, btn_cls_x, btn_y, 16, 18, 0xFF141418u);
+                draw_line_thick(g_backbuf_surface, btn_cls_x + 4, btn_y + 5,  btn_cls_x + 11, btn_y + 12, 0xFFFFFFFFu);
+                draw_line_thick(g_backbuf_surface, btn_cls_x + 11, btn_y + 5, btn_cls_x + 4,  btn_y + 12, 0xFFFFFFFFu);
+            }
         }
     }
 
-    /* 3. Blit client VMO surface onto backbuffer with strict boundary clipping */
+    /* 3. Blit client VMO surface onto backbuffer (PIXMAN_OP_OVER if translucent, PIXMAN_OP_SRC if opaque) */
+    pixman_op_t client_op = (win->flags & IRIS_WIN_FLAG_TRANSLUCENT) ? PIXMAN_OP_OVER : PIXMAN_OP_SRC;
     blit_surface_clamped(win->client_surface, (int32_t)win->client_w, (int32_t)win->client_h,
                          g_backbuf_surface, (int32_t)g_fb_width, (int32_t)g_fb_height,
-                         client_dst_x, client_dst_y, PIXMAN_OP_SRC);
+                         client_dst_x, client_dst_y, client_op);
 }
 
 /* ==============================================================================
@@ -1100,11 +1429,12 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
     g_active_clip.w = dmg_w;
     g_active_clip.h = dmg_h;
 
-    /* Front-to-back occlusion check: find highest Z-order window that completely covers dmg_rect */
+    /* Front-to-back occlusion check: find highest Z-order OPAQUE window that completely covers dmg_rect */
     size_t start_win_idx = 0;
     bool   skip_wallpaper = false;
 
-    if (g_num_windows == 0 && g_welcome_surface != NULL) {
+    if (g_num_windows == 0 && g_welcome_surface != NULL &&
+        !g_welcome_win.is_minimized && !(g_welcome_win.flags & IRIS_WIN_FLAG_TRANSLUCENT)) {
         uint32_t fw = g_welcome_win.client_w + (2u * IRIS_WIN_BORDER_PX);
         uint32_t fh = g_welcome_win.client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
         if (rect_contains(g_welcome_win.x, g_welcome_win.y, (int32_t)fw, (int32_t)fh,
@@ -1114,6 +1444,9 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
     } else if (g_num_windows > 0) {
         for (size_t i = g_num_windows; i > 0; --i) {
             const comp_window_t* w = &g_windows[i - 1];
+            if (w->is_minimized || (w->flags & IRIS_WIN_FLAG_TRANSLUCENT)) {
+                continue;
+            }
             uint32_t fw = w->client_w + (2u * IRIS_WIN_BORDER_PX);
             uint32_t fh = w->client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
             if (rect_contains(w->x, w->y, (int32_t)fw, (int32_t)fh,
@@ -1145,6 +1478,17 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
             bool is_top = (i + 1 == g_num_windows) && !g_crash_dialog_active;
             composite_window(&g_windows[i], is_top);
         }
+    }
+
+    /* 2b. Render dynamic 46px taskbar layered above standard desktop windows */
+    int32_t tb_top = (int32_t)(g_fb_height - IRIS_TASKBAR_H);
+    if (dmg_y + (int32_t)dmg_h > tb_top) {
+        taskbar_render(g_backbuf_pixels, g_backbuf_surface);
+    }
+
+    /* 2c. Render active taskbar flyout overlay (Start Menu, Calendar, Volume) */
+    if (taskbar_has_active_flyout()) {
+        taskbar_render_flyout(g_backbuf_pixels, g_backbuf_surface);
     }
 
     /* 3. Composite modal crash dialog on top if active */

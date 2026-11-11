@@ -176,3 +176,32 @@ zx_status_t iris_pty_write(zx_handle_t pty_ch, const void* buf, size_t len) {
                              &resp_hdr, &resp, sizeof(resp), &act_len,
                              NULL, 0, NULL, ZX_TIME_INFINITE);
 }
+
+zx_status_t iris_pty_read_output(zx_handle_t pty_ch, void* buf, size_t max_len, size_t* out_read) {
+    if (pty_ch == ZX_HANDLE_INVALID || !buf || max_len == 0) return ZX_ERR_INVALID_ARGS;
+    if (out_read) *out_read = 0;
+
+    uint32_t req_max = (max_len > 4096) ? 4096u : (uint32_t)max_len;
+    iris_pty_read_req_t req = { req_max };
+    iris_msg_hdr_t req_hdr;
+    iris_msg_hdr_init(&req_hdr, IRIS_PROTO_PTY, IRIS_PTY_OP_READ_OUTPUT, ++s_pty_txid, sizeof(req));
+
+    iris_msg_hdr_t resp_hdr;
+    uint8_t resp_buf[sizeof(iris_pty_read_resp_t) + 4096];
+    uint32_t act_len = 0;
+    zx_status_t st = iris_channel_call(pty_ch, &req_hdr, &req, NULL, 0,
+                                       &resp_hdr, resp_buf, sizeof(resp_buf), &act_len,
+                                       NULL, 0, NULL, ZX_TIME_INFINITE);
+    if (st != ZX_OK) return st;
+
+    if (act_len >= sizeof(iris_pty_read_resp_t)) {
+        iris_pty_read_resp_t* r = (iris_pty_read_resp_t*)resp_buf;
+        uint32_t bytes = r->bytes_read;
+        if (bytes > 0 && act_len >= sizeof(iris_pty_read_resp_t) + bytes) {
+            uint32_t copy_cnt = (bytes < max_len) ? bytes : (uint32_t)max_len;
+            iris_memcpy(buf, resp_buf + sizeof(iris_pty_read_resp_t), copy_cnt);
+            if (out_read) *out_read = copy_cnt;
+        }
+    }
+    return ZX_OK;
+}

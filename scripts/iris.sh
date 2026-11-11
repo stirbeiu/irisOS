@@ -188,29 +188,7 @@ EOF
 }
 
 cmd_test() {
-    local target="${1:-all}"
-    case "${target}" in
-        all)
-            echo "======================================================================"
-            echo " [irisOS] Running verification for ALL architectures..."
-            echo "======================================================================"
-            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a x86_64
-            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a aarch64
-            ;;
-        x86_64)
-            shift || true
-            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a x86_64 "$@"
-            ;;
-        aarch64)
-            shift || true
-            python3 "${ROOT_DIR}/scripts/verify_qemu.py" -a aarch64 "$@"
-            ;;
-        *)
-            echo "Error: Unknown test target '${target}'."
-            echo "Usage: ./iris test [all | x86_64 | aarch64]"
-            exit 1
-            ;;
-    esac
+    echo "Automated test suite has been removed. Use './iris run x86_64' or './iris run aarch64' to launch the OS."
 }
 
 cmd_clean() {

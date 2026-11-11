@@ -412,7 +412,8 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             const char* slash = strrchr(lib_paths[i], '/');
             const char* bname = slash ? (slash + 1) : lib_paths[i];
             bool is_font = (strstr(bname, ".otf") != NULL || strstr(bname, ".ttf") != NULL);
-            bool is_res_asset = (strstr(bname, ".qoi") != NULL || strstr(bname, ".bmp") != NULL);
+            bool is_res_asset = (strstr(bname, ".qoi") != NULL || strstr(bname, ".bmp") != NULL ||
+                                 strstr(bname, ".svg") != NULL);
             bool is_srv_bin = (!is_font && !is_res_asset &&
                                strstr(bname, ".so") == NULL && strstr(bname, ".a") == NULL);
             if (is_font && strcmp(bname, "Inter-Regular.otf") == 0) {
@@ -479,9 +480,6 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
                 bin_items[num_bin_items++] = (dir_item_t){ 10 + (uint32_t)i, DT_LNK, toybox_tools[i] };
             }
         }
-        build_dir_block(dir_blk, 3, 2, bin_items, num_bin_items);
-        pwrite(fd, dir_blk, 4096, (off_t)blk_bin * 4096);
-
         dir_item_t lib_items[32];
         size_t num_lib_items = 0;
         dir_item_t srv_items[32];
@@ -497,20 +495,27 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             bool is_font = (strstr(lib_allocs[i].name, ".otf") != NULL ||
                             strstr(lib_allocs[i].name, ".ttf") != NULL);
             bool is_res_asset = (strstr(lib_allocs[i].name, ".qoi") != NULL ||
-                                 strstr(lib_allocs[i].name, ".bmp") != NULL);
-            bool is_srv_bin = (!is_font && !is_res_asset &&
+                                 strstr(lib_allocs[i].name, ".bmp") != NULL ||
+                                 strstr(lib_allocs[i].name, ".svg") != NULL);
+            bool is_bin_app = (strcmp(lib_allocs[i].name, "terminal") == 0);
+            bool is_srv_bin = (!is_font && !is_res_asset && !is_bin_app &&
                                strstr(lib_allocs[i].name, ".so") == NULL &&
                                strstr(lib_allocs[i].name, ".a") == NULL);
             if (is_font) {
                 font_items[num_font_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             } else if (is_res_asset) {
                 res_items[num_res_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
+            } else if (is_bin_app && num_bin_items < 64) {
+                bin_items[num_bin_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             } else if (is_srv_bin) {
                 srv_items[num_srv_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             } else {
                 lib_items[num_lib_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             }
         }
+        build_dir_block(dir_blk, 3, 2, bin_items, num_bin_items);
+        pwrite(fd, dir_blk, 4096, (off_t)blk_bin * 4096);
+
         build_dir_block(dir_blk, 4, 2, lib_items, num_lib_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_lib * 4096);
 

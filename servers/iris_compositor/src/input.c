@@ -157,11 +157,13 @@ void handle_mouse_button(bool pressed) {
         uint32_t fw = g_crash_win.client_w + (2u * IRIS_WIN_BORDER_PX);
         int32_t  tb_bottom = g_crash_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H;
 
-        /* Check red close button on title bar (tb_x + 10, tb_y + 8, size 8x8) */
+        /* Check right-aligned close button [X] on title bar (tb_x + cw - 20, tb_y + 6, size 16x18) */
         int32_t tb_x = g_crash_win.x + IRIS_WIN_BORDER_PX;
         int32_t tb_y = g_crash_win.y + IRIS_WIN_BORDER_PX;
-        if (g_cursor_x >= tb_x + 6 && g_cursor_x <= tb_x + 22 &&
-            g_cursor_y >= tb_y + 4 && g_cursor_y <= tb_y + 20) {
+        int32_t btn_cls_x = tb_x + (int32_t)g_crash_win.client_w - 20;
+        int32_t btn_y     = tb_y + 6;
+        if (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 16 &&
+            g_cursor_y >= btn_y && g_cursor_y < btn_y + 18) {
             close_crash_dialog();
             return;
         }
@@ -170,9 +172,9 @@ void handle_mouse_button(bool pressed) {
         int32_t client_top_x = g_crash_win.x + IRIS_WIN_BORDER_PX;
         int32_t client_top_y = g_crash_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H;
         int32_t btn_x = client_top_x + (int32_t)g_crash_win.client_w - 110;
-        int32_t btn_y = client_top_y + (int32_t)g_crash_win.client_h - 44;
+        int32_t btn_y_ok = client_top_y + (int32_t)g_crash_win.client_h - 44;
         if (g_cursor_x >= btn_x && g_cursor_x < btn_x + 90 &&
-            g_cursor_y >= btn_y && g_cursor_y < btn_y + 28) {
+            g_cursor_y >= btn_y_ok && g_cursor_y < btn_y_ok + 28) {
             close_crash_dialog();
             return;
         }
@@ -187,11 +189,29 @@ void handle_mouse_button(bool pressed) {
         return;
     }
 
-    if (g_num_windows == 0 && g_welcome_surface != NULL) {
+    /* Check taskbar and flyout clicks */
+    if (taskbar_handle_click(g_cursor_x, g_cursor_y)) {
+        return;
+    }
+
+    if (g_num_windows == 0 && g_welcome_surface != NULL && !g_welcome_win.is_minimized) {
         uint32_t fw = g_welcome_win.client_w + (2u * IRIS_WIN_BORDER_PX);
-        int32_t  tb_bottom = g_welcome_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H;
+        int32_t  tb_x = g_welcome_win.x + IRIS_WIN_BORDER_PX;
+        int32_t  tb_y = g_welcome_win.y + IRIS_WIN_BORDER_PX;
+        int32_t  tb_bottom = tb_y + IRIS_WIN_TITLEBAR_H;
         if (g_cursor_x >= g_welcome_win.x && g_cursor_x < g_welcome_win.x + (int32_t)fw &&
             g_cursor_y >= g_welcome_win.y && g_cursor_y < tb_bottom) {
+            int32_t btn_min_x = tb_x + (int32_t)g_welcome_win.client_w - 64;
+            int32_t btn_cls_x = tb_x + (int32_t)g_welcome_win.client_w - 20;
+            int32_t btn_y     = tb_y + 6;
+            if (g_cursor_y >= btn_y && g_cursor_y < btn_y + 18) {
+                if ((g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 16) ||
+                    (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 16)) {
+                    g_welcome_win.is_minimized = true;
+                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    return;
+                }
+            }
             g_drag_welcome = true;
             g_drag_off_x   = g_cursor_x - g_welcome_win.x;
             g_drag_off_y   = g_cursor_y - g_welcome_win.y;
@@ -203,6 +223,7 @@ void handle_mouse_button(bool pressed) {
     for (size_t idx = g_num_windows; idx > 0; --idx) {
         size_t i = idx - 1;
         comp_window_t* w = &g_windows[i];
+        if (w->is_minimized) continue;
         uint32_t fw = w->client_w + (2u * IRIS_WIN_BORDER_PX);
         uint32_t fh = w->client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
 
@@ -219,8 +240,27 @@ void handle_mouse_button(bool pressed) {
                 dirty_rect_union(0, 0, g_fb_width, g_fb_height);
             }
 
-            /* Check if click is inside the 24px title bar to initiate drag */
-            if (g_cursor_y < w->y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H) {
+            /* Check if click is inside the 30px title bar */
+            int32_t tb_x = w->x + IRIS_WIN_BORDER_PX;
+            int32_t tb_y = w->y + IRIS_WIN_BORDER_PX;
+            if (g_cursor_y < tb_y + IRIS_WIN_TITLEBAR_H) {
+                int32_t btn_min_x = tb_x + (int32_t)w->client_w - 64;
+                int32_t btn_cls_x = tb_x + (int32_t)w->client_w - 20;
+                int32_t btn_y     = tb_y + 6;
+                if (g_cursor_y >= btn_y && g_cursor_y < btn_y + 18) {
+                    if (g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 16) {
+                        w->is_minimized = true;
+                        dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                        break;
+                    }
+                    if (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 16) {
+                        /* Push Ctrl+D / EOF to terminal or minimize window */
+                        window_push_key(w, 0x04);
+                        w->is_minimized = true;
+                        dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                        break;
+                    }
+                }
                 g_drag_window_id = w->window_id;
                 g_drag_off_x     = g_cursor_x - w->x;
                 g_drag_off_y     = g_cursor_y - w->y;
@@ -309,9 +349,26 @@ void poll_input_devices(void) {
                     } else if (code == KEY_CAPSLOCK && val == 1) {
                         dev->caps_lock = !dev->caps_lock;
                     } else if (val == 1 || val == 2) {
-                        int ch = virtio_input_translate_key(code, dev->shift_down, dev->ctrl_down, dev->caps_lock);
-                        if (ch >= 0) {
-                            route_key_to_focused_window((char)ch);
+                        const char* esc_seq = NULL;
+                        switch (code) {
+                            case KEY_UP:     esc_seq = "\033[A"; break;
+                            case KEY_DOWN:   esc_seq = "\033[B"; break;
+                            case KEY_RIGHT:  esc_seq = "\033[C"; break;
+                            case KEY_LEFT:   esc_seq = "\033[D"; break;
+                            case KEY_HOME:   esc_seq = "\033[H"; break;
+                            case KEY_END:    esc_seq = "\033[F"; break;
+                            case KEY_DELETE: esc_seq = "\033[3~"; break;
+                            default: break;
+                        }
+                        if (esc_seq != NULL) {
+                            for (size_t si = 0; esc_seq[si] != '\0'; si++) {
+                                route_key_to_focused_window(esc_seq[si]);
+                            }
+                        } else {
+                            int ch = virtio_input_translate_key(code, dev->shift_down, dev->ctrl_down, dev->caps_lock);
+                            if (ch >= 0) {
+                                route_key_to_focused_window((char)ch);
+                            }
                         }
                     }
                 }
@@ -339,21 +396,20 @@ void poll_input_devices(void) {
     if (cursor_moved) {
         g_cursor_dirty = true;
 
+        int32_t max_win_y = (int32_t)g_fb_height - IRIS_TASKBAR_H - IRIS_WIN_TITLEBAR_H;
         if (g_btn_left_down && g_drag_crash && g_crash_dialog_active && g_crash_surface != NULL) {
             dirty_rect_union_window(&g_crash_win);
             g_crash_win.x = g_cursor_x - g_drag_off_x;
             g_crash_win.y = g_cursor_y - g_drag_off_y;
-            if (g_crash_win.y < IRIS_TOPBAR_H) {
-                g_crash_win.y = IRIS_TOPBAR_H;
-            }
+            if (g_crash_win.y < 0) g_crash_win.y = 0;
+            if (g_crash_win.y > max_win_y) g_crash_win.y = max_win_y;
             dirty_rect_union_window(&g_crash_win);
         } else if (g_btn_left_down && g_drag_welcome && g_num_windows == 0 && g_welcome_surface != NULL) {
             dirty_rect_union_window(&g_welcome_win);
             g_welcome_win.x = g_cursor_x - g_drag_off_x;
             g_welcome_win.y = g_cursor_y - g_drag_off_y;
-            if (g_welcome_win.y < IRIS_TOPBAR_H) {
-                g_welcome_win.y = IRIS_TOPBAR_H;
-            }
+            if (g_welcome_win.y < 0) g_welcome_win.y = 0;
+            if (g_welcome_win.y > max_win_y) g_welcome_win.y = max_win_y;
             dirty_rect_union_window(&g_welcome_win);
         } else if (g_btn_left_down && g_drag_window_id != 0) {
             comp_window_t* win = find_window(g_drag_window_id, NULL);
@@ -361,9 +417,8 @@ void poll_input_devices(void) {
                 dirty_rect_union_window(win);
                 win->x = g_cursor_x - g_drag_off_x;
                 win->y = g_cursor_y - g_drag_off_y;
-                if (win->y < IRIS_TOPBAR_H) {
-                    win->y = IRIS_TOPBAR_H;
-                }
+                if (win->y < 0) win->y = 0;
+                if (win->y > max_win_y) win->y = max_win_y;
                 dirty_rect_union_window(win);
             }
         }

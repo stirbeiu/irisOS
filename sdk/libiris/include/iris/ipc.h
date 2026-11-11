@@ -354,6 +354,10 @@ typedef struct iris_crypt_status_resp {
 #define IRIS_COMP_OP_MOVE        IRIS_COMPOSITOR_OP_MOVE_WINDOW
 #define IRIS_COMP_OP_POLL_EVENT  IRIS_COMPOSITOR_OP_POLL_EVENT
 
+/* Window creation flags for iris_compositor_create_window_req_t::flags */
+#define IRIS_WIN_FLAG_DEFAULT      0x00000000u /**< Default opaque window surface (PIXMAN_OP_SRC) */
+#define IRIS_WIN_FLAG_TRANSLUCENT  0x00000001u /**< Premultiplied ARGB translucent surface (PIXMAN_OP_OVER) */
+
 #pragma pack(push, 4)
 /**
  * @brief Request payload for IRIS_COMPOSITOR_OP_CREATE_WINDOW
@@ -435,6 +439,7 @@ typedef struct iris_compositor_poll_event_resp {
 #define IRIS_PTY_OP_GET_MODE     0x0047u /**< Query current terminal line mode flags */
 #define IRIS_PTY_OP_INJECT       0x0048u /**< Inject raw/synthetic input bytes into PTY stream */
 #define IRIS_PTY_OP_OPEN_CLIENT  0x0049u /**< Request new PTY client session channel endpoint */
+#define IRIS_PTY_OP_READ_OUTPUT  0x004Au /**< Non-blocking read of PTY console/echo output buffer */
 
 /* PTY Line Mode Flags */
 #define IRIS_PTY_MODE_CANONICAL  (1u << 0) /**< Canonical (cooked) mode: line buffering & backspace editing */

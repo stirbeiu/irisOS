@@ -109,7 +109,7 @@ zx_handle_t iris_gui_get_channel(void);
  * 32-bit `PIXMAN_a8r8g8b8` Pixman image, and sends a duplicated VMO handle to
  * `iris_compositor` via `IRIS_COMPOSITOR_OP_CREATE_WINDOW`.
  *
- * @param title  Null-terminated UTF-8 window title string displayed in the 24px title bar.
+ * @param title  Null-terminated UTF-8 window title string displayed in the 30px title bar.
  * @param width  Client surface width in pixels (must be > 0).
  * @param height Client surface height in pixels (must be > 0).
  *
@@ -118,6 +118,20 @@ zx_handle_t iris_gui_get_channel(void);
  *       handle to `iris_compositor`. Caller must eventually release via `iris_window_destroy()`.
  */
 iris_window_t* iris_window_create(const char *title, uint32_t width, uint32_t height);
+
+/**
+ * @brief Create a new desktop window with explicit creation flags and initial desktop coordinates.
+ *
+ * @param title  Null-terminated UTF-8 window title string.
+ * @param width  Client surface width in pixels (must be > 0).
+ * @param height Client surface height in pixels (must be > 0).
+ * @param flags  Bitmask of `IRIS_WIN_FLAG_*` (e.g. `IRIS_WIN_FLAG_TRANSLUCENT`).
+ * @param x      Initial desktop X coordinate (`-1` for automatic placement).
+ * @param y      Initial desktop Y coordinate (`-1` for automatic placement).
+ * @return Pointer to allocated `iris_window_t` on success, or `NULL` on failure.
+ */
+iris_window_t* iris_window_create_ex(const char *title, uint32_t width, uint32_t height,
+                                     uint32_t flags, int32_t x, int32_t y);
 
 /**
  * @brief Destroy a client window, unmap its shared VMO, and release its Pixman surface.

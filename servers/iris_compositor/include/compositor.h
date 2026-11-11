@@ -50,17 +50,19 @@
 #define CURSOR_HOTSPOT_X        2
 #define CURSOR_HOTSPOT_Y        2
 
-/* Window frame decoration constants */
+/* Window frame & taskbar constants */
 #define IRIS_WIN_BORDER_PX      1
-#define IRIS_WIN_TITLEBAR_H     24
-#define IRIS_TOPBAR_H           28
+#define IRIS_WIN_TITLEBAR_H     30
+#define IRIS_TOPBAR_H           0
+#define IRIS_TASKBAR_H          46
 
-/* Font & Wallpaper Asset Paths */
+/* Font, Wallpaper & Icon Asset Paths */
 #define INTER_REGULAR_PATH      "/System/Resources/Fonts/InterDisplay-Regular.otf"
 #define INTER_BOLD_PATH         "/System/Resources/Fonts/InterDisplay-Bold.otf"
 #define INTER_ITALIC_PATH       "/System/Resources/Fonts/InterDisplay-Italic.otf"
 #define INTER_LEGACY_PATH       "/System/Resources/Fonts/Inter.otf"
 #define WALLPAPER_QOI_PATH      "/System/Resources/wallpaper.qoi"
+#define EYE_LIGHT_SVG_PATH      "/System/Resources/eye_light.svg"
 
 /**
  * @brief Font style selector for FreeType typography.
@@ -82,7 +84,11 @@ typedef struct comp_window {
     int32_t         y;              /**< Desktop Y coordinate of outer window frame */
     uint32_t        client_w;       /**< Client surface width in pixels */
     uint32_t        client_h;       /**< Client surface height in pixels */
-    uint32_t        flags;          /**< Window flags */
+    uint32_t        flags;          /**< Window flags (IRIS_WIN_FLAG_*) */
+    bool            is_minimized;   /**< True when minimized to taskbar */
+    bool            is_maximized;   /**< True when maximized to work area */
+    int32_t         saved_x;        /**< Pre-maximize X coordinate */
+    int32_t         saved_y;        /**< Pre-maximize Y coordinate */
     zx_handle_t     vmo;            /**< Mapped shared client VMO handle */
     zx_vaddr_t      vaddr;          /**< Mapped virtual address of client pixels */
     uint64_t        vmo_size;       /**< Mapped VMO byte size */
@@ -200,6 +206,8 @@ zx_status_t connect_to_virtio_gpu(void);
 zx_status_t flush_gpu_scanout(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 zx_status_t init_cursor_sprite(void);
 zx_status_t init_desktop_wallpaper(void);
+void render_eye_light_svg(uint32_t* dst_pixels, uint32_t fb_w, uint32_t fb_h,
+                          int32_t dst_x, int32_t dst_y, uint32_t dst_w, uint32_t dst_h);
 void render_welcome_surface_contents(void);
 void redraw_welcome_input_strip(void);
 void init_crash_dialog(const char* details);
@@ -223,5 +231,7 @@ void release_window_resources(comp_window_t* win);
 void destroy_client_windows(int client_slot);
 void window_push_key(comp_window_t* win, char ch);
 char window_pop_key(comp_window_t* win);
+
+#include "taskbar.h"
 
 #endif /* IRIS_COMPOSITOR_H */

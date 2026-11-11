@@ -218,14 +218,19 @@ static zx_status_t handle_create_window(int client_slot,
         win->x = req->x;
         win->y = req->y;
     } else {
-        int32_t base_x = (g_fb_width > frame_w)  ? (int32_t)((g_fb_width - frame_w) / 2u)  : 16;
-        int32_t base_y = (g_fb_height > frame_h) ? (int32_t)((g_fb_height - frame_h) / 2u) : (IRIS_TOPBAR_H + 12);
+        uint32_t avail_h = (g_fb_height > IRIS_TASKBAR_H) ? (g_fb_height - IRIS_TASKBAR_H) : g_fb_height;
+        int32_t base_x = (g_fb_width > frame_w) ? (int32_t)((g_fb_width - frame_w) / 2u) : 16;
+        int32_t base_y = (avail_h > frame_h)    ? (int32_t)((avail_h - frame_h) / 2u)    : 12;
         int32_t offset = (int32_t)(g_num_windows % 6u) * 28;
         win->x = base_x + offset;
         win->y = base_y + offset;
-        if (win->y < IRIS_TOPBAR_H + 4) {
-            win->y = IRIS_TOPBAR_H + 4;
+        if (win->y < 4) {
+            win->y = 4;
         }
+    }
+    int32_t max_win_y = (int32_t)g_fb_height - IRIS_TASKBAR_H - IRIS_WIN_TITLEBAR_H;
+    if (win->y > max_win_y) {
+        win->y = max_win_y;
     }
 
     g_num_windows++;
@@ -305,8 +310,12 @@ static zx_status_t handle_move_window(const iris_compositor_move_window_req_t* r
     dirty_rect_union_window(win);
     win->x = req->x;
     win->y = req->y;
-    if (win->y < IRIS_TOPBAR_H) {
-        win->y = IRIS_TOPBAR_H;
+    if (win->y < 0) {
+        win->y = 0;
+    }
+    int32_t max_win_y = (int32_t)g_fb_height - IRIS_TASKBAR_H - IRIS_WIN_TITLEBAR_H;
+    if (win->y > max_win_y) {
+        win->y = max_win_y;
     }
     dirty_rect_union_window(win);
 
@@ -551,6 +560,7 @@ static void run_compositor_loop(void) {
         /* 4. Render Tick Pacing: when deadline reached, perform AT MOST one full window/desktop render pass */
         zx_time_t now = zx_clock_get_monotonic();
         if (now >= next_frame_deadline) {
+            taskbar_update_clock();
             if (g_dirty_active) {
                 composite_and_flush(g_dirty_rect.x, g_dirty_rect.y, g_dirty_rect.w, g_dirty_rect.h);
                 g_dirty_active = false;
@@ -657,6 +667,9 @@ int main(int argc, char* argv[]) {
         log_status(STATUS_FAIL, "iris_compositor", "Failed to initialize desktop wallpaper (%d).", st);
         return 1;
     }
+
+    /* 4b. Initialize taskbar subsystem (clock, dock icons, flyouts) */
+    taskbar_init();
 
     /* Check command line arguments and /tmp/compositor_crash.log for crash recovery dialog */
     bool show_crash = false;

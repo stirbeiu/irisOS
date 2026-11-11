@@ -70,8 +70,29 @@ static void pty_unlock(pty_discipline_t* p) {
     __atomic_clear(&p->lock, __ATOMIC_RELEASE);
 }
 
+static void out_push_unlocked(pty_discipline_t* p, const char* buf, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (p->out_count == PTY_OUT_BUF_MAX) {
+            p->out_head = (p->out_head + 1) % PTY_OUT_BUF_MAX;
+            p->out_count--;
+        }
+        p->out_buf[p->out_tail] = buf[i];
+        p->out_tail = (p->out_tail + 1) % PTY_OUT_BUF_MAX;
+        p->out_count++;
+    }
+}
+
+static char out_pop_unlocked(pty_discipline_t* p) {
+    if (p->out_count == 0) return 0;
+    char c = p->out_buf[p->out_head];
+    p->out_head = (p->out_head + 1) % PTY_OUT_BUF_MAX;
+    p->out_count--;
+    return c;
+}
+
 void pty_raw_output(const char* buf, size_t len) {
     if (!buf || len == 0) return;
+    out_push_unlocked(&g_pty, buf, len);
     const size_t CHUNK = 256;
     while (len > 0) {
         size_t n = (len > CHUNK) ? CHUNK : len;
@@ -596,7 +617,9 @@ static bool handle_pty_message(zx_handle_t ch) {
             }
             if (count > 0 && payload_len >= sizeof(iris_pty_write_req_t) + count) {
                 const char* data = (const char*)(payload + sizeof(iris_pty_write_req_t));
+                pty_lock(&g_pty);
                 pty_raw_output(data, count);
+                pty_unlock(&g_pty);
             }
 
             uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_pty_write_resp_t)] __attribute__((aligned(8)));
@@ -606,6 +629,34 @@ static bool handle_pty_message(zx_handle_t ch) {
 
             iris_msg_hdr_init_reply(rep_hdr, req, ZX_OK, sizeof(iris_pty_write_resp_t));
             zx_channel_write(ch, 0, rep_buf, sizeof(rep_buf), NULL, 0);
+            break;
+        }
+
+        case IRIS_PTY_OP_READ_OUTPUT: {
+            uint32_t req_count = 4096;
+            if (payload_len >= sizeof(iris_pty_read_req_t)) {
+                req_count = ((const iris_pty_read_req_t*)payload)->count;
+            }
+            if (req_count == 0 || req_count > 4096) {
+                req_count = 4096;
+            }
+
+            uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t) + 4096] __attribute__((aligned(8)));
+            iris_msg_hdr_t* rep_hdr = (iris_msg_hdr_t*)rep_buf;
+            iris_pty_read_resp_t* resp = (iris_pty_read_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+            char* out_data = (char*)(rep_buf + sizeof(iris_msg_hdr_t) + sizeof(iris_pty_read_resp_t));
+
+            uint32_t copied = 0;
+            pty_lock(&g_pty);
+            while (g_pty.out_count > 0 && copied < req_count) {
+                out_data[copied++] = out_pop_unlocked(&g_pty);
+            }
+            pty_unlock(&g_pty);
+
+            resp->bytes_read = copied;
+            uint32_t rep_payload = (uint32_t)(sizeof(iris_pty_read_resp_t) + copied);
+            iris_msg_hdr_init_reply(rep_hdr, req, ZX_OK, rep_payload);
+            zx_channel_write(ch, 0, rep_buf, sizeof(iris_msg_hdr_t) + rep_payload, NULL, 0);
             break;
         }
 
@@ -789,36 +840,40 @@ int main(int argc, char** argv) {
     g_pty.window.rows = 24;
     g_pty.window.cols = 80;
 
-    /* 3. Discover and initialize PCIe VirtIO Input device */
-    uint64_t ecam_phys = pci_get_default_ecam_base();
-    zx_handle_t ecam_vmo = ZX_HANDLE_INVALID;
-    zx_status_t st = zx_vmo_create_physical(g_root_resource, ecam_phys, PCI_ECAM_SIZE_16_BUSES, &ecam_vmo);
-    if (st == ZX_OK) {
-        zx_vaddr_t ecam_vaddr = 0;
-        st = zx_vmar_map(zx_vmar_root_self(),
-                         ZX_VM_PERM_READ | ZX_VM_PERM_WRITE | ZX_VM_MAP_RANGE,
-                         0, ecam_vmo, 0, PCI_ECAM_SIZE_16_BUSES, &ecam_vaddr);
-        zx_handle_close(ecam_vmo);
-
+    /* 3. Discover and initialize PCIe VirtIO Input device (when root resource is provided) */
+    if (g_root_resource != ZX_HANDLE_INVALID) {
+        uint64_t ecam_phys = pci_get_default_ecam_base();
+        zx_handle_t ecam_vmo = ZX_HANDLE_INVALID;
+        zx_status_t st = zx_vmo_create_physical(g_root_resource, ecam_phys, PCI_ECAM_SIZE_16_BUSES, &ecam_vmo);
         if (st == ZX_OK) {
-            st = virtio_input_init(ecam_vaddr, g_root_resource, &g_input_dev);
+            zx_vaddr_t ecam_vaddr = 0;
+            st = zx_vmar_map(zx_vmar_root_self(),
+                             ZX_VM_PERM_READ | ZX_VM_PERM_WRITE | ZX_VM_MAP_RANGE,
+                             0, ecam_vmo, 0, PCI_ECAM_SIZE_16_BUSES, &ecam_vaddr);
+            zx_handle_close(ecam_vmo);
+
             if (st == ZX_OK) {
-                g_has_virtio_input = true;
-                log_status(STATUS_OKAY, "iris_pty", "Bound to PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).",
-                           g_input_dev.pci_dev.bus, g_input_dev.pci_dev.dev, g_input_dev.pci_dev.func,
-                           g_input_dev.pci_dev.vendor_id, g_input_dev.pci_dev.device_id);
-            } else {
-                log_status(STATUS_OKAY, "iris_pty", "virtio-input-pci not present; fallback to UART serial console.");
+                st = virtio_input_init(ecam_vaddr, g_root_resource, &g_input_dev);
+                if (st == ZX_OK) {
+                    g_has_virtio_input = true;
+                    log_status(STATUS_OKAY, "iris_pty", "Bound to PCI %02x:%02x.%x (Vendor: 0x%04x, Device: 0x%04x).",
+                               g_input_dev.pci_dev.bus, g_input_dev.pci_dev.dev, g_input_dev.pci_dev.func,
+                               g_input_dev.pci_dev.vendor_id, g_input_dev.pci_dev.device_id);
+                } else {
+                    log_status(STATUS_OKAY, "iris_pty", "virtio-input-pci not present; fallback to UART serial console.");
+                }
             }
         }
-    }
 
-    /* 4. Start UART serial console input worker (always multiplexed with virtio-input-pci) */
-    init_uart_fallback();
-    if (g_has_virtio_input) {
-        log_status(STATUS_OKAY, "iris_pty", "Multiplexing input from virtio-input-pci and UART serial console.");
+        /* 4. Start UART serial console input worker (always multiplexed with virtio-input-pci) */
+        init_uart_fallback();
+        if (g_has_virtio_input) {
+            log_status(STATUS_OKAY, "iris_pty", "Multiplexing input from virtio-input-pci and UART serial console.");
+        } else {
+            log_status(STATUS_OKAY, "iris_pty", "Input active via UART serial console.");
+        }
     } else {
-        log_status(STATUS_OKAY, "iris_pty", "Input active via UART serial console.");
+        log_status(STATUS_OKAY, "iris_pty", "Operating in GUI IPC discipline mode (input routed via iris_compositor).");
     }
 
     log_status(STATUS_OKAY, "iris_pty", "Line discipline initialized (canonical cooked mode, echoing enabled).");

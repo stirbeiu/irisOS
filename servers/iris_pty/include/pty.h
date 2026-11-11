@@ -23,6 +23,7 @@ extern "C" {
 
 #define PTY_LINE_BUF_MAX   4096
 #define PTY_READY_BUF_MAX  16384
+#define PTY_OUT_BUF_MAX    16384
 #define PTY_MAX_CLIENTS    32
 #define PTY_HIST_MAX       16
 #define PTY_HIST_LINE_MAX  256
@@ -57,6 +58,12 @@ typedef struct pty_discipline {
     size_t            ready_head;
     size_t            ready_tail;
     size_t            ready_count;
+
+    /* Output queue (echoed & written characters for graphical terminal read_output()) */
+    char              out_buf[PTY_OUT_BUF_MAX];
+    size_t            out_head;
+    size_t            out_tail;
+    size_t            out_count;
 
     /* Spinlock protecting discipline buffers */
     int               lock;

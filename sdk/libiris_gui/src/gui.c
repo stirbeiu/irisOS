@@ -53,7 +53,8 @@ zx_handle_t iris_gui_get_channel(void) {
     return g_comp_channel;
 }
 
-iris_window_t* iris_window_create(const char *title, uint32_t width, uint32_t height) {
+iris_window_t* iris_window_create_ex(const char *title, uint32_t width, uint32_t height,
+                                     uint32_t flags, int32_t x, int32_t y) {
     if (width == 0 || height == 0 || width > 8192u || height > 8192u) {
         return NULL;
     }
@@ -109,10 +110,11 @@ iris_window_t* iris_window_create(const char *title, uint32_t width, uint32_t he
     win->vaddr  = mapped_va;
     win->pixels = (uint32_t*)mapped_va;
 
-    /* Initialize surface to opaque dark Catppuccin base (0xFF1E1E2E) */
+    /* Initialize surface: translucent premultiplied dark (0xD2121216) or opaque dark (0xFF1E1E2E) */
+    uint32_t init_px = (flags & IRIS_WIN_FLAG_TRANSLUCENT) ? 0xD2121216u : 0xFF1E1E2Eu;
     size_t total_px = (size_t)width * (size_t)height;
     for (size_t i = 0; i < total_px; ++i) {
-        win->pixels[i] = 0xFF1E1E2Eu;
+        win->pixels[i] = init_px;
     }
 
     /* 3. Wrap mapped pixel buffer in a 32-bit Pixman image (PIXMAN_a8r8g8b8) */
@@ -143,9 +145,9 @@ iris_window_t* iris_window_create(const char *title, uint32_t width, uint32_t he
     memset(&req, 0, sizeof(req));
     req.width  = width;
     req.height = height;
-    req.flags  = 0;
-    req.x      = -1; /* Automatic centering/cascade */
-    req.y      = -1;
+    req.flags  = flags;
+    req.x      = x;
+    req.y      = y;
     memcpy(req.title, win->title, sizeof(req.title));
 
     iris_msg_hdr_t req_hdr;
@@ -177,6 +179,10 @@ iris_window_t* iris_window_create(const char *title, uint32_t width, uint32_t he
 
     win->window_id = resp.window_id;
     return win;
+}
+
+iris_window_t* iris_window_create(const char *title, uint32_t width, uint32_t height) {
+    return iris_window_create_ex(title, width, height, IRIS_WIN_FLAG_DEFAULT, -1, -1);
 }
 
 void iris_window_destroy(iris_window_t *win) {
