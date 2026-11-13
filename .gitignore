@@ -35,3 +35,5 @@ vendor/freetype/*
 .vscode/
 .idea/
 compile_commands.json
+docs/repo_graph.json
+__pycache__/

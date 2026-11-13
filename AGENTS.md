@@ -115,9 +115,10 @@ irisOS/
 ---
 
 ## 6. Documentation & Context Efficiency Policy
-1. **Code Documentation:** Public SDK headers (`sdk/`) require doc-comments detailing purpose, arguments, `zx_status_t` returns, and handle ownership. Servers/drivers (`servers/`) require module lifecycle headers and inline explanations for DMA (`zx_bti_pin`), IPC packing, and crypto.
-2. **Concise Markdown & Zero Boot Logs:** Never paste raw multi-line QEMU boot logs or duplicate prose into `PROGRESS.md` or `docs/*.md`. Keep all Markdown files concise, structured in tables/lists, and token-efficient.
-3. **Live Progress Tracking (`PROGRESS.md`):** Upon completing a milestone, record the concise capability added, the exact verification command (`./iris test all`), and the immediate next step.
+1. **Token-Efficient Navigation (MANDATORY):** Before grepping across the codebase or reading large source files (`>250` LOC), consult [`docs/repo_graph.md`](docs/repo_graph.md) or run `./iris graph op|file|target <term>` to locate exact IPC handlers, CMake dependencies, and function `Lstart-Lend` ranges, then call `read_file` on only the relevant line range. Never load `docs/repo_graph.json` directly into context. Refresh the graph with `./iris graph` after adding or moving files, functions, or IPC opcodes (also auto-runs on `./iris build`).
+2. **Code Documentation:** Public SDK headers (`sdk/`) require doc-comments detailing purpose, arguments, `zx_status_t` returns, and handle ownership. Servers/drivers (`servers/`) require module lifecycle headers and inline explanations for DMA (`zx_bti_pin`), IPC packing, and crypto.
+3. **Concise Markdown & Zero Boot Logs:** Never paste raw multi-line QEMU boot logs or duplicate prose into `PROGRESS.md` or `docs/*.md`. Keep all Markdown files concise, structured in tables/lists, and token-efficient.
+4. **Live Progress Tracking (`PROGRESS.md`):** Upon completing a milestone, record the concise capability added, the exact verification command (`./iris test all`), and the immediate next step.
 
 ---
 

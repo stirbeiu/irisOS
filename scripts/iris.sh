@@ -30,6 +30,7 @@ USAGE:
   ./iris build <arch>    Build system images
   ./iris run <arch>      Launch VM in QEMU window with serial console
   ./iris test <arch>     Run automated headless verification in QEMU
+  ./iris graph [query]   Regenerate or query repo architecture/symbol graph
   ./iris clean           Clean all build artifacts
 
 TARGET ARCHITECTURES:
@@ -103,6 +104,8 @@ cmd_build() {
             exit 1
             ;;
     esac
+
+    python3 "${SCRIPT_DIR}/gen_repo_graph.py"
 }
 
 cmd_run() {
@@ -195,6 +198,10 @@ cmd_clean() {
     make -C "${BUILD_DIR}" clean
 }
 
+cmd_graph() {
+    python3 "${SCRIPT_DIR}/gen_repo_graph.py" "$@"
+}
+
 # Entrypoint dispatcher
 COMMAND="${1:-help}"
 shift || true
@@ -208,6 +215,9 @@ case "${COMMAND}" in
         ;;
     test)
         cmd_test "$@"
+        ;;
+    graph)
+        cmd_graph "$@"
         ;;
     clean)
         cmd_clean "$@"

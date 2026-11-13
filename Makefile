@@ -51,7 +51,7 @@ image:
 
 else
 
-.PHONY: default help all clean x86_64 aarch64 image
+.PHONY: default help all clean x86_64 aarch64 image graph
 
 default: help
 
@@ -63,6 +63,9 @@ all:
 
 clean:
 	@$(IRIS_CLI) clean
+
+graph:
+	@$(IRIS_CLI) graph
 
 x86_64:
 	@$(IRIS_CLI) build x86_64
