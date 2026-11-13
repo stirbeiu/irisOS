@@ -27,7 +27,7 @@ flowchart TD
 ## 3. Block-Level Encryption Proxy (`servers/iris_crypt`)
 [`bin/iris_crypt`](../servers/iris_crypt/src/main.c) is a transparent `IRIS_PROTO_DRIVER` block filter backed by **Mbed-TLS 3.6 (`libmbedcrypto.a`)** and **Argon2id**:
 * **4 KB Sector 0 Metadata Header (`iris_crypt_header_t`):** Occupies physical sectors `0..7` of Partition 4 (`LBA 198656..198663`), storing magic `"IRISCRYPT"`, Argon2id cost parameters (`t_cost=3`, `m_cost=64 KiB`, `lanes=1`), 256-bit salt, wrapped 512-bit XTS master key, and SHA-256 verification tags.
-* **Sector Translation & Tweak:** Logical sector $L \in [0, 61431]$ maps to physical LBA $\text{start\_lba} + 8 + L$. Each 512-byte sector is encrypted/decrypted via `mbedtls_aes_crypt_xts` using the 64-bit little-endian logical sector number as the 16-byte XTS data unit tweak.
+* **Sector Translation & Tweak:** Logical sector $L \in [0, 61431]$ maps to physical LBA `start_lba` $+ 8 + L$. Each 512-byte sector is encrypted/decrypted via `mbedtls_aes_crypt_xts` using the 64-bit little-endian logical sector number as the 16-byte XTS data unit tweak.
 
 ---
 

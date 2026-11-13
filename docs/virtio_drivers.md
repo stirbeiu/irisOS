@@ -5,7 +5,9 @@ All hardware drivers in `irisOS` execute as isolated Ring 3 (`x86_64`) / EL0 (`a
 * **`x86_64` (QEMU `-M q35`):** Physical ECAM base `0xE0000000ULL`.
 * **`aarch64` (QEMU `-M virt`):** Physical ECAM base `0x4010000000ULL`.
 * **Register Offset Formula:**
-  $$\text{vaddr} = \text{ecam\_base} + ((\text{bus} \ll 20) \mid (\text{dev} \ll 15) \mid (\text{func} \ll 12) \mid (\text{offset} \mathbin{\&} \text{0xFFF}))$$
+  ```math
+  \text{vaddr} = \text{ecam\_base} + ((\text{bus} \ll 20) \mid (\text{dev} \ll 15) \mid (\text{func} \ll 12) \mid (\text{offset} \mathbin{\&} \text{0xFFF}))
+  ```
 * **VirtIO 1.0+ Capabilities (`PCI_CAP_ID_VNDR = 0x09`):** Parses `COMMON_CFG` (`1`), `NOTIFY_CFG` (`2`), `ISR_CFG` (`3`), and `DEVICE_CFG` (`4`), mapping the target PCI BARs into driver virtual memory via `zx_vmo_create_physical()` and `zx_vmar_map()`.
 
 ---
