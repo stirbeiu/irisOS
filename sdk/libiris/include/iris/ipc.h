@@ -280,6 +280,23 @@ typedef struct iris_fs_unlink_req {
 } iris_fs_unlink_req_t;
 
 /**
+ * @brief Request payload for IRIS_FS_OP_RENAME.
+ */
+typedef struct iris_fs_rename_req {
+    char     old_path[256]; /**< Source absolute VFS path */
+    char     new_path[256]; /**< Destination absolute VFS path */
+} iris_fs_rename_req_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_TRUNCATE.
+ */
+typedef struct iris_fs_truncate_req {
+    uint32_t vfs_handle; /**< Server-side open file handle */
+    uint32_t reserved;   /**< Alignment padding (must be 0) */
+    uint64_t size;       /**< New file size in bytes */
+} iris_fs_truncate_req_t;
+
+/**
  * @brief Request payload for IRIS_FS_OP_READLINK.
  */
 typedef struct iris_fs_readlink_req {
@@ -315,8 +332,6 @@ typedef struct iris_fs_get_exec_vmo_resp {
 #define IRIS_CRYPT_OP_STATUS     0x0020u /**< Query partition lock status and salt metadata */
 #define IRIS_CRYPT_OP_UNLOCK     0x0021u /**< Unlock Data partition with Argon2 key derivation */
 #define IRIS_CRYPT_OP_LOCK       0x0022u /**< Lock Data partition and wipe master key from RAM */
-#define IRIS_CRYPT_OP_READ       0x0023u /**< Read and decrypt sector range from Data partition */
-#define IRIS_CRYPT_OP_WRITE      0x0024u /**< Encrypt and write sector range to Data partition */
 
 #pragma pack(push, 4)
 /**
@@ -346,13 +361,6 @@ typedef struct iris_crypt_status_resp {
 #define IRIS_COMPOSITOR_OP_MOVE_WINDOW    0x0033u /**< Update window desktop coordinates (x, y) */
 #define IRIS_COMPOSITOR_OP_OPEN_CLIENT    0x0034u /**< Request new compositor client channel endpoint */
 #define IRIS_COMPOSITOR_OP_POLL_EVENT     0x0035u /**< Poll pending keyboard or mouse input events */
-
-/* Legacy compatibility aliases */
-#define IRIS_COMP_OP_CREATE      IRIS_COMPOSITOR_OP_CREATE_WINDOW
-#define IRIS_COMP_OP_DESTROY     IRIS_COMPOSITOR_OP_DESTROY_WINDOW
-#define IRIS_COMP_OP_DAMAGE      IRIS_COMPOSITOR_OP_DAMAGE
-#define IRIS_COMP_OP_MOVE        IRIS_COMPOSITOR_OP_MOVE_WINDOW
-#define IRIS_COMP_OP_POLL_EVENT  IRIS_COMPOSITOR_OP_POLL_EVENT
 
 /* Window creation flags for iris_compositor_create_window_req_t::flags */
 #define IRIS_WIN_FLAG_DEFAULT      0x00000000u /**< Default opaque window surface (PIXMAN_OP_SRC) */
@@ -435,7 +443,6 @@ typedef struct iris_compositor_poll_event_resp {
 #define IRIS_PTY_OP_DRAIN        0x0044u /**< Flush and drain pending terminal buffers */
 #define IRIS_PTY_OP_SIGNAL       0x0045u /**< Send or query POSIX signal (SIGINT, SIGWINCH, etc.) */
 #define IRIS_PTY_OP_SET_MODE     0x0046u /**< Set canonical / raw / echo terminal line mode */
-#define IRIS_PTY_OP_SET_ATTR     0x0046u /**< Alias for IRIS_PTY_OP_SET_MODE */
 #define IRIS_PTY_OP_GET_MODE     0x0047u /**< Query current terminal line mode flags */
 #define IRIS_PTY_OP_INJECT       0x0048u /**< Inject raw/synthetic input bytes into PTY stream */
 #define IRIS_PTY_OP_OPEN_CLIENT  0x0049u /**< Request new PTY client session channel endpoint */

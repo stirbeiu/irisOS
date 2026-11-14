@@ -158,13 +158,23 @@ dd if=/dev/zero of="${PART1_ESP}" bs=512 count=65536 status=none
 # 7. Construct Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 each (65536 sectors)
 SYS_A_IMG="${IMAGES_DIR}/system_a_${ARCH_NAME}.ufs2"
 SYS_B_IMG="${IMAGES_DIR}/system_b_${ARCH_NAME}.ufs2"
-INTER_REGULAR="${ROOT_DIR}/resources/fonts/InterDisplay-Regular.otf"
-INTER_BOLD="${ROOT_DIR}/resources/fonts/InterDisplay-Bold.otf"
-INTER_ITALIC="${ROOT_DIR}/resources/fonts/InterDisplay-Italic.otf"
-JETBRAINS_REGULAR="${ROOT_DIR}/resources/fonts/JetBrainsMono-Regular.ttf"
-JETBRAINS_BOLD="${ROOT_DIR}/resources/fonts/JetBrainsMono-Bold.ttf"
+INTER_VAR="${ROOT_DIR}/resources/fonts/Inter-Variable.ttf"
+INTER_IT_VAR="${ROOT_DIR}/resources/fonts/Inter-Italic-Variable.ttf"
+INTER_TIGHT_VAR="${ROOT_DIR}/resources/fonts/InterTight-Variable.ttf"
+INTER_TIGHT_IT_VAR="${ROOT_DIR}/resources/fonts/InterTight-Italic-Variable.ttf"
+JETBRAINS_VAR="${ROOT_DIR}/resources/fonts/JetBrainsMono-Variable.ttf"
+JETBRAINS_IT_VAR="${ROOT_DIR}/resources/fonts/JetBrainsMono-Italic-Variable.ttf"
+MATERIAL_ICONS_TTF="${ROOT_DIR}/resources/fonts/MaterialIcons-Regular.ttf"
 WALLPAPER_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper.qoi"
 EYE_LIGHT_SVG="${ROOT_DIR}/resources/icons/eye_light.svg"
+
+if [[ ! -f "${INTER_VAR}" || ! -f "${INTER_IT_VAR}" || \
+      ! -f "${INTER_TIGHT_VAR}" || ! -f "${INTER_TIGHT_IT_VAR}" || \
+      ! -f "${JETBRAINS_VAR}" || ! -f "${JETBRAINS_IT_VAR}" || \
+      ! -f "${MATERIAL_ICONS_TTF}" ]]; then
+    echo "==> Fetching variable fonts and Material Icons..."
+    bash "${ROOT_DIR}/scripts/fetch_fonts.sh"
+fi
 if [[ ! -f "${WALLPAPER_QOI}" ]]; then
     echo "==> Fetching Unsplash wallpaper (${WALLPAPER_QOI})..."
     python3 "${ROOT_DIR}/scripts/fetch_wallpaper.py"
@@ -180,15 +190,17 @@ SYS_LIBS=(
     "${BUILD_DIR}/lib/libfreetype.a"
     "${BUILD_DIR}/bin/iris_compositor"
     "${BUILD_DIR}/bin/terminal"
-    "${INTER_REGULAR}"
-    "${INTER_BOLD}"
-    "${INTER_ITALIC}"
-    "${JETBRAINS_REGULAR}"
-    "${JETBRAINS_BOLD}"
+    "${INTER_VAR}"
+    "${INTER_IT_VAR}"
+    "${INTER_TIGHT_VAR}"
+    "${INTER_TIGHT_IT_VAR}"
+    "${JETBRAINS_VAR}"
+    "${JETBRAINS_IT_VAR}"
+    "${MATERIAL_ICONS_TTF}"
     "${WALLPAPER_QOI}"
     "${EYE_LIGHT_SVG}"
 )
-echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries & Inter Display Fonts..."
+echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries, Variable Fonts & Material Icons..."
 "${HOST_TOOLS}/mkufs2" "${SYS_A_IMG}" 65536 system System_A "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
 "${HOST_TOOLS}/mkufs2" "${SYS_B_IMG}" 65536 system System_B "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
 

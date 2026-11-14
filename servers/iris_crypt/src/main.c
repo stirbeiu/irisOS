@@ -338,9 +338,15 @@ static void detect_gpt_data_partition(void) {
  * @brief Initialize or unlock the 4 KB Sector 0 metadata header using Argon2id
  *        with either a user-provided passphrase or the deterministic dev key fallback.
  */
+static bool g_wait_unlock = false;
+
 static zx_status_t unlock_with_passphrase(const uint8_t* pw, size_t pw_len, bool is_dev_fallback) {
     static iris_crypt_header_t hdr __attribute__((aligned(8)));
     memset(&hdr, 0, sizeof(hdr));
+
+    if (g_wait_unlock && (pw == NULL || pw_len == 0)) {
+        return ZX_ERR_ACCESS_DENIED;
+    }
 
     /* 1. Read physical Sectors 0..7 (4096 bytes) of the target partition from virtio_blk */
     zx_status_t st = downstream_read_sectors(g_part_start_sector, IRIS_CRYPT_HEADER_SECTORS, &hdr);
@@ -850,6 +856,7 @@ int main(int argc, char* argv[]) {
             break;
         }
     }
+    g_wait_unlock = wait_unlock;
 
     if (!wait_unlock) {
         st = unlock_with_passphrase(NULL, 0, true);

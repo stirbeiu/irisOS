@@ -79,8 +79,8 @@ irisOS/
 ├── kernel/zircon/            # [Kernel Zone - MIT] Pinned Zircon microkernel source
 ├── sdk/                      # [SDK Zone - MIT/BSD ONLY] libiris, libiris_gui, mlibc-sysdeps/iris
 ├── servers/                  # [Server Zone - MIT/BSD] iris_init, iris_fshost, iris_crypt,
-│                             #   iris_compositor, iris_pty, drivers/{pci,virtio_blk,virtio_gpu,virtio_input,gop_fb}
-├── apps/                     # [App Zone] terminal, sysutils/{passphrase,abctl,sys_overlay}, tests/its_irisOS
+│                             #   iris_compositor, iris_pty, drivers/{pci,virtio_blk,virtio_gpu,virtio_input}
+├── apps/                     # [App Zone] terminal, sysutils/{passphrase,iris_shell}
 ├── vendor/                   # Untouched upstream FOSS (mlibc, frigg, toybox, libufs, fatfs, mbedtls, pixman, freetype)
 ├── PROGRESS.md               # Concise milestone tracker (NO raw boot logs)
 └── out/                      # Git-ignored build artifacts & disk images
@@ -107,10 +107,8 @@ irisOS/
 * **Phase 3 (Complete):** `sdk/libiris` (24-byte IPC, VMO, `iris_spawn`), `sdk/mlibc-sysdeps/iris/`, client FD table, `libc.a` / `libc.so` / `ld-iris.so`.
 * **Phase 4 (Complete):** ECAM PCIe discovery, `virtio_blk` (BTI DMA), `iris_crypt` (AES-256-XTS + Argon2id), `iris_fshost` (GPT + `libufs` UFS2 RO `/System` & RW `/Users`).
 * **Phase 5 (Complete):** `iris_pty`, `virtio_input` + UART fallback, `passphrase`, `toybox` shell (`posix_spawn`), A/B GPT watchdog confirmation (`boot_successful = 1`).
-* **Phase 6 (In Progress):**
-  * Steps 6.1–6.3 (Complete): `virtio_gpu` + `gop_fb`, `pixman` + `freetype` ports, `iris_compositor` + `libiris_gui` with O(1) glyph cache & damage culling.
-  * Step 6.4 (Next Up): Graphical terminal emulator app (`apps/terminal`) running Toybox `sh` in a desktop window.
-* **Phase 7 (Pending):** Service supervision & crash recovery in `iris_init`, reverse-dependency graceful shutdown (`poweroff`/`reboot` IPC to `iris_init` to zero keys and unpin BTI DMA before ACPI poweroff), and strict blocking input in `apps/sysutils/passphrase` (removing `IRIS_CRYPT_DEV_PASSPHRASE` interactive fallback).
+* **Phase 6 (Complete):** `virtio_gpu`, `pixman` + `freetype` ports, `iris_compositor` + `libiris_gui`, `apps/terminal`, and modular taskbar/flyouts.
+* **Phase 7 (Complete):** Full service supervision (`zx_object_wait_many`) & crash recovery in `iris_init`, reverse-dependency graceful shutdown (`IRIS_PROTO_SYSTEM`), strict `--wait-unlock` + graphical passphrase prompt, VFS `rename`/`truncate`, and `aarch64` PL031 RTC sync.
 
 ---
 

@@ -85,45 +85,64 @@ typedef struct dir_item {
     const char* name;
 } dir_item_t;
 
-static void build_dir_block(uint8_t block[4096], uint32_t self_ino, uint32_t parent_ino,
-                            const dir_item_t* items, size_t num_items) {
+static uint32_t build_dir_block(uint8_t block[4096], uint32_t self_ino, uint32_t parent_ino,
+                                const dir_item_t* items, size_t num_items) {
     memset(block, 0, 4096);
 
-    /* First 512-byte DIRBLKSIZ chunk holds '.', '..', and items */
-    uint8_t* chunk = block;
-    size_t offset = 0;
-
-    dir_item_t all_items[64];
+    dir_item_t all_items[96];
     size_t total = 0;
     all_items[total++] = (dir_item_t){ self_ino, DT_DIR, "." };
     all_items[total++] = (dir_item_t){ parent_ino, DT_DIR, ".." };
-    for (size_t i = 0; i < num_items && total < 64; ++i) {
+    for (size_t i = 0; i < num_items && total < 96; ++i) {
         all_items[total++] = items[i];
     }
+
+    size_t chunk_idx = 0;
+    size_t offset = 0;
+    struct direct* prev_dp = NULL;
 
     for (size_t i = 0; i < total; ++i) {
         size_t namelen = strlen(all_items[i].name);
         uint16_t reclen = (uint16_t)DIRECTSIZ(namelen);
-        if (i + 1 == total) {
-            reclen = (uint16_t)(DIRBLKSIZ - offset);
+
+        if (offset + reclen > DIRBLKSIZ) {
+            if (prev_dp != NULL) {
+                prev_dp->d_reclen = (uint16_t)(prev_dp->d_reclen + (DIRBLKSIZ - offset));
+            }
+            chunk_idx++;
+            if (chunk_idx >= (4096 / DIRBLKSIZ)) {
+                fprintf(stderr, "mkufs2: warning: directory block overflow, truncating entries.\n");
+                break;
+            }
+            offset = 0;
+            prev_dp = NULL;
         }
+
+        uint8_t* chunk = block + (chunk_idx * DIRBLKSIZ);
         struct direct* dp = (struct direct*)(chunk + offset);
         dp->d_ino    = all_items[i].ino;
         dp->d_reclen = reclen;
         dp->d_type   = all_items[i].type;
         dp->d_namlen = (uint8_t)namelen;
         memcpy(dp->d_name, all_items[i].name, namelen + 1);
+        prev_dp = dp;
         offset += reclen;
     }
 
-    /* Remaining 512-byte chunks in the 4096-byte block have a single empty record */
-    for (size_t c = 1; c < 4096 / DIRBLKSIZ; ++c) {
+    if (prev_dp != NULL) {
+        prev_dp->d_reclen = (uint16_t)(prev_dp->d_reclen + (DIRBLKSIZ - offset));
+    }
+
+    uint32_t used_chunks = (uint32_t)(chunk_idx + 1);
+    for (size_t c = used_chunks; c < 4096 / DIRBLKSIZ; ++c) {
         struct direct* dp = (struct direct*)(block + c * DIRBLKSIZ);
         dp->d_ino    = 0;
         dp->d_reclen = DIRBLKSIZ;
         dp->d_type   = DT_UNKNOWN;
         dp->d_namlen = 0;
     }
+
+    return used_chunks * DIRBLKSIZ;
 }
 
 static void write_inode_entry(int fd, struct fs* sblock, uint32_t ino, const struct ufs2_dinode* di) {
@@ -399,10 +418,10 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
 
         uint32_t ino_fonts_dir = ++max_ino;
 
-        host_file_alloc_t lib_allocs[32];
+        host_file_alloc_t lib_allocs[64];
         size_t valid_libs = 0;
         memset(lib_allocs, 0, sizeof(lib_allocs));
-        for (size_t i = 0; i < num_libs && valid_libs < 32; ++i) {
+        for (size_t i = 0; i < num_libs && valid_libs < 64; ++i) {
             if (lib_paths[i] == NULL) continue;
             int lfd = open(lib_paths[i], O_RDONLY);
             if (lfd < 0) {
@@ -427,6 +446,47 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             lib_allocs[valid_libs].size = lseek(lfd, 0, SEEK_END);
             lseek(lfd, 0, SEEK_SET);
             valid_libs++;
+        }
+
+        typedef struct font_symlink_spec {
+            const char* link_name;
+            const char* target_name;
+            uint32_t    ino;
+        } font_symlink_spec_t;
+
+        static const struct {
+            const char* link_name;
+            const char* target_name;
+        } k_font_symlinks[] = {
+            { "InterDisplay-Variable.ttf",        "Inter-Variable.ttf" },
+            { "InterDisplay-Italic-Variable.ttf", "Inter-Italic-Variable.ttf" },
+            { "InterDisplay-Regular.otf",         "Inter-Variable.ttf" },
+            { "InterDisplay-Bold.otf",            "Inter-Variable.ttf" },
+            { "InterDisplay-Italic.otf",          "Inter-Italic-Variable.ttf" },
+            { "Inter.otf",                        "Inter-Variable.ttf" },
+            { "JetBrainsMono-Regular.ttf",        "JetBrainsMono-Variable.ttf" },
+            { "JetBrainsMono-Bold.ttf",           "JetBrainsMono-Variable.ttf" },
+        };
+        font_symlink_spec_t active_font_symlinks[16];
+        size_t num_font_symlinks = 0;
+        for (size_t s = 0; s < sizeof(k_font_symlinks) / sizeof(k_font_symlinks[0]); ++s) {
+            bool has_target = false;
+            bool already_exists = false;
+            for (size_t i = 0; i < valid_libs; ++i) {
+                if (strcmp(lib_allocs[i].name, k_font_symlinks[s].target_name) == 0) {
+                    has_target = true;
+                }
+                if (strcmp(lib_allocs[i].name, k_font_symlinks[s].link_name) == 0) {
+                    already_exists = true;
+                }
+            }
+            if (has_target && !already_exists && num_font_symlinks < 16) {
+                max_ino++;
+                active_font_symlinks[num_font_symlinks].link_name   = k_font_symlinks[s].link_name;
+                active_font_symlinks[num_font_symlinks].target_name = k_font_symlinks[s].target_name;
+                active_font_symlinks[num_font_symlinks].ino         = max_ino;
+                num_font_symlinks++;
+            }
         }
 
         for (uint32_t ino = 2; ino <= max_ino; ++ino) {
@@ -468,7 +528,7 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             { 5, DT_DIR, "Servers" },
             { 6, DT_DIR, "Resources" },
         };
-        build_dir_block(dir_blk, 2, 2, root_items, 4);
+        uint32_t sz_root = build_dir_block(dir_blk, 2, 2, root_items, 4);
         pwrite(fd, dir_blk, 4096, (off_t)blk_root * 4096);
 
         dir_item_t bin_items[64];
@@ -480,13 +540,13 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
                 bin_items[num_bin_items++] = (dir_item_t){ 10 + (uint32_t)i, DT_LNK, toybox_tools[i] };
             }
         }
-        dir_item_t lib_items[32];
+        dir_item_t lib_items[64];
         size_t num_lib_items = 0;
-        dir_item_t srv_items[32];
+        dir_item_t srv_items[64];
         size_t num_srv_items = 0;
-        dir_item_t font_items[32];
+        dir_item_t font_items[64];
         size_t num_font_items = 0;
-        dir_item_t res_items[32];
+        dir_item_t res_items[64];
         size_t num_res_items = 0;
         res_items[num_res_items++] = (dir_item_t){ 8,             DT_REG, "release.txt" };
         res_items[num_res_items++] = (dir_item_t){ ino_fonts_dir, DT_DIR, "Fonts" };
@@ -501,31 +561,36 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             bool is_srv_bin = (!is_font && !is_res_asset && !is_bin_app &&
                                strstr(lib_allocs[i].name, ".so") == NULL &&
                                strstr(lib_allocs[i].name, ".a") == NULL);
-            if (is_font) {
+            if (is_font && num_font_items < 64) {
                 font_items[num_font_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
-            } else if (is_res_asset) {
+            } else if (is_res_asset && num_res_items < 64) {
                 res_items[num_res_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             } else if (is_bin_app && num_bin_items < 64) {
                 bin_items[num_bin_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
-            } else if (is_srv_bin) {
+            } else if (is_srv_bin && num_srv_items < 64) {
                 srv_items[num_srv_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
-            } else {
+            } else if (num_lib_items < 64) {
                 lib_items[num_lib_items++] = (dir_item_t){ lib_allocs[i].ino, DT_REG, lib_allocs[i].name };
             }
         }
-        build_dir_block(dir_blk, 3, 2, bin_items, num_bin_items);
+        for (size_t s = 0; s < num_font_symlinks && num_font_items < 64; ++s) {
+            font_items[num_font_items++] = (dir_item_t){
+                active_font_symlinks[s].ino, DT_LNK, active_font_symlinks[s].link_name
+            };
+        }
+        uint32_t sz_bin = build_dir_block(dir_blk, 3, 2, bin_items, num_bin_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_bin * 4096);
 
-        build_dir_block(dir_blk, 4, 2, lib_items, num_lib_items);
+        uint32_t sz_lib = build_dir_block(dir_blk, 4, 2, lib_items, num_lib_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_lib * 4096);
 
-        build_dir_block(dir_blk, 5, 2, srv_items, num_srv_items);
+        uint32_t sz_srv = build_dir_block(dir_blk, 5, 2, srv_items, num_srv_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_srv * 4096);
 
-        build_dir_block(dir_blk, 6, 2, res_items, num_res_items);
+        uint32_t sz_res = build_dir_block(dir_blk, 6, 2, res_items, num_res_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_res * 4096);
 
-        build_dir_block(dir_blk, ino_fonts_dir, 6, font_items, num_font_items);
+        uint32_t sz_fonts = build_dir_block(dir_blk, ino_fonts_dir, 6, font_items, num_font_items);
         pwrite(fd, dir_blk, 4096, (off_t)blk_fonts * 4096);
 
         const char* hello_str = "irisOS Immutable System Partition (UFS2)\n";
@@ -542,12 +607,13 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         /* Write inodes 2..6 (dirs) and ino_fonts_dir (/Resources/Fonts) */
         struct ufs2_dinode di;
         uint32_t dir_blks[5] = { blk_root, blk_bin, blk_lib, blk_srv, blk_res };
+        uint32_t dir_sizes[5] = { sz_root, sz_bin, sz_lib, sz_srv, sz_res };
         uint16_t dir_nlinks[5] = { 6, 2, 2, 2, 3 };
         for (int i = 0; i < 5; ++i) {
             memset(&di, 0, sizeof(di));
             di.di_mode    = IFDIR | 0755;
             di.di_nlink   = dir_nlinks[i];
-            di.di_size    = DIRBLKSIZ;
+            di.di_size    = dir_sizes[i];
             di.di_blocks  = 8; /* 4096 / 512 */
             di.di_blksize = 4096;
             di.di_gen     = 1;
@@ -561,7 +627,7 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         memset(&di, 0, sizeof(di));
         di.di_mode    = IFDIR | 0755;
         di.di_nlink   = 2;
-        di.di_size    = DIRBLKSIZ;
+        di.di_size    = sz_fonts;
         di.di_blocks  = 8;
         di.di_blksize = 4096;
         di.di_gen     = 1;
@@ -624,6 +690,23 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         for (size_t i = 0; i < valid_libs; ++i) {
             write_planned_file(fd, sblock, &lib_allocs[i]);
             close(lib_allocs[i].fd);
+        }
+
+        /* Write inline symlinks in /Resources/Fonts */
+        for (size_t s = 0; s < num_font_symlinks; ++s) {
+            size_t tlen = strlen(active_font_symlinks[s].target_name);
+            memset(&di, 0, sizeof(di));
+            di.di_mode    = IFLNK | 0777;
+            di.di_nlink   = 1;
+            di.di_size    = (int64_t)tlen;
+            di.di_blocks  = 0;
+            di.di_blksize = 4096;
+            di.di_gen     = 1;
+            di.di_mtime   = sblock->fs_time;
+            di.di_atime   = sblock->fs_time;
+            di.di_ctime   = sblock->fs_time;
+            memcpy(di.di_db, active_font_symlinks[s].target_name, tlen + 1);
+            write_inode_entry(fd, sblock, active_font_symlinks[s].ino, &di);
         }
     } else {
         /* Encrypted Data partition hierarchy:

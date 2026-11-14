@@ -121,6 +121,19 @@ extern "C" void iris_set_pty_channel(zx_handle_t handle) {
     g_pty_channel = handle;
 }
 
+static zx_handle_t g_system_channel = ZX_HANDLE_INVALID;
+
+extern "C" void iris_set_system_channel(zx_handle_t handle) {
+    g_system_channel = handle;
+}
+
+static zx_handle_t iris_get_system_channel(void) {
+    if (g_system_channel == ZX_HANDLE_INVALID) {
+        g_system_channel = zx_take_startup_handle(PA_HND(PA_USER2, 1));
+    }
+    return g_system_channel;
+}
+
 extern "C" iris_fd_entry_t* iris_fd_get(int fd);
 
 extern "C" zx_handle_t iris_get_pty_channel(void) {
@@ -1861,6 +1874,45 @@ int sys_rmdir(const char *path) {
     return sys_unlink(path);
 }
 
+int sys_rename(const char *path, const char *new_path) {
+    if (!path || !new_path) return EINVAL;
+    zx_handle_t fs_ch = iris_get_fshost_channel();
+    if (fs_ch == ZX_HANDLE_INVALID) return ENOENT;
+
+    char resolved_old[256], resolved_new[256];
+    resolve_relative_path(path, resolved_old, sizeof(resolved_old));
+    resolve_relative_path(new_path, resolved_new, sizeof(resolved_new));
+
+    iris_fs_rename_req_t req = {};
+    size_t olen = strlen(resolved_old);
+    size_t nlen = strlen(resolved_new);
+    if (olen >= sizeof(req.old_path) || nlen >= sizeof(req.new_path)) return ENAMETOOLONG;
+    memcpy(req.old_path, resolved_old, olen + 1);
+    memcpy(req.new_path, resolved_new, nlen + 1);
+
+    return vfs_ipc_call(fs_ch, IRIS_FS_OP_RENAME, &req, sizeof(req), nullptr, 0, nullptr);
+}
+
+int sys_renameat(int olddirfd, const char *old_path, int newdirfd, const char *new_path) {
+    (void)olddirfd;
+    (void)newdirfd;
+    return sys_rename(old_path, new_path);
+}
+
+int sys_ftruncate(int fd, size_t size) {
+    iris_fd_entry_t* entry = iris_fd_get(fd);
+    if (!entry || entry->type == IRIS_FD_CLOSED) {
+        return EBADF;
+    }
+    if (entry->type != IRIS_FD_VFS) {
+        return EINVAL;
+    }
+    iris_fs_truncate_req_t req = {};
+    req.vfs_handle = entry->vfs_handle;
+    req.size       = static_cast<uint64_t>(size);
+    return vfs_ipc_call(entry->handle, IRIS_FS_OP_TRUNCATE, &req, sizeof(req), nullptr, 0, nullptr);
+}
+
 int sys_faccessat(int dirfd, const char *pathname, int mode, int flags) {
     (void)dirfd;
     (void)flags;
@@ -2395,6 +2447,18 @@ int sys_spawn(pid_t *__restrict res, const char *__restrict path,
             actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
             actions[num_actions].handle = child_rsrc;
             actions[num_actions].handle_info = PA_HND(PA_RESOURCE, 0);
+            num_actions++;
+        }
+    }
+
+    // Propagate iris_init system control channel as PA_HND(PA_USER2, 1) if available
+    zx_handle_t sys_ch = iris_get_system_channel();
+    if (sys_ch != ZX_HANDLE_INVALID && num_actions < IRIS_SPAWN_MAX_ACTIONS) {
+        zx_handle_t child_sys = ZX_HANDLE_INVALID;
+        if (zx_handle_duplicate(sys_ch, ZX_RIGHT_SAME_RIGHTS, &child_sys) == ZX_OK) {
+            actions[num_actions].type = IRIS_SPAWN_ACTION_TRANSFER_HANDLE;
+            actions[num_actions].handle = child_sys;
+            actions[num_actions].handle_info = PA_HND(PA_USER2, 1);
             num_actions++;
         }
     }
@@ -2994,16 +3058,30 @@ int sys_fchdir(int fd) {
 }
 
 int sys_reboot(int cmd) {
-    zx_handle_t rsrc = iris_root_resource();
-    uint32_t zx_cmd = ZX_SYSTEM_POWERCTL_REBOOT;
     uint32_t ucmd = static_cast<uint32_t>(cmd);
-    if (ucmd == RB_POWER_OFF) {
-        zx_cmd = ZX_SYSTEM_POWERCTL_SHUTDOWN;
-    } else if (ucmd == RB_AUTOBOOT) {
-        zx_cmd = ZX_SYSTEM_POWERCTL_REBOOT;
-    } else if (ucmd == RB_HALT_SYSTEM) {
+    uint32_t sys_op = IRIS_SYS_OP_REBOOT;
+    uint32_t zx_cmd = ZX_SYSTEM_POWERCTL_REBOOT;
+    if (ucmd == RB_POWER_OFF || ucmd == RB_HALT_SYSTEM) {
+        sys_op = IRIS_SYS_OP_SHUTDOWN;
         zx_cmd = ZX_SYSTEM_POWERCTL_SHUTDOWN;
     }
+
+    /* Route shutdown/reboot through iris_init so it performs reverse-dependency
+     * teardown (fshost sync, crypt key zeroize, driver BTI/PMT unpin) first. */
+    zx_handle_t sys_ch = iris_get_system_channel();
+    if (sys_ch != ZX_HANDLE_INVALID) {
+        iris_msg_hdr_t req = {};
+        iris_msg_hdr_init(&req, IRIS_PROTO_SYSTEM, sys_op, 1, 0);
+        if (zx_channel_write(sys_ch, 0, &req, sizeof(req), nullptr, 0) == ZX_OK) {
+            zx_signals_t obs = 0;
+            zx_object_wait_one(sys_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                               zx_deadline_after(5000000000ULL), &obs);
+            return 0;
+        }
+    }
+
+    sys_sync();
+    zx_handle_t rsrc = iris_root_resource();
     zx_system_powerctl_arg_t arg = {};
     if (pfn_zx_system_powerctl && rsrc != ZX_HANDLE_INVALID) {
         pfn_zx_system_powerctl(rsrc, zx_cmd, &arg);

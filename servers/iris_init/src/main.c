@@ -17,6 +17,7 @@
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/log.h>
 #include <zircon/syscalls/object.h>
+#include <zircon/syscalls/system.h>
 
 #ifndef ZX_IOMMU_TYPE_DUMMY
 #define ZX_IOMMU_TYPE_DUMMY 0x1u
@@ -140,6 +141,9 @@ static zx_status_t (*g_zx_process_create)(zx_handle_t, const char*, size_t, uint
 static zx_status_t (*g_zx_thread_create)(zx_handle_t, const char*, size_t, uint32_t, zx_handle_t*) = NULL;
 static zx_status_t (*g_zx_process_start)(zx_handle_t, zx_handle_t, zx_vaddr_t, zx_vaddr_t, zx_handle_t, uintptr_t) = NULL;
 static zx_status_t (*g_zx_object_wait_one)(zx_handle_t, zx_signals_t, zx_time_t, zx_signals_t*) = NULL;
+static zx_status_t (*g_zx_object_wait_many)(zx_wait_item_t*, size_t, zx_time_t) = NULL;
+static zx_status_t (*g_zx_task_kill)(zx_handle_t) = NULL;
+static zx_status_t (*g_zx_system_powerctl)(zx_handle_t, uint32_t, const zx_system_powerctl_arg_t*) = NULL;
 static zx_status_t (*g_zx_nanosleep)(zx_time_t) = NULL;
 static zx_time_t   (*g_zx_deadline_after)(zx_duration_t) = NULL;
 static zx_status_t (*g_zx_vmo_create_physical)(zx_handle_t, uintptr_t, size_t, zx_handle_t*) = NULL;
@@ -150,7 +154,6 @@ static zx_status_t (*g_zx_object_get_info)(zx_handle_t, uint32_t, void*, size_t,
 static zx_status_t (*g_zx_ioports_request)(zx_handle_t, uint16_t, uint16_t) = NULL;
 static zx_status_t (*g_zx_clock_adjust)(zx_handle_t, uint32_t, int64_t) = NULL;
 static zx_time_t   (*g_zx_clock_get_monotonic)(void) = NULL;
-static zx_time_t   (*g_zx_clock_get)(uint32_t) = NULL;
 
 static void vdso_init(uintptr_t base) {
     #define RESOLVE(fn) g_##fn = (void*)vdso_find(base, #fn, "_" #fn)
@@ -160,11 +163,12 @@ static void vdso_init(uintptr_t base) {
     RESOLVE(zx_vmo_get_size); RESOLVE(zx_vmo_write); RESOLVE(zx_vmo_replace_as_executable);
     RESOLVE(zx_vmar_map); RESOLVE(zx_vmar_unmap); RESOLVE(zx_vmar_allocate);
     RESOLVE(zx_process_create); RESOLVE(zx_thread_create); RESOLVE(zx_process_start);
-    RESOLVE(zx_object_wait_one); RESOLVE(zx_nanosleep); RESOLVE(zx_deadline_after);
+    RESOLVE(zx_object_wait_one); RESOLVE(zx_object_wait_many); RESOLVE(zx_task_kill);
+    RESOLVE(zx_system_powerctl); RESOLVE(zx_nanosleep); RESOLVE(zx_deadline_after);
     RESOLVE(zx_vmo_create_physical); RESOLVE(zx_iommu_create); RESOLVE(zx_bti_create);
     RESOLVE(zx_interrupt_create); RESOLVE(zx_object_get_info);
     RESOLVE(zx_ioports_request); RESOLVE(zx_clock_adjust);
-    RESOLVE(zx_clock_get_monotonic); RESOLVE(zx_clock_get);
+    RESOLVE(zx_clock_get_monotonic);
     #undef RESOLVE
 }
 
@@ -954,10 +958,111 @@ static void init_hardware_rtc(void) {
     g_zx_clock_adjust(g_root_resource, ZX_CLOCK_UTC, offset);
     log_status(STATUS_OKAY, "iris_init", "Synchronized hardware RTC clock (UTC %04u-%02u-%02u %02u:%02u:%02u).",
                full_year, mon, day, hour, min, sec);
+#elif defined(__aarch64__)
+    if (!g_zx_vmo_create_physical || !g_zx_vmar_map || !g_zx_vmar_unmap || !g_zx_clock_adjust ||
+        g_root_resource == ZX_HANDLE_INVALID || g_vmar_root_self == ZX_HANDLE_INVALID) {
+        return;
+    }
+    /* QEMU ARM64 'virt' PL031 RTC MMIO base = 0x09010000, RTCDR (Unix epoch seconds) at +0x00 */
+    zx_handle_t rtc_vmo = ZX_HANDLE_INVALID;
+    if (g_zx_vmo_create_physical(g_root_resource, 0x09010000ULL, 4096, &rtc_vmo) != ZX_OK) {
+        return;
+    }
+    zx_vaddr_t rtc_va = 0;
+    if (g_zx_vmar_map(g_vmar_root_self, ZX_VM_PERM_READ | ZX_VM_MAP_RANGE, 0, rtc_vmo, 0, 4096, &rtc_va) == ZX_OK &&
+        rtc_va != 0) {
+        uint32_t epoch_sec = *(volatile const uint32_t*)(rtc_va + 0x00);
+        g_zx_vmar_unmap(g_vmar_root_self, rtc_va, 4096);
+        if (epoch_sec > 0) {
+            zx_time_t monotonic = g_zx_clock_get_monotonic ? g_zx_clock_get_monotonic() : 0;
+            int64_t offset = (int64_t)((uint64_t)epoch_sec * 1000000000ULL) - (int64_t)monotonic;
+            g_zx_clock_adjust(g_root_resource, ZX_CLOCK_UTC, offset);
+            log_status(STATUS_OKAY, "iris_init", "Synchronized PL031 hardware RTC clock (UTC epoch %u).", epoch_sec);
+        }
+    }
+    g_zx_handle_close(rtc_vmo);
 #endif
 }
 
+static bool query_crypt_unlocked(zx_handle_t crypt_ch) {
+    if (crypt_ch == ZX_HANDLE_INVALID) return false;
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_CRYPT, IRIS_CRYPT_OP_STATUS, 701, 0);
+    if (g_zx_channel_write(crypt_ch, 0, &req, sizeof(req), NULL, 0) != ZX_OK) return false;
+    zx_signals_t obs = 0;
+    if (g_zx_object_wait_one(crypt_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                             iris_deadline_after(1000000000ULL), &obs) != ZX_OK ||
+        !(obs & ZX_CHANNEL_READABLE)) {
+        return false;
+    }
+    uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_status_resp_t)] __attribute__((aligned(8)));
+    uint32_t ab = 0, ah = 0;
+    if (g_zx_channel_read(crypt_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &ab, &ah) != ZX_OK ||
+        ab < sizeof(rep_buf)) {
+        return false;
+    }
+    const iris_crypt_status_resp_t* resp = (const iris_crypt_status_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+    return resp->unlocked != 0;
+}
+
+static void send_crypt_lock(zx_handle_t crypt_ch) {
+    if (crypt_ch == ZX_HANDLE_INVALID) return;
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_CRYPT, IRIS_CRYPT_OP_LOCK, 702, 0);
+    if (g_zx_channel_write(crypt_ch, 0, &req, sizeof(req), NULL, 0) == ZX_OK) {
+        zx_signals_t obs = 0;
+        if (g_zx_object_wait_one(crypt_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                                 iris_deadline_after(2000000000ULL), &obs) == ZX_OK &&
+            (obs & ZX_CHANNEL_READABLE)) {
+            iris_msg_hdr_t rep;
+            uint32_t ab = 0, ah = 0;
+            g_zx_channel_read(crypt_ch, 0, &rep, NULL, sizeof(rep), 0, &ab, &ah);
+        }
+    }
+}
+
+static void send_fshost_sync(zx_handle_t fs_ch) {
+    if (fs_ch == ZX_HANDLE_INVALID) return;
+    iris_msg_hdr_t req;
+    iris_msg_hdr_init(&req, IRIS_PROTO_FS, IRIS_FS_OP_SYNC, 703, 0);
+    if (g_zx_channel_write(fs_ch, 0, &req, sizeof(req), NULL, 0) == ZX_OK) {
+        zx_signals_t obs = 0;
+        if (g_zx_object_wait_one(fs_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                                 iris_deadline_after(3000000000ULL), &obs) == ZX_OK &&
+            (obs & ZX_CHANNEL_READABLE)) {
+            iris_msg_hdr_t rep;
+            uint32_t ab = 0, ah = 0;
+            g_zx_channel_read(fs_ch, 0, &rep, NULL, sizeof(rep), 0, &ab, &ah);
+        }
+    }
+}
+
+static void stop_process_gracefully(const char* name, zx_handle_t* proc, zx_handle_t* ch, bool kill_first) {
+    if (ch && *ch != ZX_HANDLE_INVALID) {
+        g_zx_handle_close(*ch);
+        *ch = ZX_HANDLE_INVALID;
+    }
+    if (proc && *proc != ZX_HANDLE_INVALID) {
+        if (kill_first && g_zx_task_kill) {
+            g_zx_task_kill(*proc);
+        }
+        zx_signals_t obs = 0;
+        zx_status_t wst = g_zx_object_wait_one(*proc, ZX_PROCESS_TERMINATED,
+                                               iris_deadline_after(2000000000ULL), &obs);
+        if (wst != ZX_OK && !kill_first && g_zx_task_kill) {
+            g_zx_task_kill(*proc);
+            g_zx_object_wait_one(*proc, ZX_PROCESS_TERMINATED,
+                                 iris_deadline_after(1000000000ULL), &obs);
+        }
+        g_zx_handle_close(*proc);
+        *proc = ZX_HANDLE_INVALID;
+        log_status(STATUS_OKAY, "iris_init", "Stopped %s cleanly.", name);
+    }
+}
+
 static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
+                                    zx_handle_t sys_ctrl_cli,
+                                    zx_handle_t crypt_client_for_ui,
                                     bool show_crash_dialog,
                                     zx_handle_t* out_comp_client,
                                     zx_handle_t* out_proc_comp) {
@@ -973,7 +1078,7 @@ static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
     zx_handle_t comp_client = ZX_HANDLE_INVALID, comp_server = ZX_HANDLE_INVALID;
     g_zx_channel_create(0, &comp_client, &comp_server);
 
-    spawn_handle_t comp_hnds[4];
+    spawn_handle_t comp_hnds[6];
     size_t num_comp_hnds = 0;
     comp_hnds[num_comp_hnds++] = (spawn_handle_t){ comp_server,  PA_HND(PA_USER0, 0) };
     comp_hnds[num_comp_hnds++] = (spawn_handle_t){ gpu_for_comp, PA_HND(PA_USER1, 0) };
@@ -986,14 +1091,25 @@ static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
             comp_hnds[num_comp_hnds++] = (spawn_handle_t){ root_res_comp, PA_HND(PA_RESOURCE, 0) };
         }
     }
+    if (sys_ctrl_cli != ZX_HANDLE_INVALID) {
+        zx_handle_t sys_dup = ZX_HANDLE_INVALID;
+        if (g_zx_handle_duplicate(sys_ctrl_cli, ZX_RIGHT_SAME_RIGHTS, &sys_dup) == ZX_OK) {
+            comp_hnds[num_comp_hnds++] = (spawn_handle_t){ sys_dup, PA_HND(PA_USER2, 1) };
+        }
+    }
+    if (crypt_client_for_ui != ZX_HANDLE_INVALID) {
+        comp_hnds[num_comp_hnds++] = (spawn_handle_t){ crypt_client_for_ui, PA_HND(PA_USER2, 0) };
+    }
 
-    const char* comp_argv[] = { "--show-crash-dialog" };
-    int comp_argc = show_crash_dialog ? 1 : 0;
-    const char** argv_ptr = show_crash_dialog ? comp_argv : NULL;
+    const char* comp_argv[3];
+    int comp_argc = 0;
+    comp_argv[comp_argc++] = "iris_compositor";
+    if (show_crash_dialog) comp_argv[comp_argc++] = "--show-crash-dialog";
+    if (crypt_client_for_ui != ZX_HANDLE_INVALID) comp_argv[comp_argc++] = "--unlock-prompt";
 
     zx_handle_t proc_comp = ZX_HANDLE_INVALID;
     zx_status_t st = spawn_bootfs_binary("iris_compositor", "bin/iris_compositor",
-                                         comp_argc, argv_ptr,
+                                         comp_argc, comp_argv,
                                          comp_hnds, num_comp_hnds, &proc_comp);
     g_zx_handle_close(comp_server);
     g_zx_handle_close(gpu_for_comp);
@@ -1169,25 +1285,28 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         g_zx_channel_create(0, &blk_for_fshost, &blk_srv_fshost);
         register_blk_client(blk_client, blk_srv_fshost);
 
+        zx_handle_t sys_ctrl_srv = ZX_HANDLE_INVALID, sys_ctrl_cli = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &sys_ctrl_srv, &sys_ctrl_cli);
+
         zx_handle_t crypt_client_for_its = ZX_HANDLE_INVALID, crypt_srv_for_its = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &crypt_client_for_its, &crypt_srv_for_its);
         zx_handle_t crypt_client_for_fshost = ZX_HANDLE_INVALID, crypt_srv_for_fshost = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &crypt_client_for_fshost, &crypt_srv_for_fshost);
+        zx_handle_t crypt_client_for_ui = ZX_HANDLE_INVALID, crypt_srv_for_ui = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &crypt_client_for_ui, &crypt_srv_for_ui);
 
         spawn_handle_t crypt_hnds[] = {
             { crypt_srv_for_its,    PA_HND(PA_USER0, 0) },
             { blk_for_crypt,        PA_HND(PA_USER1, 0) },
-            { crypt_srv_for_fshost, PA_HND(PA_USER0, 1) }
+            { crypt_srv_for_fshost, PA_HND(PA_USER0, 1) },
+            { crypt_srv_for_ui,     PA_HND(PA_USER0, 2) }
         };
         const char* crypt_argv_wait[] = { "iris_crypt", "--wait-unlock", NULL };
         zx_handle_t proc_crypt = ZX_HANDLE_INVALID;
-        if (has_gpu) {
-            spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 0, NULL, crypt_hnds, 3, &proc_crypt);
-        } else {
-            spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 2, crypt_argv_wait, crypt_hnds, 3, &proc_crypt);
-        }
-        g_zx_handle_close(crypt_srv_for_its); g_zx_handle_close(crypt_srv_for_fshost); g_zx_handle_close(blk_for_crypt);
-        log_status(STATUS_OKAY, "iris_init", "Spawned Storage Encryption Daemon (bin/iris_crypt).");
+        spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 2, crypt_argv_wait, crypt_hnds, 4, &proc_crypt);
+        g_zx_handle_close(crypt_srv_for_its); g_zx_handle_close(crypt_srv_for_fshost);
+        g_zx_handle_close(crypt_srv_for_ui);  g_zx_handle_close(blk_for_crypt);
+        log_status(STATUS_OKAY, "iris_init", "Spawned Storage Encryption Daemon (bin/iris_crypt --wait-unlock).");
 
         zx_handle_t pty_client = ZX_HANDLE_INVALID, pty_server = ZX_HANDLE_INVALID;
         zx_handle_t proc_pty = ZX_HANDLE_INVALID;
@@ -1210,8 +1329,7 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         log_status(STATUS_OKAY, "iris_init", "Spawned Pseudo-Terminal Server (bin/iris_pty).");
 
         if (!has_gpu) {
-            /* Step 5.3: Headless interactive mode — spawn apps/sysutils/passphrase on iris_pty
-             *           to unlock the Data partition before iris_fshost mounts /Users. */
+            /* Headless interactive mode — spawn apps/sysutils/passphrase on iris_pty */
             zx_handle_t pw_pty = request_pty_client_channel(pty_client);
             zx_handle_t pw_fd0 = ZX_HANDLE_INVALID, pw_fd1 = ZX_HANDLE_INVALID, pw_fd2 = ZX_HANDLE_INVALID;
             if (pw_pty != ZX_HANDLE_INVALID) {
@@ -1220,15 +1338,16 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd2);
             }
             spawn_handle_t pw_hnds[] = {
-                { pw_pty,               PA_HND(PA_USER0, 0) },
-                { pw_fd0,               PA_HND(PA_FD, 0) },
-                { pw_fd1,               PA_HND(PA_FD, 1) },
-                { pw_fd2,               PA_HND(PA_FD, 2) },
-                { crypt_client_for_its, PA_HND(PA_USER2, 0) }
+                { pw_pty,              PA_HND(PA_USER0, 0) },
+                { pw_fd0,              PA_HND(PA_FD, 0) },
+                { pw_fd1,              PA_HND(PA_FD, 1) },
+                { pw_fd2,              PA_HND(PA_FD, 2) },
+                { crypt_client_for_ui, PA_HND(PA_USER2, 0) }
             };
             const char* pw_argv[] = { "passphrase", NULL };
             zx_handle_t proc_pw = ZX_HANDLE_INVALID;
             zx_status_t pw_st = spawn_bootfs_binary("passphrase", "bin/passphrase", 1, pw_argv, pw_hnds, 5, &proc_pw);
+            crypt_client_for_ui = ZX_HANDLE_INVALID;
             if (pw_st == ZX_OK && proc_pw != ZX_HANDLE_INVALID) {
                 log_status(STATUS_OKAY, "iris_init", "Spawned Interactive Disk Passphrase Prompt (bin/passphrase).");
                 zx_signals_t obs = 0;
@@ -1252,12 +1371,20 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         log_status(STATUS_OKAY, "iris_init", "Spawned VFS Router & Filesystem Daemon (bin/iris_fshost).");
 
         if (has_gpu) {
-            zx_status_t comp_st = spawn_compositor(gpu_client, fshost_client, false, &comp_client, &proc_comp);
+            zx_status_t comp_st = spawn_compositor(gpu_client, fshost_client, sys_ctrl_cli,
+                                                   crypt_client_for_ui, false, &comp_client, &proc_comp);
+            crypt_client_for_ui = ZX_HANDLE_INVALID;
             if (comp_st == ZX_OK) {
                 log_status(STATUS_OKAY, "iris_init", "Spawned Window Compositor Daemon (bin/iris_compositor).");
             } else {
                 log_status(STATUS_FAIL, "iris_init", "Failed to spawn iris_compositor (%d).", comp_st);
             }
+
+            /* Wait for user to unlock Data partition via graphical prompt before mounting /Users & spawning terminal */
+            while (proc_comp != ZX_HANDLE_INVALID && !query_crypt_unlocked(crypt_client_for_its)) {
+                g_zx_nanosleep(iris_deadline_after(50000000ULL));
+            }
+            send_fshost_sync(fshost_client);
         }
 
         /* Confirm active A/B GPT slot boot */
@@ -1274,8 +1401,12 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             zx_handle_t term_comp_client = request_compositor_client_channel(comp_client);
             zx_handle_t root_res_term    = ZX_HANDLE_INVALID;
             g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_term);
+            zx_handle_t sys_dup_term     = ZX_HANDLE_INVALID;
+            if (sys_ctrl_cli != ZX_HANDLE_INVALID) {
+                g_zx_handle_duplicate(sys_ctrl_cli, ZX_RIGHT_SAME_RIGHTS, &sys_dup_term);
+            }
 
-            spawn_handle_t term_hnds[4];
+            spawn_handle_t term_hnds[5];
             size_t num_term_hnds = 0;
             if (term_fs_client != ZX_HANDLE_INVALID) {
                 term_hnds[num_term_hnds++] = (spawn_handle_t){ term_fs_client,   PA_HND(PA_NS_DIR, 0) };
@@ -1289,6 +1420,9 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             if (root_res_term != ZX_HANDLE_INVALID) {
                 term_hnds[num_term_hnds++] = (spawn_handle_t){ root_res_term,    PA_HND(PA_RESOURCE, 0) };
             }
+            if (sys_dup_term != ZX_HANDLE_INVALID) {
+                term_hnds[num_term_hnds++] = (spawn_handle_t){ sys_dup_term,     PA_HND(PA_USER2, 1) };
+            }
 
             zx_handle_t proc_term = ZX_HANDLE_INVALID;
             zx_status_t term_st = spawn_bootfs_binary("terminal", "bin/terminal", 0, NULL,
@@ -1301,46 +1435,148 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             }
         }
 
-        while (has_gpu && proc_comp != ZX_HANDLE_INVALID) {
-            log_status(STATUS_OKAY, "iris_init", "GUI desktop active (1280x800). Supervising iris_compositor.");
-            zx_signals_t obs = 0;
-            zx_status_t wst = g_zx_object_wait_one(proc_comp, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &obs);
-            if (wst != ZX_OK) break;
+        /* ======================================================================
+         * Phase 7: Full Service Supervision & Graceful Shutdown Loop
+         * ====================================================================== */
+        log_status(STATUS_OKAY, "iris_init", "Supervising system services and IRIS_PROTO_SYSTEM control channel.");
+        bool do_shutdown = false;
+        bool do_reboot = false;
 
-            zx_info_process_t pinfo;
-            iris_memset(&pinfo, 0, sizeof(pinfo));
-            if (g_zx_object_get_info) {
-                g_zx_object_get_info(proc_comp, ZX_INFO_PROCESS, &pinfo, sizeof(pinfo), NULL, NULL);
+        while (!do_shutdown && g_zx_object_wait_many != NULL) {
+            zx_wait_item_t items[8];
+            uint32_t kinds[8]; /* 0=sys_ctrl, 1=comp, 2=fshost, 3=crypt, 4=pty, 5=gpu, 6=blk */
+            size_t nitems = 0;
+
+            if (sys_ctrl_srv != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ sys_ctrl_srv, ZX_CHANNEL_READABLE, 0 };
+                kinds[nitems++] = 0;
             }
-            g_zx_handle_close(proc_comp);
-            proc_comp = ZX_HANDLE_INVALID;
-
-            if (comp_client != ZX_HANDLE_INVALID) {
-                g_zx_handle_close(comp_client);
-                comp_client = ZX_HANDLE_INVALID;
+            if (proc_comp != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ proc_comp, ZX_PROCESS_TERMINATED, 0 };
+                kinds[nitems++] = 1;
+            }
+            if (proc_fshost != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ proc_fshost, ZX_PROCESS_TERMINATED, 0 };
+                kinds[nitems++] = 2;
+            }
+            if (proc_crypt != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ proc_crypt, ZX_PROCESS_TERMINATED, 0 };
+                kinds[nitems++] = 3;
+            }
+            if (proc_pty != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ proc_pty, ZX_PROCESS_TERMINATED, 0 };
+                kinds[nitems++] = 4;
+            }
+            if (proc_gpu != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ proc_gpu, ZX_PROCESS_TERMINATED, 0 };
+                kinds[nitems++] = 5;
+            }
+            if (proc_blk != ZX_HANDLE_INVALID) {
+                items[nitems] = (zx_wait_item_t){ proc_blk, ZX_PROCESS_TERMINATED, 0 };
+                kinds[nitems++] = 6;
             }
 
-            char crash_buf[256];
-            snprintf(crash_buf, sizeof(crash_buf),
-                     "Process: bin/iris_compositor\n"
-                     "Return code: %lld\n"
-                     "Observed signals: 0x%08x\n"
-                     "Supervised recovery: iris_init respawned compositor\n",
-                     (long long)pinfo.return_code, (unsigned int)obs);
+            if (nitems == 0) break;
+            if (g_zx_object_wait_many(items, nitems, ZX_TIME_INFINITE) != ZX_OK) break;
 
-            log_status(STATUS_FAIL, "iris_init",
-                       "iris_compositor terminated (exit=%lld, signals=0x%x). Writing /tmp/compositor_crash.log...",
-                       (long long)pinfo.return_code, (unsigned int)obs);
+            for (size_t idx = 0; idx < nitems; ++idx) {
+                if (items[idx].pending == 0) continue;
 
-            vfs_write_file_from_buffer(fshost_client, "/tmp/compositor_crash.log",
-                                       crash_buf, iris_strlen(crash_buf));
+                if (kinds[idx] == 0 && (items[idx].pending & ZX_CHANNEL_READABLE)) {
+                    iris_msg_hdr_t req;
+                    uint32_t ab = 0, ah = 0;
+                    while (g_zx_channel_read(sys_ctrl_srv, 0, &req, NULL, sizeof(req), 0, &ab, &ah) == ZX_OK) {
+                        if (ab < sizeof(iris_msg_hdr_t) || !iris_msg_hdr_is_valid(&req, IRIS_PROTO_SYSTEM)) {
+                            continue;
+                        }
+                        if (req.opcode == IRIS_SYS_OP_SHUTDOWN || req.opcode == IRIS_SYS_OP_REBOOT) {
+                            do_shutdown = true;
+                            do_reboot = (req.opcode == IRIS_SYS_OP_REBOOT);
+                            iris_msg_hdr_t rep;
+                            iris_msg_hdr_init_reply(&rep, &req, ZX_OK, 0);
+                            g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
+                            break;
+                        } else if (req.opcode == IRIS_SYS_OP_PING) {
+                            iris_msg_hdr_t rep;
+                            iris_msg_hdr_init(&rep, IRIS_PROTO_SYSTEM, IRIS_SYS_OP_PONG, req.txid, 0);
+                            g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
+                        } else if (req.opcode == IRIS_SYS_OP_GET_VERSION) {
+                            iris_msg_hdr_t rep;
+                            iris_msg_hdr_init_reply(&rep, &req, ZX_OK, 0);
+                            g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
+                        }
+                    }
+                } else if (kinds[idx] == 1 && (items[idx].pending & ZX_PROCESS_TERMINATED)) {
+                    zx_info_process_t pinfo;
+                    iris_memset(&pinfo, 0, sizeof(pinfo));
+                    if (g_zx_object_get_info) {
+                        g_zx_object_get_info(proc_comp, ZX_INFO_PROCESS, &pinfo, sizeof(pinfo), NULL, NULL);
+                    }
+                    g_zx_handle_close(proc_comp);
+                    proc_comp = ZX_HANDLE_INVALID;
+                    if (comp_client != ZX_HANDLE_INVALID) {
+                        g_zx_handle_close(comp_client);
+                        comp_client = ZX_HANDLE_INVALID;
+                    }
 
-            zx_status_t st = spawn_compositor(gpu_client, fshost_client, true, &comp_client, &proc_comp);
-            if (st != ZX_OK) {
-                log_status(STATUS_FAIL, "iris_init", "Failed to respawn iris_compositor (%d).", st);
-                break;
+                    char crash_buf[256];
+                    snprintf(crash_buf, sizeof(crash_buf),
+                             "Process: bin/iris_compositor\n"
+                             "Return code: %lld\n"
+                             "Observed signals: 0x%08x\n"
+                             "Supervised recovery: iris_init respawned compositor\n",
+                             (long long)pinfo.return_code, (unsigned int)items[idx].pending);
+
+                    log_status(STATUS_FAIL, "iris_init",
+                               "iris_compositor terminated (exit=%lld). Respawning with --show-crash-dialog.",
+                               (long long)pinfo.return_code);
+                    vfs_write_file_from_buffer(fshost_client, "/tmp/compositor_crash.log",
+                                               crash_buf, iris_strlen(crash_buf));
+                    if (spawn_compositor(gpu_client, fshost_client, sys_ctrl_cli,
+                                         ZX_HANDLE_INVALID, true, &comp_client, &proc_comp) != ZX_OK) {
+                        log_status(STATUS_FAIL, "iris_init", "Failed to respawn iris_compositor.");
+                    }
+                } else if (items[idx].pending & ZX_PROCESS_TERMINATED) {
+                    const char* sname = (kinds[idx] == 2) ? "iris_fshost" :
+                                        (kinds[idx] == 3) ? "iris_crypt" :
+                                        (kinds[idx] == 4) ? "iris_pty" :
+                                        (kinds[idx] == 5) ? "virtio_gpu" : "virtio_blk";
+                    zx_handle_t* ph = (kinds[idx] == 2) ? &proc_fshost :
+                                      (kinds[idx] == 3) ? &proc_crypt :
+                                      (kinds[idx] == 4) ? &proc_pty :
+                                      (kinds[idx] == 5) ? &proc_gpu : &proc_blk;
+                    zx_info_process_t pinfo;
+                    iris_memset(&pinfo, 0, sizeof(pinfo));
+                    if (g_zx_object_get_info) {
+                        g_zx_object_get_info(*ph, ZX_INFO_PROCESS, &pinfo, sizeof(pinfo), NULL, NULL);
+                    }
+                    log_status(STATUS_FAIL, "iris_init", "Core service %s terminated unexpectedly (exit=%lld).",
+                               sname, (long long)pinfo.return_code);
+                    g_zx_handle_close(*ph);
+                    *ph = ZX_HANDLE_INVALID;
+                }
             }
-            log_status(STATUS_OKAY, "iris_init", "Respawned iris_compositor with --show-crash-dialog.");
+        }
+
+        if (do_shutdown) {
+            log_status(STATUS_OKAY, "iris_init", "Initiating reverse-dependency graceful %s...",
+                       do_reboot ? "reboot" : "poweroff");
+            stop_process_gracefully("iris_compositor", &proc_comp, &comp_client, true);
+            stop_process_gracefully("iris_pty", &proc_pty, &pty_client, true);
+            send_fshost_sync(fshost_client);
+            stop_process_gracefully("iris_fshost", &proc_fshost, &fshost_client, true);
+            send_crypt_lock(crypt_client_for_its);
+            stop_process_gracefully("iris_crypt", &proc_crypt, &crypt_client_for_its, false);
+            stop_process_gracefully("virtio_gpu", &proc_gpu, &gpu_client, false);
+            stop_process_gracefully("virtio_blk", &proc_blk, &blk_client, false);
+
+            if (g_zx_system_powerctl && g_root_resource != ZX_HANDLE_INVALID) {
+                zx_system_powerctl_arg_t arg;
+                iris_memset(&arg, 0, sizeof(arg));
+                g_zx_system_powerctl(g_root_resource,
+                                     do_reboot ? ZX_SYSTEM_POWERCTL_REBOOT : ZX_SYSTEM_POWERCTL_SHUTDOWN,
+                                     &arg);
+            }
         }
     }
 

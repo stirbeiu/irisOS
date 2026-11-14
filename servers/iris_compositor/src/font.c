@@ -2,16 +2,19 @@
  * irisOS - Modern 64-bit Microkernel Operating System
  *
  * File: servers/iris_compositor/src/font.c
- * Purpose: FreeType 2 (Inter Display Regular/Bold/Italic) & 8x8 Fallback Text Renderer.
+ * Purpose: FreeType 2 Variable Font Engine (Inter Display, Inter, Inter Tight,
+ *          JetBrains Mono, Material Icons) & 8x8 Fallback Text Renderer.
  *
  * Licensing: MIT License. Permissive Zone 1 / Ring 3 system server.
  */
 
 #include "compositor.h"
+#include FT_MULTIPLE_MASTERS_H
 
 /* FreeType 2 State */
 static FT_Library g_ft_lib = NULL;
-static FT_Face    g_ft_faces[FONT_STYLE_COUNT] = { NULL, NULL, NULL };
+static FT_Face    g_family_faces[FONT_FAMILY_COUNT][2]; /* [family][0=upright, 1=italic] */
+static FT_Face    g_ft_material_face = NULL;
 
 /* ==============================================================================
  * Embedded 8x8 Bitmap Font (Fallback)
@@ -149,37 +152,115 @@ void draw_string_8x8(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
 }
 
 /* ==============================================================================
- * FreeType 2 Subsystem Initialization & Anti-Aliased Rendering
+ * FreeType 2 Subsystem Initialization, Variable Axes & Anti-Aliased Rendering
  * ============================================================================== */
 
+static void apply_variable_axes(FT_Face face, font_family_t family, uint16_t weight) {
+    if (!face || !g_ft_lib) {
+        return;
+    }
+    FT_MM_Var* mm_var = NULL;
+    if (FT_Get_MM_Var(face, &mm_var) != 0 || !mm_var) {
+        return;
+    }
+
+    FT_Fixed coords[8];
+    FT_UInt count = mm_var->num_axis;
+    if (count > 8u) count = 8u;
+
+    for (FT_UInt i = 0; i < count; ++i) {
+        FT_Fixed val = mm_var->axis[i].def;
+        FT_ULong tag = mm_var->axis[i].tag;
+        if (tag == FT_MAKE_TAG('w', 'g', 'h', 't')) {
+            FT_Fixed req = (FT_Fixed)((FT_Long)weight << 16);
+            if (req < mm_var->axis[i].minimum) req = mm_var->axis[i].minimum;
+            if (req > mm_var->axis[i].maximum) req = mm_var->axis[i].maximum;
+            val = req;
+        } else if (tag == FT_MAKE_TAG('o', 'p', 's', 'z')) {
+            FT_Long target_opsz = (family == FONT_FAMILY_INTER_DISPLAY) ? 32L : 14L;
+            FT_Fixed req = (FT_Fixed)(target_opsz << 16);
+            if (req < mm_var->axis[i].minimum) req = mm_var->axis[i].minimum;
+            if (req > mm_var->axis[i].maximum) req = mm_var->axis[i].maximum;
+            val = req;
+        }
+        coords[i] = val;
+    }
+
+    FT_Set_Var_Design_Coordinates(face, count, coords);
+    FT_Done_MM_Var(g_ft_lib, mm_var);
+}
+
+static FT_Face load_face_with_fallback(const char* primary, const char* fallback1, const char* fallback2) {
+    FT_Face face = NULL;
+    if (primary && FT_New_Face(g_ft_lib, primary, 0, &face) == 0) {
+        return face;
+    }
+    if (fallback1 && FT_New_Face(g_ft_lib, fallback1, 0, &face) == 0) {
+        return face;
+    }
+    if (fallback2 && FT_New_Face(g_ft_lib, fallback2, 0, &face) == 0) {
+        return face;
+    }
+    return NULL;
+}
+
 zx_status_t init_font_subsystem(void) {
+    memset(g_family_faces, 0, sizeof(g_family_faces));
+    g_ft_material_face = NULL;
+
     if (FT_Init_FreeType(&g_ft_lib) != 0) {
         log_status(STATUS_FAIL, "iris_compositor", "Failed to initialize FreeType 2 engine.");
         return ZX_ERR_INTERNAL;
     }
 
-    /* 1. Try loading Inter Display Regular (or legacy Inter.otf) */
-    if (FT_New_Face(g_ft_lib, INTER_REGULAR_PATH, 0, &g_ft_faces[FONT_STYLE_REGULAR]) != 0) {
-        if (FT_New_Face(g_ft_lib, INTER_LEGACY_PATH, 0, &g_ft_faces[FONT_STYLE_REGULAR]) != 0) {
-            log_status(STATUS_WARN, "iris_compositor",
-                       "Could not load Inter Display Regular from %s or %s; using 8x8 fallback.",
-                       INTER_REGULAR_PATH, INTER_LEGACY_PATH);
-            return ZX_OK;
-        }
+    /* 1. Inter / Inter Display Variable (same VF with opsz=32 vs opsz=14) */
+    g_family_faces[FONT_FAMILY_INTER_DISPLAY][0] =
+        load_face_with_fallback(INTER_VAR_PATH, INTER_REGULAR_PATH, INTER_LEGACY_PATH);
+    g_family_faces[FONT_FAMILY_INTER_DISPLAY][1] =
+        load_face_with_fallback(INTER_IT_VAR_PATH, INTER_ITALIC_PATH, NULL);
+    if (!g_family_faces[FONT_FAMILY_INTER_DISPLAY][1]) {
+        g_family_faces[FONT_FAMILY_INTER_DISPLAY][1] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][0];
     }
 
-    /* 2. Try loading Inter Display Bold */
-    if (FT_New_Face(g_ft_lib, INTER_BOLD_PATH, 0, &g_ft_faces[FONT_STYLE_BOLD]) != 0) {
-        g_ft_faces[FONT_STYLE_BOLD] = g_ft_faces[FONT_STYLE_REGULAR];
+    g_family_faces[FONT_FAMILY_INTER][0] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][0];
+    g_family_faces[FONT_FAMILY_INTER][1] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][1];
+
+    /* 2. Inter Tight Variable */
+    g_family_faces[FONT_FAMILY_INTER_TIGHT][0] =
+        load_face_with_fallback(INTER_TIGHT_VAR_PATH, NULL, NULL);
+    if (!g_family_faces[FONT_FAMILY_INTER_TIGHT][0]) {
+        g_family_faces[FONT_FAMILY_INTER_TIGHT][0] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][0];
+    }
+    g_family_faces[FONT_FAMILY_INTER_TIGHT][1] =
+        load_face_with_fallback(INTER_TIGHT_IT_VAR_PATH, NULL, NULL);
+    if (!g_family_faces[FONT_FAMILY_INTER_TIGHT][1]) {
+        g_family_faces[FONT_FAMILY_INTER_TIGHT][1] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][1];
     }
 
-    /* 3. Try loading Inter Display Italic */
-    if (FT_New_Face(g_ft_lib, INTER_ITALIC_PATH, 0, &g_ft_faces[FONT_STYLE_ITALIC]) != 0) {
-        g_ft_faces[FONT_STYLE_ITALIC] = g_ft_faces[FONT_STYLE_REGULAR];
+    /* 3. JetBrains Mono Variable */
+    g_family_faces[FONT_FAMILY_JETBRAINS][0] =
+        load_face_with_fallback(JETBRAINS_VAR_PATH, "/System/Resources/Fonts/JetBrainsMono-Regular.ttf", NULL);
+    if (!g_family_faces[FONT_FAMILY_JETBRAINS][0]) {
+        g_family_faces[FONT_FAMILY_JETBRAINS][0] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][0];
+    }
+    g_family_faces[FONT_FAMILY_JETBRAINS][1] =
+        load_face_with_fallback(JETBRAINS_IT_VAR_PATH, NULL, NULL);
+    if (!g_family_faces[FONT_FAMILY_JETBRAINS][1]) {
+        g_family_faces[FONT_FAMILY_JETBRAINS][1] = g_family_faces[FONT_FAMILY_JETBRAINS][0];
+    }
+
+    /* 4. Material Icons */
+    g_ft_material_face = load_face_with_fallback(MATERIAL_ICONS_PATH, NULL, NULL);
+
+    if (!g_family_faces[FONT_FAMILY_INTER_DISPLAY][0]) {
+        log_status(STATUS_WARN, "iris_compositor",
+                   "Could not load Inter fonts; using 8x8 fallback.");
+        return ZX_OK;
     }
 
     log_status(STATUS_OKAY, "iris_compositor",
-               "Initialized FreeType 2 typography (Inter Display Regular/Bold/Italic loaded).");
+               "Initialized FreeType 2 variable typography (Inter Display/Tight, JetBrains Mono, Material Icons=%s).",
+               g_ft_material_face ? "yes" : "no");
     return ZX_OK;
 }
 
@@ -190,7 +271,8 @@ zx_status_t init_font_subsystem(void) {
 #define GLYPH_CACHE_MIN_CHAR   32u
 #define GLYPH_CACHE_MAX_CHAR   126u
 #define GLYPH_CACHE_NUM_CHARS  (GLYPH_CACHE_MAX_CHAR - GLYPH_CACHE_MIN_CHAR + 1u)
-#define GLYPH_CACHE_MAX_SIZES  8u
+#define GLYPH_CACHE_BUCKETS    32u
+#define MAT_ICON_CACHE_SLOTS   64u
 
 typedef struct cached_glyph {
     bool     valid;
@@ -203,45 +285,85 @@ typedef struct cached_glyph {
     uint8_t* alpha;
 } cached_glyph_t;
 
-typedef struct cached_size_bucket {
+typedef struct cached_glyph_bucket {
+    bool           in_use;
+    font_family_t  family;
+    uint16_t       weight;
+    bool           italic;
     uint32_t       pixel_size;
+    uint32_t       last_used;
     cached_glyph_t glyphs[GLYPH_CACHE_NUM_CHARS];
-} cached_size_bucket_t;
+} cached_glyph_bucket_t;
 
-static cached_size_bucket_t g_glyph_cache[FONT_STYLE_COUNT][GLYPH_CACHE_MAX_SIZES];
+typedef struct cached_mat_icon {
+    bool           in_use;
+    uint32_t       codepoint;
+    uint32_t       pixel_size;
+    uint32_t       last_used;
+    cached_glyph_t glyph;
+} cached_mat_icon_t;
 
-static const cached_glyph_t* get_cached_glyph(font_style_t style, FT_Face face,
-                                              uint32_t pixel_size, uint8_t ch) {
-    if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR || style >= FONT_STYLE_COUNT) {
+static cached_glyph_bucket_t g_glyph_buckets[GLYPH_CACHE_BUCKETS];
+static cached_mat_icon_t     g_mat_icon_cache[MAT_ICON_CACHE_SLOTS];
+static uint32_t              g_cache_use_seq = 1u;
+
+static void free_bucket_glyphs(cached_glyph_bucket_t* bucket) {
+    for (uint32_t c = 0; c < GLYPH_CACHE_NUM_CHARS; ++c) {
+        if (bucket->glyphs[c].alpha != NULL) {
+            free(bucket->glyphs[c].alpha);
+            bucket->glyphs[c].alpha = NULL;
+        }
+    }
+    memset(bucket, 0, sizeof(*bucket));
+}
+
+static FT_Face resolve_face(font_family_t family, bool italic) {
+    if (family >= FONT_FAMILY_COUNT) family = FONT_FAMILY_INTER_DISPLAY;
+    FT_Face face = g_family_faces[family][italic ? 1 : 0];
+    if (!face) face = g_family_faces[family][0];
+    if (!face) face = g_family_faces[FONT_FAMILY_INTER_DISPLAY][0];
+    return face;
+}
+
+static const cached_glyph_t* get_cached_glyph(font_family_t family, uint16_t weight, bool italic,
+                                              FT_Face face, uint32_t pixel_size, uint8_t ch) {
+    if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR || !face || pixel_size == 0) {
         return NULL;
     }
 
-    cached_size_bucket_t* buckets = g_glyph_cache[style];
-    cached_size_bucket_t* bucket  = NULL;
+    cached_glyph_bucket_t* bucket = NULL;
+    uint32_t lru_idx = 0;
+    uint32_t lru_seq = UINT32_MAX;
 
-    for (uint32_t i = 0; i < GLYPH_CACHE_MAX_SIZES; ++i) {
-        if (buckets[i].pixel_size == pixel_size) {
-            bucket = &buckets[i];
+    for (uint32_t i = 0; i < GLYPH_CACHE_BUCKETS; ++i) {
+        if (g_glyph_buckets[i].in_use &&
+            g_glyph_buckets[i].family == family &&
+            g_glyph_buckets[i].weight == weight &&
+            g_glyph_buckets[i].italic == italic &&
+            g_glyph_buckets[i].pixel_size == pixel_size) {
+            bucket = &g_glyph_buckets[i];
             break;
         }
-        if (buckets[i].pixel_size == 0 && bucket == NULL) {
-            buckets[i].pixel_size = pixel_size;
-            bucket = &buckets[i];
-            break;
+        if (!g_glyph_buckets[i].in_use && bucket == NULL) {
+            bucket = &g_glyph_buckets[i];
+        } else if (g_glyph_buckets[i].in_use && g_glyph_buckets[i].last_used < lru_seq) {
+            lru_seq = g_glyph_buckets[i].last_used;
+            lru_idx = i;
         }
     }
 
-    /* If all size buckets are full, evict bucket 0 */
     if (!bucket) {
-        bucket = &buckets[0];
-        for (uint32_t c = 0; c < GLYPH_CACHE_NUM_CHARS; ++c) {
-            if (bucket->glyphs[c].alpha) {
-                free(bucket->glyphs[c].alpha);
-            }
-        }
-        memset(bucket, 0, sizeof(*bucket));
+        bucket = &g_glyph_buckets[lru_idx];
+        free_bucket_glyphs(bucket);
+    }
+    if (!bucket->in_use) {
+        bucket->in_use     = true;
+        bucket->family     = family;
+        bucket->weight     = weight;
+        bucket->italic     = italic;
         bucket->pixel_size = pixel_size;
     }
+    bucket->last_used = g_cache_use_seq++;
 
     uint32_t idx = (uint32_t)(ch - GLYPH_CACHE_MIN_CHAR);
     cached_glyph_t* g = &bucket->glyphs[idx];
@@ -250,6 +372,7 @@ static const cached_glyph_t* get_cached_glyph(font_style_t style, FT_Face face,
     }
 
     g->valid = true;
+    apply_variable_axes(face, family, weight);
     FT_Set_Pixel_Sizes(face, 0, pixel_size);
     if (FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_RENDER) != 0) {
         g->load_failed = true;
@@ -282,29 +405,116 @@ static const cached_glyph_t* get_cached_glyph(font_style_t style, FT_Face face,
     return g;
 }
 
-void cleanup_font_subsystem(void) {
-    for (int s = 0; s < FONT_STYLE_COUNT; ++s) {
-        for (uint32_t b = 0; b < GLYPH_CACHE_MAX_SIZES; ++b) {
-            for (uint32_t c = 0; c < GLYPH_CACHE_NUM_CHARS; ++c) {
-                if (g_glyph_cache[s][b].glyphs[c].alpha != NULL) {
-                    free(g_glyph_cache[s][b].glyphs[c].alpha);
-                    g_glyph_cache[s][b].glyphs[c].alpha = NULL;
-                }
+static const cached_glyph_t* get_cached_material_glyph(uint32_t codepoint, uint32_t pixel_size) {
+    if (!g_ft_material_face || pixel_size == 0) {
+        return NULL;
+    }
+
+    cached_mat_icon_t* slot_entry = NULL;
+    uint32_t lru_idx = 0;
+    uint32_t lru_seq = UINT32_MAX;
+
+    for (uint32_t i = 0; i < MAT_ICON_CACHE_SLOTS; ++i) {
+        if (g_mat_icon_cache[i].in_use &&
+            g_mat_icon_cache[i].codepoint == codepoint &&
+            g_mat_icon_cache[i].pixel_size == pixel_size) {
+            g_mat_icon_cache[i].last_used = g_cache_use_seq++;
+            return g_mat_icon_cache[i].glyph.load_failed ? NULL : &g_mat_icon_cache[i].glyph;
+        }
+        if (!g_mat_icon_cache[i].in_use && slot_entry == NULL) {
+            slot_entry = &g_mat_icon_cache[i];
+        } else if (g_mat_icon_cache[i].in_use && g_mat_icon_cache[i].last_used < lru_seq) {
+            lru_seq = g_mat_icon_cache[i].last_used;
+            lru_idx = i;
+        }
+    }
+
+    if (!slot_entry) {
+        slot_entry = &g_mat_icon_cache[lru_idx];
+        if (slot_entry->glyph.alpha) {
+            free(slot_entry->glyph.alpha);
+        }
+        memset(slot_entry, 0, sizeof(*slot_entry));
+    }
+
+    slot_entry->in_use     = true;
+    slot_entry->codepoint  = codepoint;
+    slot_entry->pixel_size = pixel_size;
+    slot_entry->last_used  = g_cache_use_seq++;
+
+    cached_glyph_t* g = &slot_entry->glyph;
+    g->valid = true;
+
+    FT_Set_Pixel_Sizes(g_ft_material_face, 0, pixel_size);
+    if (FT_Load_Char(g_ft_material_face, (FT_ULong)codepoint, FT_LOAD_RENDER) != 0) {
+        g->load_failed = true;
+        return NULL;
+    }
+
+    FT_GlyphSlot slot = g_ft_material_face->glyph;
+    FT_Bitmap*   bmp  = &slot->bitmap;
+
+    g->bitmap_left = (int16_t)slot->bitmap_left;
+    g->bitmap_top  = (int16_t)slot->bitmap_top;
+    g->advance_x   = (int16_t)(slot->advance.x >> 6);
+    g->width       = (uint16_t)bmp->width;
+    g->rows        = (uint16_t)bmp->rows;
+    g->alpha       = NULL;
+
+    if (bmp->buffer != NULL && bmp->width > 0 && bmp->rows > 0) {
+        size_t total = (size_t)bmp->width * (size_t)bmp->rows;
+        g->alpha = (uint8_t*)malloc(total);
+        if (g->alpha) {
+            int pitch = bmp->pitch < 0 ? -bmp->pitch : bmp->pitch;
+            for (unsigned int r = 0; r < bmp->rows; ++r) {
+                memcpy(g->alpha + ((size_t)r * bmp->width),
+                       bmp->buffer + ((size_t)r * (unsigned int)pitch),
+                       bmp->width);
             }
         }
     }
-    memset(g_glyph_cache, 0, sizeof(g_glyph_cache));
 
-    for (int i = 0; i < FONT_STYLE_COUNT; ++i) {
-        if (g_ft_faces[i] != NULL) {
-            /* If bold or italic pointed to regular, avoid double free */
-            if (i > 0 && g_ft_faces[i] == g_ft_faces[FONT_STYLE_REGULAR]) {
-                g_ft_faces[i] = NULL;
-                continue;
-            }
-            FT_Done_Face(g_ft_faces[i]);
-            g_ft_faces[i] = NULL;
+    return g;
+}
+
+void cleanup_font_subsystem(void) {
+    for (uint32_t b = 0; b < GLYPH_CACHE_BUCKETS; ++b) {
+        free_bucket_glyphs(&g_glyph_buckets[b]);
+    }
+    for (uint32_t i = 0; i < MAT_ICON_CACHE_SLOTS; ++i) {
+        if (g_mat_icon_cache[i].glyph.alpha != NULL) {
+            free(g_mat_icon_cache[i].glyph.alpha);
+            g_mat_icon_cache[i].glyph.alpha = NULL;
         }
+    }
+    memset(g_mat_icon_cache, 0, sizeof(g_mat_icon_cache));
+
+    /* Deduplicate FT_Face pointers before calling FT_Done_Face */
+    FT_Face unique_faces[FONT_FAMILY_COUNT * 2 + 1];
+    size_t num_unique = 0;
+    for (int f = 0; f < FONT_FAMILY_COUNT; ++f) {
+        for (int s = 0; s < 2; ++s) {
+            FT_Face face = g_family_faces[f][s];
+            g_family_faces[f][s] = NULL;
+            if (!face) continue;
+            bool seen = false;
+            for (size_t u = 0; u < num_unique; ++u) {
+                if (unique_faces[u] == face) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                unique_faces[num_unique++] = face;
+            }
+        }
+    }
+    if (g_ft_material_face) {
+        unique_faces[num_unique++] = g_ft_material_face;
+        g_ft_material_face = NULL;
+    }
+    for (size_t u = 0; u < num_unique; ++u) {
+        FT_Done_Face(unique_faces[u]);
     }
     if (g_ft_lib != NULL) {
         FT_Done_FreeType(g_ft_lib);
@@ -312,28 +522,92 @@ void cleanup_font_subsystem(void) {
     }
 }
 
-void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
-                         int32_t x, int32_t y, uint32_t pixel_size,
-                         font_style_t style, const char* str, uint32_t argb_color) {
+static void blend_glyph_bitmap(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
+                               int32_t dst_x0, int32_t dst_y0,
+                               const cached_glyph_t* g, uint32_t argb_color) {
+    if (!g || !g->alpha || g->width == 0 || g->rows == 0) {
+        return;
+    }
+
+    int32_t clip_x0 = 0;
+    int32_t clip_y0 = 0;
+    int32_t clip_x1 = (int32_t)buf_w;
+    int32_t clip_y1 = (int32_t)buf_h;
+    if (pixels == g_backbuf_pixels && g_active_clip.w > 0 && g_active_clip.h > 0) {
+        if (g_active_clip.x > clip_x0) clip_x0 = g_active_clip.x;
+        if (g_active_clip.y > clip_y0) clip_y0 = g_active_clip.y;
+        int32_t cx1 = g_active_clip.x + (int32_t)g_active_clip.w;
+        int32_t cy1 = g_active_clip.y + (int32_t)g_active_clip.h;
+        if (cx1 < clip_x1) clip_x1 = cx1;
+        if (cy1 < clip_y1) clip_y1 = cy1;
+    }
+
+    uint32_t fg_a = (argb_color >> 24) & 0xFFu;
+    uint32_t fg_r = (argb_color >> 16) & 0xFFu;
+    uint32_t fg_g = (argb_color >>  8) & 0xFFu;
+    uint32_t fg_b = (argb_color >>  0) & 0xFFu;
+    if (fg_a == 0) return;
+
+    uint32_t solid_fg = 0xFF000000u | (fg_r << 16) | (fg_g << 8) | fg_b;
+
+    for (uint16_t row = 0; row < g->rows; ++row) {
+        int32_t dst_y = dst_y0 + (int32_t)row;
+        if (dst_y < clip_y0 || dst_y >= clip_y1) {
+            continue;
+        }
+        const uint8_t* src_row = g->alpha + ((size_t)row * g->width);
+        uint32_t*      dst_row = pixels + ((size_t)dst_y * buf_w);
+
+        for (uint16_t col = 0; col < g->width; ++col) {
+            int32_t dst_x = dst_x0 + (int32_t)col;
+            if (dst_x < clip_x0 || dst_x >= clip_x1) {
+                continue;
+            }
+            uint32_t cov = src_row[col];
+            if (cov == 0) {
+                continue;
+            }
+            if (fg_a < 255u) {
+                uint32_t tc = cov * fg_a + 128u;
+                cov = (tc + (tc >> 8)) >> 8;
+                if (cov == 0) continue;
+            }
+            if (cov >= 255u) {
+                dst_row[dst_x] = solid_fg;
+            } else {
+                uint32_t bg    = dst_row[dst_x];
+                uint32_t bg_a  = (bg >> 24) & 0xFFu;
+                uint32_t bg_r  = (bg >> 16) & 0xFFu;
+                uint32_t bg_g  = (bg >>  8) & 0xFFu;
+                uint32_t bg_b  = (bg >>  0) & 0xFFu;
+                uint32_t inv   = 255u - cov;
+                uint32_t ta    = 255u * cov + bg_a * inv + 128u;
+                uint32_t tr    = fg_r * cov + bg_r * inv + 128u;
+                uint32_t tg    = fg_g * cov + bg_g * inv + 128u;
+                uint32_t tb    = fg_b * cov + bg_b * inv + 128u;
+                uint32_t out_a = (ta + (ta >> 8)) >> 8;
+                uint32_t out_r = (tr + (tr >> 8)) >> 8;
+                uint32_t out_g = (tg + (tg >> 8)) >> 8;
+                uint32_t out_b = (tb + (tb >> 8)) >> 8;
+                dst_row[dst_x] = (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
+            }
+        }
+    }
+}
+
+void draw_text_ft_ex(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
+                     int32_t x, int32_t y, uint32_t pixel_size,
+                     font_family_t family, uint16_t weight, bool italic,
+                     const char* str, uint32_t argb_color) {
     if (!pixels || !str) {
         return;
     }
 
-    font_style_t resolved_style = (style < FONT_STYLE_COUNT) ? style : FONT_STYLE_REGULAR;
-    FT_Face face = g_ft_faces[resolved_style];
-    if (!face) {
-        resolved_style = FONT_STYLE_REGULAR;
-        face = g_ft_faces[FONT_STYLE_REGULAR];
-    }
+    FT_Face face = resolve_face(family, italic);
     if (!face) {
         draw_string_8x8(pixels, buf_w, buf_h, x, y, str, argb_color);
         return;
     }
-
-    uint32_t fg_r = (argb_color >> 16) & 0xFFu;
-    uint32_t fg_g = (argb_color >>  8) & 0xFFu;
-    uint32_t fg_b = (argb_color >>  0) & 0xFFu;
-    uint32_t solid_fg = 0xFF000000u | (fg_r << 16) | (fg_g << 8) | fg_b;
 
     int32_t pen_x      = x;
     int32_t baseline_y = y + (int32_t)pixel_size - 2;
@@ -344,51 +618,15 @@ void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
             continue;
         }
 
-        const cached_glyph_t* g = get_cached_glyph(resolved_style, face, pixel_size, ch);
+        const cached_glyph_t* g = get_cached_glyph(family, weight, italic, face, pixel_size, ch);
         if (!g) {
             continue;
         }
 
-        if (g->alpha != NULL && g->width > 0 && g->rows > 0) {
-            for (uint16_t row = 0; row < g->rows; ++row) {
-                int32_t dst_y = baseline_y - g->bitmap_top + (int32_t)row;
-                if (dst_y < 0 || (uint32_t)dst_y >= buf_h) {
-                    continue;
-                }
-                const uint8_t* src_row = g->alpha + ((size_t)row * g->width);
-                uint32_t*      dst_row = pixels + ((size_t)dst_y * buf_w);
-
-                for (uint16_t col = 0; col < g->width; ++col) {
-                    int32_t dst_x = pen_x + g->bitmap_left + (int32_t)col;
-                    if (dst_x < 0 || (uint32_t)dst_x >= buf_w) {
-                        continue;
-                    }
-                    uint32_t cov = src_row[col];
-                    if (cov == 0) {
-                        continue;
-                    }
-                    if (cov >= 255u) {
-                        dst_row[dst_x] = solid_fg;
-                    } else {
-                        uint32_t bg    = dst_row[dst_x];
-                        uint32_t bg_a  = (bg >> 24) & 0xFFu;
-                        uint32_t bg_r  = (bg >> 16) & 0xFFu;
-                        uint32_t bg_g  = (bg >>  8) & 0xFFu;
-                        uint32_t bg_b  = (bg >>  0) & 0xFFu;
-                        uint32_t inv   = 255u - cov;
-                        uint32_t ta    = 255u * cov + bg_a * inv + 128u;
-                        uint32_t tr    = fg_r * cov + bg_r * inv + 128u;
-                        uint32_t tg    = fg_g * cov + bg_g * inv + 128u;
-                        uint32_t tb    = fg_b * cov + bg_b * inv + 128u;
-                        uint32_t out_a = (ta + (ta >> 8)) >> 8;
-                        uint32_t out_r = (tr + (tr >> 8)) >> 8;
-                        uint32_t out_g = (tg + (tg >> 8)) >> 8;
-                        uint32_t out_b = (tb + (tb >> 8)) >> 8;
-                        dst_row[dst_x] = (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
-                    }
-                }
-            }
-        }
+        blend_glyph_bitmap(pixels, buf_w, buf_h,
+                           pen_x + g->bitmap_left,
+                           baseline_y - g->bitmap_top,
+                           g, argb_color);
 
         pen_x += g->advance_x;
         if (pen_x >= (int32_t)buf_w) {
@@ -397,8 +635,70 @@ void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
     }
 }
 
+int32_t measure_text_ft_ex(font_family_t family, uint16_t weight, bool italic,
+                           uint32_t pixel_size, const char* str) {
+    if (!str) return 0;
+    FT_Face face = resolve_face(family, italic);
+    if (!face) {
+        return (int32_t)strlen(str) * 8;
+    }
+    int32_t total_w = 0;
+    for (size_t i = 0; str[i] != '\0'; ++i) {
+        uint8_t ch = (uint8_t)str[i];
+        if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR) {
+            continue;
+        }
+        const cached_glyph_t* g = get_cached_glyph(family, weight, italic, face, pixel_size, ch);
+        if (g) {
+            total_w += g->advance_x;
+        }
+    }
+    return total_w;
+}
+
+bool draw_material_icon(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
+                        int32_t x, int32_t y, uint32_t pixel_size,
+                        uint32_t codepoint, uint32_t argb_color) {
+    if (!pixels || !g_ft_material_face) {
+        return false;
+    }
+    const cached_glyph_t* g = get_cached_material_glyph(codepoint, pixel_size);
+    if (!g) {
+        return false;
+    }
+
+    int32_t baseline_y = y + (int32_t)pixel_size;
+    int32_t offset_x = ((int32_t)pixel_size - g->advance_x) / 2;
+    blend_glyph_bitmap(pixels, buf_w, buf_h,
+                       x + offset_x + g->bitmap_left,
+                       baseline_y - g->bitmap_top,
+                       g, argb_color);
+    return true;
+}
+
+void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
+                         int32_t x, int32_t y, uint32_t pixel_size,
+                         font_style_t style, const char* str, uint32_t argb_color) {
+    uint16_t weight = FONT_WEIGHT_REGULAR;
+    bool italic = false;
+    switch (style) {
+        case FONT_STYLE_BOLD:      weight = FONT_WEIGHT_BOLD; break;
+        case FONT_STYLE_ITALIC:    italic = true; break;
+        case FONT_STYLE_THIN:      weight = FONT_WEIGHT_THIN; break;
+        case FONT_STYLE_LIGHT:     weight = FONT_WEIGHT_LIGHT; break;
+        case FONT_STYLE_MEDIUM:    weight = FONT_WEIGHT_MEDIUM; break;
+        case FONT_STYLE_SEMIBOLD:  weight = FONT_WEIGHT_SEMIBOLD; break;
+        case FONT_STYLE_EXTRABOLD: weight = FONT_WEIGHT_EXTRABOLD; break;
+        case FONT_STYLE_BLACK:     weight = FONT_WEIGHT_BLACK; break;
+        default: break;
+    }
+    draw_text_ft_ex(pixels, buf_w, buf_h, x, y, pixel_size,
+                    FONT_FAMILY_INTER_DISPLAY, weight, italic, str, argb_color);
+}
+
 void draw_text_ft(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                   int32_t x, int32_t y, uint32_t pixel_size,
                   const char* str, uint32_t argb_color) {
-    draw_text_ft_styled(pixels, buf_w, buf_h, x, y, pixel_size, FONT_STYLE_REGULAR, str, argb_color);
+    draw_text_ft_ex(pixels, buf_w, buf_h, x, y, pixel_size,
+                    FONT_FAMILY_INTER_DISPLAY, FONT_WEIGHT_REGULAR, false, str, argb_color);
 }

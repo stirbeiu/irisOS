@@ -216,6 +216,198 @@ void fill_rect_pixman(pixman_image_t* dst, int32_t x, int32_t y,
     pixman_image_fill_rectangles(PIXMAN_OP_SRC, dst, &col, 1, &rect);
 }
 
+static inline uint32_t alpha_blend_pixel(uint32_t bg, uint32_t a, uint32_t r, uint32_t g, uint32_t b) {
+    if (a == 0) return bg;
+    if (a >= 255u) return 0xFF000000u | (r << 16) | (g << 8) | b;
+    uint32_t bg_a = (bg >> 24) & 0xFFu;
+    uint32_t bg_r = (bg >> 16) & 0xFFu;
+    uint32_t bg_g = (bg >>  8) & 0xFFu;
+    uint32_t bg_b = (bg >>  0) & 0xFFu;
+    uint32_t inv  = 255u - a;
+    uint32_t ta   = 255u * a + bg_a * inv + 128u;
+    uint32_t tr   = r * a + bg_r * inv + 128u;
+    uint32_t tg   = g * a + bg_g * inv + 128u;
+    uint32_t tb   = b * a + bg_b * inv + 128u;
+    return (((ta + (ta >> 8)) >> 8) << 24) |
+           (((tr + (tr >> 8)) >> 8) << 16) |
+           (((tg + (tg >> 8)) >> 8) <<  8) |
+           (((tb + (tb >> 8)) >> 8));
+}
+
+static void compute_pixel_clip(const uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                               int32_t* cx0, int32_t* cy0, int32_t* cx1, int32_t* cy1) {
+    *cx0 = 0;
+    *cy0 = 0;
+    *cx1 = (int32_t)buf_w;
+    *cy1 = (int32_t)buf_h;
+    if (dst_pixels == g_backbuf_pixels && g_active_clip.w > 0 && g_active_clip.h > 0) {
+        if (g_active_clip.x > *cx0) *cx0 = g_active_clip.x;
+        if (g_active_clip.y > *cy0) *cy0 = g_active_clip.y;
+        int32_t ax1 = g_active_clip.x + (int32_t)g_active_clip.w;
+        int32_t ay1 = g_active_clip.y + (int32_t)g_active_clip.h;
+        if (ax1 < *cx1) *cx1 = ax1;
+        if (ay1 < *cy1) *cy1 = ay1;
+    }
+}
+
+void fill_rect_vgradient_over(uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                              int32_t x, int32_t y, uint32_t w, uint32_t h,
+                              uint32_t top_argb, uint32_t bot_argb) {
+    if (!dst_pixels || w == 0 || h == 0) {
+        return;
+    }
+
+    int32_t cx0, cy0, cx1, cy1;
+    compute_pixel_clip(dst_pixels, buf_w, buf_h, &cx0, &cy0, &cx1, &cy1);
+
+    int32_t x0 = (x > cx0) ? x : cx0;
+    int32_t y0 = (y > cy0) ? y : cy0;
+    int32_t x1 = (x + (int32_t)w < cx1) ? (x + (int32_t)w) : cx1;
+    int32_t y1 = (y + (int32_t)h < cy1) ? (y + (int32_t)h) : cy1;
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+
+    int32_t ta = (int32_t)((top_argb >> 24) & 0xFFu);
+    int32_t tr = (int32_t)((top_argb >> 16) & 0xFFu);
+    int32_t tg = (int32_t)((top_argb >>  8) & 0xFFu);
+    int32_t tb = (int32_t)((top_argb >>  0) & 0xFFu);
+
+    int32_t ba = (int32_t)((bot_argb >> 24) & 0xFFu);
+    int32_t br = (int32_t)((bot_argb >> 16) & 0xFFu);
+    int32_t bg = (int32_t)((bot_argb >>  8) & 0xFFu);
+    int32_t bb = (int32_t)((bot_argb >>  0) & 0xFFu);
+
+    int32_t denom = (h > 1u) ? (int32_t)(h - 1u) : 1;
+
+    for (int32_t py = y0; py < y1; ++py) {
+        int32_t rel_y = py - y;
+        uint32_t a = (uint32_t)(ta + ((ba - ta) * rel_y) / denom);
+        uint32_t r = (uint32_t)(tr + ((br - tr) * rel_y) / denom);
+        uint32_t g = (uint32_t)(tg + ((bg - tg) * rel_y) / denom);
+        uint32_t b = (uint32_t)(tb + ((bb - tb) * rel_y) / denom);
+        uint32_t* dst_row = dst_pixels + ((size_t)py * buf_w);
+
+        if (a >= 255u) {
+            uint32_t solid = 0xFF000000u | (r << 16) | (g << 8) | b;
+            for (int32_t px = x0; px < x1; ++px) {
+                dst_row[px] = solid;
+            }
+        } else if (a > 0) {
+            for (int32_t px = x0; px < x1; ++px) {
+                dst_row[px] = alpha_blend_pixel(dst_row[px], a, r, g, b);
+            }
+        }
+    }
+}
+
+void fill_rounded_rect_over(uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                            int32_t x, int32_t y, uint32_t w, uint32_t h,
+                            uint32_t radius, uint32_t argb) {
+    if (!dst_pixels || w == 0 || h == 0) {
+        return;
+    }
+
+    uint32_t a = (argb >> 24) & 0xFFu;
+    uint32_t r = (argb >> 16) & 0xFFu;
+    uint32_t g = (argb >>  8) & 0xFFu;
+    uint32_t b = (argb >>  0) & 0xFFu;
+    if (a == 0) return;
+
+    int32_t rad = (int32_t)radius;
+    if (rad * 2 > (int32_t)w) rad = (int32_t)w / 2;
+    if (rad * 2 > (int32_t)h) rad = (int32_t)h / 2;
+    if (rad <= 0) {
+        fill_rect_vgradient_over(dst_pixels, buf_w, buf_h, x, y, w, h, argb, argb);
+        return;
+    }
+
+    int32_t cx0, cy0, cx1, cy1;
+    compute_pixel_clip(dst_pixels, buf_w, buf_h, &cx0, &cy0, &cx1, &cy1);
+
+    int32_t x0 = (x > cx0) ? x : cx0;
+    int32_t y0 = (y > cy0) ? y : cy0;
+    int32_t x1 = (x + (int32_t)w < cx1) ? (x + (int32_t)w) : cx1;
+    int32_t y1 = (y + (int32_t)h < cy1) ? (y + (int32_t)h) : cy1;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    int32_t r2 = rad * rad;
+    int32_t r_outer2 = (rad + 1) * (rad + 1);
+
+    for (int32_t py = y0; py < y1; ++py) {
+        int32_t ly = py - y;
+        int32_t dy = 0;
+        if (ly < rad) {
+            dy = rad - ly;
+        } else if (ly >= (int32_t)h - rad) {
+            dy = ly - ((int32_t)h - rad - 1);
+        }
+        uint32_t* dst_row = dst_pixels + ((size_t)py * buf_w);
+
+        for (int32_t px = x0; px < x1; ++px) {
+            int32_t lx = px - x;
+            int32_t dx = 0;
+            if (lx < rad) {
+                dx = rad - lx;
+            } else if (lx >= (int32_t)w - rad) {
+                dx = lx - ((int32_t)w - rad - 1);
+            }
+            if (dx == 0 || dy == 0) {
+                dst_row[px] = alpha_blend_pixel(dst_row[px], a, r, g, b);
+                continue;
+            }
+            int32_t d2 = dx * dx + dy * dy;
+            if (d2 <= r2) {
+                dst_row[px] = alpha_blend_pixel(dst_row[px], a, r, g, b);
+            } else if (d2 < r_outer2) {
+                uint32_t fringe = (uint32_t)(((r_outer2 - d2) * 255) / (r_outer2 - r2));
+                uint32_t eff_a = (a * fringe + 128u) >> 8;
+                dst_row[px] = alpha_blend_pixel(dst_row[px], eff_a, r, g, b);
+            }
+        }
+    }
+}
+
+void fill_circle_over(uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                      int32_t cx, int32_t cy, int32_t radius, uint32_t argb) {
+    if (!dst_pixels || radius <= 0) return;
+
+    uint32_t a = (argb >> 24) & 0xFFu;
+    uint32_t r = (argb >> 16) & 0xFFu;
+    uint32_t g = (argb >>  8) & 0xFFu;
+    uint32_t b = (argb >>  0) & 0xFFu;
+    if (a == 0) return;
+
+    int32_t clip_x0, clip_y0, clip_x1, clip_y1;
+    compute_pixel_clip(dst_pixels, buf_w, buf_h, &clip_x0, &clip_y0, &clip_x1, &clip_y1);
+
+    int32_t x0 = (cx - radius > clip_x0) ? (cx - radius) : clip_x0;
+    int32_t y0 = (cy - radius > clip_y0) ? (cy - radius) : clip_y0;
+    int32_t x1 = (cx + radius + 1 < clip_x1) ? (cx + radius + 1) : clip_x1;
+    int32_t y1 = (cy + radius + 1 < clip_y1) ? (cy + radius + 1) : clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    int32_t r2 = radius * radius;
+    int32_t r_inner2 = (radius > 1) ? ((radius - 1) * (radius - 1)) : 0;
+
+    for (int32_t py = y0; py < y1; ++py) {
+        int32_t dy = py - cy;
+        uint32_t* dst_row = dst_pixels + ((size_t)py * buf_w);
+        for (int32_t px = x0; px < x1; ++px) {
+            int32_t dx = px - cx;
+            int32_t d2 = dx * dx + dy * dy;
+            if (d2 <= r_inner2) {
+                dst_row[px] = alpha_blend_pixel(dst_row[px], a, r, g, b);
+            } else if (d2 <= r2) {
+                int32_t span = (r2 > r_inner2) ? (r2 - r_inner2) : 1;
+                uint32_t fringe = (uint32_t)(((r2 - d2) * 255) / span);
+                uint32_t eff_a = (a * fringe + 128u) >> 8;
+                dst_row[px] = alpha_blend_pixel(dst_row[px], eff_a, r, g, b);
+            }
+        }
+    }
+}
+
 void blit_surface_clamped(pixman_image_t* src, int32_t src_w, int32_t src_h,
                          pixman_image_t* dst, int32_t dst_w, int32_t dst_h,
                          int32_t dst_x, int32_t dst_y, pixman_op_t op) {
@@ -609,6 +801,164 @@ void init_crash_dialog(const char* details) {
     dirty_rect_union(g_crash_win.x, g_crash_win.y,
                      cw + 2u * IRIS_WIN_BORDER_PX,
                      ch + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX);
+}
+
+bool                    g_unlock_active    = false;
+static comp_window_t    g_unlock_win;
+static pixman_image_t*  g_unlock_surface   = NULL;
+static uint32_t*        g_unlock_pixels    = NULL;
+static zx_handle_t      g_unlock_crypt_ch  = ZX_HANDLE_INVALID;
+static char             g_unlock_pw[128];
+static size_t           g_unlock_pw_len    = 0;
+static char             g_unlock_status[96] = "Enter passphrase to unlock /Users and /Applications.";
+static uint32_t         g_unlock_status_col = 0xFFA6ADC8u;
+
+static void render_unlock_prompt_contents(void) {
+    if (!g_unlock_surface || !g_unlock_pixels) return;
+    uint32_t cw = g_unlock_win.client_w;
+    uint32_t ch = g_unlock_win.client_h;
+
+    fill_rect_pixman(g_unlock_surface, 0, 0, cw, ch, 0xFF1E1E2Eu);
+
+    draw_text_ft_styled(g_unlock_pixels, cw, ch, 24, 22, 16,
+                        FONT_STYLE_BOLD, "Disk Encryption Unlock", 0xFFCDD6F4u);
+    draw_text_ft_styled(g_unlock_pixels, cw, ch, 24, 52, 13,
+                        FONT_STYLE_REGULAR, g_unlock_status, g_unlock_status_col);
+
+    uint32_t box_x = 24u, box_y = 84u, box_w = cw - 48u, box_h = 36u;
+    fill_rect_pixman(g_unlock_surface, (int32_t)box_x, (int32_t)box_y, box_w, box_h, 0xFF11111Bu);
+    fill_rect_pixman(g_unlock_surface, (int32_t)box_x, (int32_t)box_y, box_w, 1u, 0xFF89B4FAu);
+    fill_rect_pixman(g_unlock_surface, (int32_t)box_x, (int32_t)(box_y + box_h - 1u), box_w, 1u, 0xFF89B4FAu);
+    fill_rect_pixman(g_unlock_surface, (int32_t)box_x, (int32_t)box_y, 1u, box_h, 0xFF89B4FAu);
+    fill_rect_pixman(g_unlock_surface, (int32_t)(box_x + box_w - 1u), (int32_t)box_y, 1u, box_h, 0xFF89B4FAu);
+
+    char masked[128];
+    size_t vis = g_unlock_pw_len < 48 ? g_unlock_pw_len : 48;
+    for (size_t i = 0; i < vis; ++i) masked[i] = '*';
+    masked[vis] = '_';
+    masked[vis + 1] = '\0';
+    draw_string_8x8(g_unlock_pixels, cw, ch, (int32_t)box_x + 12, (int32_t)box_y + 14, masked, 0xFFCDD6F4u);
+
+    draw_text_ft_styled(g_unlock_pixels, cw, ch, 24, 136, 12,
+                        FONT_STYLE_REGULAR, "Press Enter to unlock (AES-256-XTS + Argon2id)", 0xFF7F849Cu);
+}
+
+void close_unlock_prompt(void) {
+    if (!g_unlock_active && g_unlock_surface == NULL) return;
+    int32_t wx = g_unlock_win.x;
+    int32_t wy = g_unlock_win.y;
+    uint32_t fw = g_unlock_win.client_w + 2u * IRIS_WIN_BORDER_PX;
+    uint32_t fh = g_unlock_win.client_h + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX;
+
+    g_unlock_active = false;
+    memset(g_unlock_pw, 0, sizeof(g_unlock_pw));
+    g_unlock_pw_len = 0;
+    if (g_unlock_crypt_ch != ZX_HANDLE_INVALID) {
+        zx_handle_close(g_unlock_crypt_ch);
+        g_unlock_crypt_ch = ZX_HANDLE_INVALID;
+    }
+    if (g_unlock_surface) { pixman_image_unref(g_unlock_surface); g_unlock_surface = NULL; }
+    if (g_unlock_pixels)  { free(g_unlock_pixels); g_unlock_pixels = NULL; }
+    dirty_rect_union(wx, wy, fw, fh);
+}
+
+void init_unlock_prompt(zx_handle_t crypt_ch) {
+    if (g_unlock_active || crypt_ch == ZX_HANDLE_INVALID) return;
+    uint32_t cw = 460u, ch = 172u;
+    g_unlock_pixels = (uint32_t*)calloc((size_t)cw * ch, sizeof(uint32_t));
+    if (!g_unlock_pixels) { zx_handle_close(crypt_ch); return; }
+    g_unlock_surface = pixman_image_create_bits(PIXMAN_a8r8g8b8, (int)cw, (int)ch, g_unlock_pixels, (int)(cw * 4u));
+    if (!g_unlock_surface) { free(g_unlock_pixels); g_unlock_pixels = NULL; zx_handle_close(crypt_ch); return; }
+
+    g_unlock_crypt_ch = crypt_ch;
+    memset(g_unlock_pw, 0, sizeof(g_unlock_pw));
+    g_unlock_pw_len = 0;
+    snprintf(g_unlock_status, sizeof(g_unlock_status), "Enter passphrase to unlock /Users and /Applications.");
+    g_unlock_status_col = 0xFFA6ADC8u;
+
+    memset(&g_unlock_win, 0, sizeof(g_unlock_win));
+    g_unlock_win.window_id = 0xFFFDu;
+    g_unlock_win.client_w = cw;
+    g_unlock_win.client_h = ch;
+    g_unlock_win.x = (int32_t)(g_fb_width - (cw + 2u * IRIS_WIN_BORDER_PX)) / 2;
+    g_unlock_win.y = (int32_t)(g_fb_height - (ch + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX)) / 2;
+    g_unlock_win.client_surface = g_unlock_surface;
+    strncpy(g_unlock_win.title, "irisOS Security", sizeof(g_unlock_win.title) - 1);
+
+    render_unlock_prompt_contents();
+    g_unlock_active = true;
+    dirty_rect_union(g_unlock_win.x, g_unlock_win.y,
+                     cw + 2u * IRIS_WIN_BORDER_PX,
+                     ch + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX);
+}
+
+void unlock_prompt_handle_key(char ch) {
+    if (!g_unlock_active) return;
+
+    if (ch == '\b' || (uint8_t)ch == 0x7Fu) {
+        if (g_unlock_pw_len > 0) {
+            g_unlock_pw[--g_unlock_pw_len] = '\0';
+        }
+    } else if (ch == '\r' || ch == '\n') {
+        snprintf(g_unlock_status, sizeof(g_unlock_status), "Deriving key (Argon2id)...");
+        g_unlock_status_col = 0xFF89B4FAu;
+        render_unlock_prompt_contents();
+        composite_and_flush(g_unlock_win.x, g_unlock_win.y,
+                            g_unlock_win.client_w + 2u * IRIS_WIN_BORDER_PX,
+                            g_unlock_win.client_h + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX);
+
+        uint8_t msg[sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_unlock_req_t)] __attribute__((aligned(8)));
+        memset(msg, 0, sizeof(msg));
+        iris_msg_hdr_t* hdr = (iris_msg_hdr_t*)msg;
+        iris_crypt_unlock_req_t* req = (iris_crypt_unlock_req_t*)(msg + sizeof(iris_msg_hdr_t));
+        req->passphrase_len = (uint32_t)g_unlock_pw_len;
+        if (g_unlock_pw_len > 0) {
+            memcpy(req->passphrase, g_unlock_pw, g_unlock_pw_len);
+        }
+        memset(g_unlock_pw, 0, sizeof(g_unlock_pw));
+        g_unlock_pw_len = 0;
+
+        static uint32_t s_unlock_txid = 1;
+        iris_msg_hdr_init(hdr, IRIS_PROTO_CRYPT, IRIS_CRYPT_OP_UNLOCK, ++s_unlock_txid, sizeof(iris_crypt_unlock_req_t));
+        zx_status_t st = zx_channel_write(g_unlock_crypt_ch, 0, msg, sizeof(msg), NULL, 0);
+        memset(req, 0, sizeof(*req));
+
+        if (st == ZX_OK) {
+            zx_signals_t obs = 0;
+            st = zx_object_wait_one(g_unlock_crypt_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                                    ZX_TIME_INFINITE, &obs);
+            if (st == ZX_OK && (obs & ZX_CHANNEL_READABLE)) {
+                iris_msg_hdr_t rep;
+                uint32_t ab = 0, ah = 0;
+                if (zx_channel_read(g_unlock_crypt_ch, 0, &rep, NULL, sizeof(rep), 0, &ab, &ah) == ZX_OK &&
+                    ab >= sizeof(rep)) {
+                    st = rep.status;
+                } else {
+                    st = ZX_ERR_IO;
+                }
+            } else {
+                st = ZX_ERR_PEER_CLOSED;
+            }
+        }
+
+        if (st == ZX_OK) {
+            log_status(STATUS_OKAY, "iris_compositor", "Data partition unlocked via graphical prompt.");
+            close_unlock_prompt();
+            return;
+        }
+        snprintf(g_unlock_status, sizeof(g_unlock_status), "Invalid passphrase. Please try again.");
+        g_unlock_status_col = 0xFFF38BA8u;
+    } else if ((uint8_t)ch >= 32 && (uint8_t)ch <= 126) {
+        if (g_unlock_pw_len + 1 < sizeof(g_unlock_pw)) {
+            g_unlock_pw[g_unlock_pw_len++] = ch;
+            g_unlock_pw[g_unlock_pw_len] = '\0';
+        }
+    }
+
+    render_unlock_prompt_contents();
+    dirty_rect_union(g_unlock_win.x, g_unlock_win.y,
+                     g_unlock_win.client_w + 2u * IRIS_WIN_BORDER_PX,
+                     g_unlock_win.client_h + IRIS_WIN_TITLEBAR_H + 2u * IRIS_WIN_BORDER_PX);
 }
 
 /* ==============================================================================
@@ -1110,7 +1460,7 @@ zx_status_t init_desktop_wallpaper(void) {
  * Window Compositing Pipeline (With Damage Culling & Occlusion Fast-Path)
  * ============================================================================== */
 
-static comp_dirty_rect_t g_active_clip = { 0, 0, 0, 0 };
+comp_dirty_rect_t g_active_clip = { 0, 0, 0, 0 };
 
 static inline bool rects_intersect(int32_t ax, int32_t ay, int32_t aw, int32_t ah,
                                    int32_t bx, int32_t by, int32_t bw, int32_t bh) {
@@ -1163,8 +1513,9 @@ void composite_window(const comp_window_t* win, bool is_focused) {
                                      (int32_t)g_active_clip.w, (int32_t)g_active_clip.h);
 
     if (!client_only) {
-        uint32_t border_color   = is_focused ? 0xFFD4D8E0u : 0xFF9CA3AFu;
-        uint32_t titlebar_color = is_focused ? 0xFFF4F5F7u : 0xFFE5E7EBu;
+        uint32_t border_color   = is_focused ? 0xFFD0D5DDu : 0xFF9CA3AFu;
+        uint32_t tb_top_color   = is_focused ? 0xFFFFFFFFu : 0xF2F4F5F7u;
+        uint32_t tb_bot_color   = is_focused ? 0xBFFFFFFFu : 0xB3E5E7EBu;
         uint32_t title_fg_color = is_focused ? 0xFF141418u : 0xFF6B7280u;
 
         /* 1. Outer 1px border around entire window frame */
@@ -1175,7 +1526,7 @@ void composite_window(const comp_window_t* win, bool is_focused) {
         fill_rect_pixman(g_backbuf_surface, win->x + (int32_t)frame_w - IRIS_WIN_BORDER_PX, win->y,
                          IRIS_WIN_BORDER_PX, frame_h, border_color);
 
-        /* 2. 30px Windows-style Light Title Bar with Left Title & Right Caption Buttons */
+        /* 2. 30px Gradient Light Title Bar (Figma topbarlightbg: #FFFFFF 100% -> 75%) */
         int32_t tb_x = win->x + IRIS_WIN_BORDER_PX;
         int32_t tb_y = win->y + IRIS_WIN_BORDER_PX;
         bool tb_intersects = (g_active_clip.w == 0 || g_active_clip.h == 0) ||
@@ -1183,34 +1534,71 @@ void composite_window(const comp_window_t* win, bool is_focused) {
                                              g_active_clip.x, g_active_clip.y,
                                              (int32_t)g_active_clip.w, (int32_t)g_active_clip.h);
         if (tb_intersects) {
-            fill_rect_pixman(g_backbuf_surface, tb_x, tb_y, win->client_w, IRIS_WIN_TITLEBAR_H, titlebar_color);
+            fill_rect_vgradient_over(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                     tb_x, tb_y, win->client_w, IRIS_WIN_TITLEBAR_H,
+                                     tb_top_color, tb_bot_color);
+            fill_rect_vgradient_over(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                     tb_x, tb_y + IRIS_WIN_TITLEBAR_H - 1, win->client_w, 1u,
+                                     0x22141418u, 0x22141418u);
 
-            /* Left-aligned window title string */
-            draw_text_ft(g_backbuf_pixels, g_fb_width, g_fb_height,
-                         tb_x + 10, tb_y + 8, 13, win->title, title_fg_color);
+            /* Left-aligned window title string in Inter Display */
+            draw_text_ft_ex(g_backbuf_pixels, g_fb_width, g_fb_height,
+                            tb_x + 12, tb_y + 8, 13,
+                            FONT_FAMILY_INTER_DISPLAY,
+                            is_focused ? FONT_WEIGHT_MEDIUM : FONT_WEIGHT_REGULAR,
+                            false, win->title, title_fg_color);
 
-            /* Right-aligned Windows-like dark square caption buttons (Minimize, Maximize, Close) */
-            if (win->client_w >= 84u) {
-                int32_t btn_y     = tb_y + 6;
-                int32_t btn_min_x = tb_x + (int32_t)win->client_w - 64;
-                int32_t btn_max_x = tb_x + (int32_t)win->client_w - 42;
-                int32_t btn_cls_x = tb_x + (int32_t)win->client_w - 20;
+            /* Right-aligned modern Material caption buttons (26x22 hit targets) */
+            if (win->client_w >= 110u) {
+                int32_t btn_y     = tb_y + 4;
+                int32_t btn_min_x = tb_x + (int32_t)win->client_w - 88;
+                int32_t btn_max_x = tb_x + (int32_t)win->client_w - 58;
+                int32_t btn_cls_x = tb_x + (int32_t)win->client_w - 28;
 
-                /* Minimize button ([_]) */
-                fill_rect_pixman(g_backbuf_surface, btn_min_x, btn_y, 16, 18, 0xFF141418u);
-                fill_rect_pixman(g_backbuf_surface, btn_min_x + 3, btn_y + 12, 10, 2, 0xFFFFFFFFu);
+                bool can_hover = is_focused && !taskbar_has_active_flyout();
+                bool hover_min = can_hover && (g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 26 &&
+                                               g_cursor_y >= btn_y && g_cursor_y < btn_y + 22);
+                bool hover_max = can_hover && (g_cursor_x >= btn_max_x && g_cursor_x < btn_max_x + 26 &&
+                                               g_cursor_y >= btn_y && g_cursor_y < btn_y + 22);
+                bool hover_cls = can_hover && (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 26 &&
+                                               g_cursor_y >= btn_y && g_cursor_y < btn_y + 22);
 
-                /* Maximize button ([[]]) */
-                fill_rect_pixman(g_backbuf_surface, btn_max_x, btn_y, 16, 18, 0xFF141418u);
-                fill_rect_pixman(g_backbuf_surface, btn_max_x + 3, btn_y + 4,  10, 3, 0xFFFFFFFFu);
-                fill_rect_pixman(g_backbuf_surface, btn_max_x + 3, btn_y + 12, 10, 2, 0xFFFFFFFFu);
-                fill_rect_pixman(g_backbuf_surface, btn_max_x + 3, btn_y + 4,  2, 10, 0xFFFFFFFFu);
-                fill_rect_pixman(g_backbuf_surface, btn_max_x + 11, btn_y + 4, 2, 10, 0xFFFFFFFFu);
+                uint32_t glyph_fg = is_focused ? 0xFF374151u : 0xFF6B7280u;
 
-                /* Close button ([X]) */
-                fill_rect_pixman(g_backbuf_surface, btn_cls_x, btn_y, 16, 18, 0xFF141418u);
-                draw_line_thick(g_backbuf_surface, btn_cls_x + 4, btn_y + 5,  btn_cls_x + 11, btn_y + 12, 0xFFFFFFFFu);
-                draw_line_thick(g_backbuf_surface, btn_cls_x + 11, btn_y + 5, btn_cls_x + 4,  btn_y + 12, 0xFFFFFFFFu);
+                /* Minimize button */
+                fill_rounded_rect_over(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                       btn_min_x, btn_y, 26, 22, 6,
+                                       hover_min ? 0x22141418u : 0x0A141418u);
+                if (!draw_material_icon(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                        btn_min_x + 5, btn_y + 3, 15, MAT_ICON_REMOVE, glyph_fg)) {
+                    fill_rect_pixman(g_backbuf_surface, btn_min_x + 7, btn_y + 13, 12, 2, glyph_fg);
+                }
+
+                /* Maximize / Restore button */
+                fill_rounded_rect_over(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                       btn_max_x, btn_y, 26, 22, 6,
+                                       hover_max ? 0x22141418u : 0x0A141418u);
+                uint32_t max_icon = win->is_maximized ? MAT_ICON_FILTER_NONE : MAT_ICON_CROP_SQUARE;
+                if (!draw_material_icon(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                        btn_max_x + 6, btn_y + 4, 14, max_icon, glyph_fg)) {
+                    fill_rect_pixman(g_backbuf_surface, btn_max_x + 8, btn_y + 5, 10, 2, glyph_fg);
+                    fill_rect_pixman(g_backbuf_surface, btn_max_x + 8, btn_y + 15, 10, 2, glyph_fg);
+                    fill_rect_pixman(g_backbuf_surface, btn_max_x + 8, btn_y + 5, 2, 12, glyph_fg);
+                    fill_rect_pixman(g_backbuf_surface, btn_max_x + 16, btn_y + 5, 2, 12, glyph_fg);
+                }
+
+                /* Close button */
+                fill_rounded_rect_over(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                       btn_cls_x, btn_y, 26, 22, 6,
+                                       hover_cls ? 0xFFEF4444u : 0x0A141418u);
+                uint32_t cls_fg = hover_cls ? 0xFFFFFFFFu : glyph_fg;
+                if (!draw_material_icon(g_backbuf_pixels, g_fb_width, g_fb_height,
+                                        btn_cls_x + 5, btn_y + 3, 15, MAT_ICON_CLOSE, cls_fg)) {
+                    draw_line_thick(g_backbuf_surface, btn_cls_x + 8, btn_y + 6,
+                                    btn_cls_x + 17, btn_y + 15, cls_fg);
+                    draw_line_thick(g_backbuf_surface, btn_cls_x + 17, btn_y + 6,
+                                    btn_cls_x + 8, btn_y + 15, cls_fg);
+                }
             }
         }
     }
@@ -1435,9 +1823,9 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
 
     if (g_num_windows == 0 && g_welcome_surface != NULL &&
         !g_welcome_win.is_minimized && !(g_welcome_win.flags & IRIS_WIN_FLAG_TRANSLUCENT)) {
-        uint32_t fw = g_welcome_win.client_w + (2u * IRIS_WIN_BORDER_PX);
-        uint32_t fh = g_welcome_win.client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
-        if (rect_contains(g_welcome_win.x, g_welcome_win.y, (int32_t)fw, (int32_t)fh,
+        if (rect_contains(g_welcome_win.x + IRIS_WIN_BORDER_PX,
+                          g_welcome_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H,
+                          (int32_t)g_welcome_win.client_w, (int32_t)g_welcome_win.client_h,
                           dmg_x, dmg_y, (int32_t)dmg_w, (int32_t)dmg_h)) {
             skip_wallpaper = true;
         }
@@ -1447,9 +1835,9 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
             if (w->is_minimized || (w->flags & IRIS_WIN_FLAG_TRANSLUCENT)) {
                 continue;
             }
-            uint32_t fw = w->client_w + (2u * IRIS_WIN_BORDER_PX);
-            uint32_t fh = w->client_h + IRIS_WIN_TITLEBAR_H + (2u * IRIS_WIN_BORDER_PX);
-            if (rect_contains(w->x, w->y, (int32_t)fw, (int32_t)fh,
+            if (rect_contains(w->x + IRIS_WIN_BORDER_PX,
+                              w->y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H,
+                              (int32_t)w->client_w, (int32_t)w->client_h,
                               dmg_x, dmg_y, (int32_t)dmg_w, (int32_t)dmg_h)) {
                 start_win_idx  = i - 1;
                 skip_wallpaper = true;
@@ -1486,14 +1874,17 @@ void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t 
         taskbar_render(g_backbuf_pixels, g_backbuf_surface);
     }
 
-    /* 2c. Render active taskbar flyout overlay (Start Menu, Calendar, Volume) */
-    if (taskbar_has_active_flyout()) {
+    /* 2c. Render active taskbar flyout, drag ghost, or sleep overlay */
+    if (taskbar_has_active_overlay()) {
         taskbar_render_flyout(g_backbuf_pixels, g_backbuf_surface);
     }
 
-    /* 3. Composite modal crash dialog on top if active */
+    /* 3. Composite modal crash dialog or unlock prompt on top if active */
     if (g_crash_dialog_active && g_crash_surface != NULL) {
         composite_window(&g_crash_win, true);
+    }
+    if (g_unlock_active && g_unlock_surface != NULL) {
+        composite_window(&g_unlock_win, true);
     }
 
     g_active_clip.w = 0;

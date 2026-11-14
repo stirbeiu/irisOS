@@ -22,6 +22,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_MULTIPLE_MASTERS_H
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -57,8 +58,11 @@
 #define TERM_FG_BRIGHT        0xFFFFFFFFu
 #define TERM_CURSOR_COLOR     0xFFE5E9F0u
 
+#define JETBRAINS_VAR_PATH     "/System/Resources/Fonts/JetBrainsMono-Variable.ttf"
+#define JETBRAINS_IT_VAR_PATH  "/System/Resources/Fonts/JetBrainsMono-Italic-Variable.ttf"
 #define JETBRAINS_REGULAR_PATH "/System/Resources/Fonts/JetBrainsMono-Regular.ttf"
 #define JETBRAINS_BOLD_PATH    "/System/Resources/Fonts/JetBrainsMono-Bold.ttf"
+#define INTER_VAR_PATH         "/System/Resources/Fonts/Inter-Variable.ttf"
 #define INTER_REGULAR_PATH     "/System/Resources/Fonts/InterDisplay-Regular.otf"
 #define INTER_BOLD_PATH        "/System/Resources/Fonts/InterDisplay-Bold.otf"
 
@@ -237,7 +241,29 @@ typedef struct term_glyph {
 
 static FT_Library   g_ft_lib  = NULL;
 static FT_Face      g_ft_face = NULL;
-static term_glyph_t g_glyph_cache[95];
+static term_glyph_t g_glyph_cache[2][95]; /* [0=Regular 400, 1=Bold 700] */
+
+static void apply_term_var_weight(uint16_t weight) {
+    if (!g_ft_face || !g_ft_lib) return;
+    FT_MM_Var* mm_var = NULL;
+    if (FT_Get_MM_Var(g_ft_face, &mm_var) != 0 || !mm_var) return;
+
+    FT_Fixed coords[4];
+    FT_UInt count = mm_var->num_axis;
+    if (count > 4u) count = 4u;
+    for (FT_UInt i = 0; i < count; ++i) {
+        FT_Fixed val = mm_var->axis[i].def;
+        if (mm_var->axis[i].tag == FT_MAKE_TAG('w', 'g', 'h', 't')) {
+            FT_Fixed req = (FT_Fixed)((FT_Long)weight << 16);
+            if (req < mm_var->axis[i].minimum) req = mm_var->axis[i].minimum;
+            if (req > mm_var->axis[i].maximum) req = mm_var->axis[i].maximum;
+            val = req;
+        }
+        coords[i] = val;
+    }
+    FT_Set_Var_Design_Coordinates(g_ft_face, count, coords);
+    FT_Done_MM_Var(g_ft_lib, mm_var);
+}
 
 static void init_terminal_font(void) {
     memset(g_glyph_cache, 0, sizeof(g_glyph_cache));
@@ -245,12 +271,14 @@ static void init_terminal_font(void) {
         g_ft_lib = NULL;
         return;
     }
-    if (FT_New_Face(g_ft_lib, JETBRAINS_REGULAR_PATH, 0, &g_ft_face) != 0) {
-        if (FT_New_Face(g_ft_lib, JETBRAINS_BOLD_PATH, 0, &g_ft_face) != 0) {
-            if (FT_New_Face(g_ft_lib, INTER_REGULAR_PATH, 0, &g_ft_face) != 0) {
-                if (FT_New_Face(g_ft_lib, INTER_BOLD_PATH, 0, &g_ft_face) != 0) {
-                    g_ft_face = NULL;
-                    return;
+    if (FT_New_Face(g_ft_lib, JETBRAINS_VAR_PATH, 0, &g_ft_face) != 0) {
+        if (FT_New_Face(g_ft_lib, JETBRAINS_REGULAR_PATH, 0, &g_ft_face) != 0) {
+            if (FT_New_Face(g_ft_lib, JETBRAINS_BOLD_PATH, 0, &g_ft_face) != 0) {
+                if (FT_New_Face(g_ft_lib, INTER_VAR_PATH, 0, &g_ft_face) != 0) {
+                    if (FT_New_Face(g_ft_lib, INTER_REGULAR_PATH, 0, &g_ft_face) != 0) {
+                        g_ft_face = NULL;
+                        return;
+                    }
                 }
             }
         }
@@ -258,15 +286,18 @@ static void init_terminal_font(void) {
     FT_Set_Pixel_Sizes(g_ft_face, 0, TERM_FONT_PX);
 }
 
-static const term_glyph_t* get_term_glyph(uint8_t ch) {
+static const term_glyph_t* get_term_glyph(uint8_t ch, bool bold) {
     if (!g_ft_face || ch < 32u || ch > 126u) {
         return NULL;
     }
-    term_glyph_t* g = &g_glyph_cache[ch - 32u];
+    int style_idx = bold ? 1 : 0;
+    term_glyph_t* g = &g_glyph_cache[style_idx][ch - 32u];
     if (g->valid) {
         return g->failed ? NULL : g;
     }
     g->valid = true;
+    apply_term_var_weight(bold ? 700u : 400u);
+    FT_Set_Pixel_Sizes(g_ft_face, 0, TERM_FONT_PX);
     if (FT_Load_Char(g_ft_face, (FT_ULong)ch, FT_LOAD_RENDER) != 0) {
         g->failed = true;
         return NULL;
@@ -656,13 +687,13 @@ static void draw_codename_banner_raw(uint32_t* pixels, uint32_t buf_w, uint32_t 
 }
 
 static void draw_glyph_cell(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
-                            int32_t cell_x, int32_t cell_y, char ch, uint32_t argb_color) {
+                            int32_t cell_x, int32_t cell_y, char ch, bool bold, uint32_t argb_color) {
     uint8_t uch = (uint8_t)ch;
     if (uch <= 32u || uch > 126u) {
         return;
     }
 
-    const term_glyph_t* g = get_term_glyph(uch);
+    const term_glyph_t* g = get_term_glyph(uch, bold);
     if (!g) {
         /* 8x8 bitmap fallback */
         const uint8_t* bits = k_font8x8[uch - 32u];
@@ -777,9 +808,9 @@ static int32_t draw_proportional_run(uint32_t* pixels, uint32_t buf_w, uint32_t 
 
     for (size_t i = 0; str[i] != '\0'; ++i) {
         uint8_t uch = (uint8_t)str[i];
-        const term_glyph_t* g = get_term_glyph(uch);
+        const term_glyph_t* g = get_term_glyph(uch, false);
         if (!g) {
-            draw_glyph_cell(pixels, buf_w, buf_h, pen_x, cell_y, (char)uch, argb_color);
+            draw_glyph_cell(pixels, buf_w, buf_h, pen_x, cell_y, (char)uch, false, argb_color);
             pen_x += TERM_CELL_W;
             continue;
         }
@@ -892,7 +923,7 @@ static bool render_terminal_surface(iris_window_t* win, bool force_full) {
             }
             if (cell->ch > ' ') {
                 draw_glyph_cell(win->pixels, win->width, win->height,
-                                cell_x, row_y, cell->ch, cell->fg);
+                                cell_x, row_y, cell->ch, cell->bold != 0, cell->fg);
             }
         }
 

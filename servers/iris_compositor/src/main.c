@@ -673,11 +673,21 @@ int main(int argc, char* argv[]) {
 
     /* Check command line arguments and /tmp/compositor_crash.log for crash recovery dialog */
     bool show_crash = false;
+    bool unlock_prompt = false;
     for (int i = 1; i < argc; ++i) {
         if (argv[i] && strcmp(argv[i], "--show-crash-dialog") == 0) {
             show_crash = true;
-            break;
+        } else if (argv[i] && strcmp(argv[i], "--unlock-prompt") == 0) {
+            unlock_prompt = true;
         }
+    }
+
+    zx_handle_t crypt_ch = zx_take_startup_handle(PA_HND(PA_USER2, 0));
+    if (unlock_prompt && crypt_ch != ZX_HANDLE_INVALID) {
+        init_unlock_prompt(crypt_ch);
+        log_status(STATUS_OKAY, "iris_compositor", "Displayed graphical disk passphrase unlock prompt.");
+    } else if (crypt_ch != ZX_HANDLE_INVALID) {
+        zx_handle_close(crypt_ch);
     }
 
     char crash_log_buf[512];
@@ -717,6 +727,9 @@ int main(int argc, char* argv[]) {
     g_shutdown = true;
     if (g_crash_dialog_active) {
         close_crash_dialog();
+    }
+    if (g_unlock_active) {
+        close_unlock_prompt();
     }
     for (size_t d = 0; d < g_num_input_devs; ++d) {
         virtio_input_teardown(&g_input_devs[d]);

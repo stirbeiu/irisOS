@@ -41,6 +41,7 @@ extern "C" void iris_set_fshost_channel(zx_handle_t handle);
 extern "C" void iris_set_pty_channel(zx_handle_t handle);
 extern "C" zx_handle_t iris_get_pty_channel(void);
 extern "C" void iris_set_compositor_channel(zx_handle_t handle);
+extern "C" void iris_set_system_channel(zx_handle_t handle);
 extern "C" zx_handle_t iris_get_compositor_channel(void);
 extern "C" void iris_set_cwd(const char* path);
 extern "C" void iris_set_process_handles(zx_handle_t proc, zx_handle_t thrd, zx_handle_t vmar, zx_handle_t job);
@@ -280,6 +281,8 @@ extern "C" [[noreturn]] void __iris_start(void* start_arg, void* vdso_base, int 
                         if (has_ns_dir) {
                             iris_set_compositor_channel(h);
                         }
+                    } else if (info == PA_HND(PA_USER2, 1)) {
+                        iris_set_system_channel(h);
                     }
                 }
 

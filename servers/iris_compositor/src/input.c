@@ -107,6 +107,15 @@ void init_input_subsystems(void) {
  * ============================================================================== */
 
 void route_key_to_focused_window(char ch) {
+    if (taskbar_wake_from_sleep()) {
+        return;
+    }
+
+    if (g_unlock_active) {
+        unlock_prompt_handle_key(ch);
+        return;
+    }
+
     if (g_crash_dialog_active) {
         if (ch == '\r' || ch == '\n' || ch == ' ' || (uint8_t)ch == 27) {
             close_crash_dialog();
@@ -150,6 +159,7 @@ void handle_mouse_button(bool pressed) {
         g_drag_window_id = 0;
         g_drag_welcome   = false;
         g_drag_crash     = false;
+        taskbar_handle_mouse_up(g_cursor_x, g_cursor_y);
         return;
     }
 
@@ -157,13 +167,13 @@ void handle_mouse_button(bool pressed) {
         uint32_t fw = g_crash_win.client_w + (2u * IRIS_WIN_BORDER_PX);
         int32_t  tb_bottom = g_crash_win.y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H;
 
-        /* Check right-aligned close button [X] on title bar (tb_x + cw - 20, tb_y + 6, size 16x18) */
+        /* Check right-aligned close button on title bar (tb_x + cw - 28, tb_y + 4, size 26x22) */
         int32_t tb_x = g_crash_win.x + IRIS_WIN_BORDER_PX;
         int32_t tb_y = g_crash_win.y + IRIS_WIN_BORDER_PX;
-        int32_t btn_cls_x = tb_x + (int32_t)g_crash_win.client_w - 20;
-        int32_t btn_y     = tb_y + 6;
-        if (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 16 &&
-            g_cursor_y >= btn_y && g_cursor_y < btn_y + 18) {
+        int32_t btn_cls_x = tb_x + (int32_t)g_crash_win.client_w - 28;
+        int32_t btn_y     = tb_y + 4;
+        if (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 26 &&
+            g_cursor_y >= btn_y && g_cursor_y < btn_y + 22) {
             close_crash_dialog();
             return;
         }
@@ -189,8 +199,8 @@ void handle_mouse_button(bool pressed) {
         return;
     }
 
-    /* Check taskbar and flyout clicks */
-    if (taskbar_handle_click(g_cursor_x, g_cursor_y)) {
+    /* Check taskbar, dock drag/click, tray, and active flyout */
+    if (taskbar_handle_mouse_down(g_cursor_x, g_cursor_y)) {
         return;
     }
 
@@ -201,13 +211,29 @@ void handle_mouse_button(bool pressed) {
         int32_t  tb_bottom = tb_y + IRIS_WIN_TITLEBAR_H;
         if (g_cursor_x >= g_welcome_win.x && g_cursor_x < g_welcome_win.x + (int32_t)fw &&
             g_cursor_y >= g_welcome_win.y && g_cursor_y < tb_bottom) {
-            int32_t btn_min_x = tb_x + (int32_t)g_welcome_win.client_w - 64;
-            int32_t btn_cls_x = tb_x + (int32_t)g_welcome_win.client_w - 20;
-            int32_t btn_y     = tb_y + 6;
-            if (g_cursor_y >= btn_y && g_cursor_y < btn_y + 18) {
-                if ((g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 16) ||
-                    (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 16)) {
+            int32_t btn_min_x = tb_x + (int32_t)g_welcome_win.client_w - 88;
+            int32_t btn_max_x = tb_x + (int32_t)g_welcome_win.client_w - 58;
+            int32_t btn_cls_x = tb_x + (int32_t)g_welcome_win.client_w - 28;
+            int32_t btn_y     = tb_y + 4;
+            if (g_cursor_y >= btn_y && g_cursor_y < btn_y + 22) {
+                if ((g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 26) ||
+                    (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 26)) {
                     g_welcome_win.is_minimized = true;
+                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    return;
+                }
+                if (g_cursor_x >= btn_max_x && g_cursor_x < btn_max_x + 26) {
+                    if (!g_welcome_win.is_maximized) {
+                        g_welcome_win.saved_x = g_welcome_win.x;
+                        g_welcome_win.saved_y = g_welcome_win.y;
+                        g_welcome_win.is_maximized = true;
+                        g_welcome_win.x = ((int32_t)g_fb_width - (int32_t)fw) / 2;
+                        g_welcome_win.y = 0;
+                    } else {
+                        g_welcome_win.is_maximized = false;
+                        g_welcome_win.x = g_welcome_win.saved_x;
+                        g_welcome_win.y = g_welcome_win.saved_y;
+                    }
                     dirty_rect_union(0, 0, g_fb_width, g_fb_height);
                     return;
                 }
@@ -244,16 +270,32 @@ void handle_mouse_button(bool pressed) {
             int32_t tb_x = w->x + IRIS_WIN_BORDER_PX;
             int32_t tb_y = w->y + IRIS_WIN_BORDER_PX;
             if (g_cursor_y < tb_y + IRIS_WIN_TITLEBAR_H) {
-                int32_t btn_min_x = tb_x + (int32_t)w->client_w - 64;
-                int32_t btn_cls_x = tb_x + (int32_t)w->client_w - 20;
-                int32_t btn_y     = tb_y + 6;
-                if (g_cursor_y >= btn_y && g_cursor_y < btn_y + 18) {
-                    if (g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 16) {
+                int32_t btn_min_x = tb_x + (int32_t)w->client_w - 88;
+                int32_t btn_max_x = tb_x + (int32_t)w->client_w - 58;
+                int32_t btn_cls_x = tb_x + (int32_t)w->client_w - 28;
+                int32_t btn_y     = tb_y + 4;
+                if (w->client_w >= 110u && g_cursor_y >= btn_y && g_cursor_y < btn_y + 22) {
+                    if (g_cursor_x >= btn_min_x && g_cursor_x < btn_min_x + 26) {
                         w->is_minimized = true;
                         dirty_rect_union(0, 0, g_fb_width, g_fb_height);
                         break;
                     }
-                    if (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 16) {
+                    if (g_cursor_x >= btn_max_x && g_cursor_x < btn_max_x + 26) {
+                        if (!w->is_maximized) {
+                            w->saved_x = w->x;
+                            w->saved_y = w->y;
+                            w->is_maximized = true;
+                            w->x = ((int32_t)g_fb_width - (int32_t)fw) / 2;
+                            w->y = 0;
+                        } else {
+                            w->is_maximized = false;
+                            w->x = w->saved_x;
+                            w->y = w->saved_y;
+                        }
+                        dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                        break;
+                    }
+                    if (g_cursor_x >= btn_cls_x && g_cursor_x < btn_cls_x + 26) {
                         /* Push Ctrl+D / EOF to terminal or minimize window */
                         window_push_key(w, 0x04);
                         w->is_minimized = true;
@@ -397,7 +439,9 @@ void poll_input_devices(void) {
         g_cursor_dirty = true;
 
         int32_t max_win_y = (int32_t)g_fb_height - IRIS_TASKBAR_H - IRIS_WIN_TITLEBAR_H;
-        if (g_btn_left_down && g_drag_crash && g_crash_dialog_active && g_crash_surface != NULL) {
+        if (g_btn_left_down && taskbar_handle_mouse_move(g_cursor_x, g_cursor_y)) {
+            /* Taskbar dock/Start-Menu drag-and-drop ghost moved */
+        } else if (g_btn_left_down && g_drag_crash && g_crash_dialog_active && g_crash_surface != NULL) {
             dirty_rect_union_window(&g_crash_win);
             g_crash_win.x = g_cursor_x - g_drag_off_x;
             g_crash_win.y = g_cursor_y - g_drag_off_y;
@@ -421,6 +465,34 @@ void poll_input_devices(void) {
                 if (win->y > max_win_y) win->y = max_win_y;
                 dirty_rect_union_window(win);
             }
+        } else {
+            /* Update titlebar caption button hover highlights and taskbar hover highlights */
+            static bool s_was_in_tb_or_btn = false;
+            int32_t tb_top = (int32_t)g_fb_height - IRIS_TASKBAR_H;
+            bool in_taskbar = (g_cursor_y >= tb_top);
+            if (in_taskbar || s_was_in_tb_or_btn) {
+                dirty_rect_union(0, tb_top, g_fb_width, IRIS_TASKBAR_H);
+            }
+
+            const comp_window_t* top_w = NULL;
+            if (g_num_windows > 0 && !g_windows[g_num_windows - 1].is_minimized) {
+                top_w = &g_windows[g_num_windows - 1];
+            } else if (g_num_windows == 0 && g_welcome_surface != NULL && !g_welcome_win.is_minimized) {
+                top_w = &g_welcome_win;
+            }
+            bool in_caption_btns = false;
+            if (top_w && top_w->client_w >= 110u) {
+                int32_t bx = top_w->x + IRIS_WIN_BORDER_PX + (int32_t)top_w->client_w - 92;
+                int32_t by = top_w->y + IRIS_WIN_BORDER_PX;
+                if (g_cursor_x >= bx && g_cursor_x <= bx + 94 &&
+                    g_cursor_y >= by && g_cursor_y <= by + IRIS_WIN_TITLEBAR_H) {
+                    in_caption_btns = true;
+                }
+                if (in_caption_btns || s_was_in_tb_or_btn) {
+                    dirty_rect_union(bx - 2, by, 96u, IRIS_WIN_TITLEBAR_H);
+                }
+            }
+            s_was_in_tb_or_btn = (in_taskbar || in_caption_btns);
         }
     }
 }

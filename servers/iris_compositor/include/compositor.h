@@ -57,22 +57,90 @@
 #define IRIS_TASKBAR_H          46
 
 /* Font, Wallpaper & Icon Asset Paths */
-#define INTER_REGULAR_PATH      "/System/Resources/Fonts/InterDisplay-Regular.otf"
-#define INTER_BOLD_PATH         "/System/Resources/Fonts/InterDisplay-Bold.otf"
-#define INTER_ITALIC_PATH       "/System/Resources/Fonts/InterDisplay-Italic.otf"
-#define INTER_LEGACY_PATH       "/System/Resources/Fonts/Inter.otf"
-#define WALLPAPER_QOI_PATH      "/System/Resources/wallpaper.qoi"
-#define EYE_LIGHT_SVG_PATH      "/System/Resources/eye_light.svg"
+#define INTER_VAR_PATH            "/System/Resources/Fonts/Inter-Variable.ttf"
+#define INTER_IT_VAR_PATH         "/System/Resources/Fonts/Inter-Italic-Variable.ttf"
+#define INTER_TIGHT_VAR_PATH      "/System/Resources/Fonts/InterTight-Variable.ttf"
+#define INTER_TIGHT_IT_VAR_PATH   "/System/Resources/Fonts/InterTight-Italic-Variable.ttf"
+#define JETBRAINS_VAR_PATH        "/System/Resources/Fonts/JetBrainsMono-Variable.ttf"
+#define JETBRAINS_IT_VAR_PATH     "/System/Resources/Fonts/JetBrainsMono-Italic-Variable.ttf"
+#define MATERIAL_ICONS_PATH       "/System/Resources/Fonts/MaterialIcons-Regular.ttf"
+
+#define INTER_REGULAR_PATH        "/System/Resources/Fonts/InterDisplay-Regular.otf"
+#define INTER_BOLD_PATH           "/System/Resources/Fonts/InterDisplay-Bold.otf"
+#define INTER_ITALIC_PATH         "/System/Resources/Fonts/InterDisplay-Italic.otf"
+#define INTER_LEGACY_PATH         "/System/Resources/Fonts/Inter.otf"
+#define WALLPAPER_QOI_PATH        "/System/Resources/wallpaper.qoi"
+#define EYE_LIGHT_SVG_PATH        "/System/Resources/eye_light.svg"
+
+/**
+ * @brief Font family selector for variable FreeType typography.
+ */
+typedef enum {
+    FONT_FAMILY_INTER_DISPLAY = 0,
+    FONT_FAMILY_INTER         = 1,
+    FONT_FAMILY_INTER_TIGHT   = 2,
+    FONT_FAMILY_JETBRAINS     = 3,
+    FONT_FAMILY_COUNT         = 4
+} font_family_t;
+
+/**
+ * @brief Variable font weight stops (100 Thin .. 900 Black).
+ */
+typedef enum {
+    FONT_WEIGHT_THIN       = 100,
+    FONT_WEIGHT_EXTRALIGHT = 200,
+    FONT_WEIGHT_LIGHT      = 300,
+    FONT_WEIGHT_REGULAR    = 400,
+    FONT_WEIGHT_MEDIUM     = 500,
+    FONT_WEIGHT_SEMIBOLD   = 600,
+    FONT_WEIGHT_BOLD       = 700,
+    FONT_WEIGHT_EXTRABOLD  = 800,
+    FONT_WEIGHT_BLACK      = 900
+} font_weight_t;
 
 /**
  * @brief Font style selector for FreeType typography.
  */
 typedef enum {
-    FONT_STYLE_REGULAR = 0,
-    FONT_STYLE_BOLD    = 1,
-    FONT_STYLE_ITALIC  = 2,
-    FONT_STYLE_COUNT   = 3
+    FONT_STYLE_REGULAR    = 0,
+    FONT_STYLE_BOLD       = 1,
+    FONT_STYLE_ITALIC     = 2,
+    FONT_STYLE_THIN       = 3,
+    FONT_STYLE_LIGHT      = 4,
+    FONT_STYLE_MEDIUM     = 5,
+    FONT_STYLE_SEMIBOLD   = 6,
+    FONT_STYLE_EXTRABOLD  = 7,
+    FONT_STYLE_BLACK      = 8,
+    FONT_STYLE_COUNT      = 9
 } font_style_t;
+
+/* Material Icons (Google MaterialIcons-Regular.ttf) Codepoints */
+#define MAT_ICON_VOLUME_UP        0xE050u
+#define MAT_ICON_VOLUME_OFF       0xE04Fu
+#define MAT_ICON_BLUETOOTH        0xE1A7u
+#define MAT_ICON_DESKTOP_WINDOWS  0xE30Cu
+#define MAT_ICON_WIFI             0xE63Eu
+#define MAT_ICON_BATTERY_CHARGING 0xE1A3u
+#define MAT_ICON_BATTERY_FULL     0xE1A4u
+#define MAT_ICON_NOTIFICATIONS    0xE7F4u
+#define MAT_ICON_EXPAND_LESS      0xE5CEu
+#define MAT_ICON_CLOSE            0xE5CDu
+#define MAT_ICON_CROP_SQUARE      0xE3C6u
+#define MAT_ICON_FILTER_NONE      0xE3E0u
+#define MAT_ICON_REMOVE           0xE15Bu
+#define MAT_ICON_POWER            0xE8ACu
+#define MAT_ICON_RESTART          0xE5D5u
+#define MAT_ICON_BEDTIME          0xE51Cu
+#define MAT_ICON_LOGOUT           0xE9BAu
+#define MAT_ICON_SWITCH_ACCOUNT   0xE7FBu
+#define MAT_ICON_TERMINAL         0xEB8Eu
+#define MAT_ICON_FOLDER           0xE2C7u
+#define MAT_ICON_INFO             0xE88Eu
+#define MAT_ICON_MIC              0xE029u
+#define MAT_ICON_VIDEOCAM         0xE04Bu
+#define MAT_ICON_LOCATION_ON      0xE0C8u
+#define MAT_ICON_PERSON           0xE7FDu
+#define MAT_ICON_DELETE_SWEEP     0xE16Cu
 
 /**
  * @brief Compositor window entry in Z-order (index 0 = bottom, g_num_windows - 1 = top/focused).
@@ -177,7 +245,9 @@ extern uint32_t          g_next_window_id;
 
 /* Dirty Damage Tracking */
 extern comp_dirty_rect_t g_dirty_rect;
+extern comp_dirty_rect_t g_active_clip;
 extern bool              g_dirty_active;
+extern bool              g_unlock_active;
 
 /* ==============================================================================
  * Subsystem Function Declarations
@@ -194,11 +264,28 @@ void draw_text_ft(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
 void draw_text_ft_styled(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                          int32_t x, int32_t y, uint32_t pixel_size,
                          font_style_t style, const char* str, uint32_t argb_color);
+void draw_text_ft_ex(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
+                     int32_t x, int32_t y, uint32_t pixel_size,
+                     font_family_t family, uint16_t weight, bool italic,
+                     const char* str, uint32_t argb_color);
+int32_t measure_text_ft_ex(font_family_t family, uint16_t weight, bool italic,
+                           uint32_t pixel_size, const char* str);
+bool draw_material_icon(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
+                        int32_t x, int32_t y, uint32_t pixel_size,
+                        uint32_t codepoint, uint32_t argb_color);
 
 /* render.c */
 pixman_color_t argb_to_pixman_color(uint32_t argb);
 void fill_rect_pixman(pixman_image_t* dst, int32_t x, int32_t y,
                       uint32_t w, uint32_t h, uint32_t argb);
+void fill_rect_vgradient_over(uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                              int32_t x, int32_t y, uint32_t w, uint32_t h,
+                              uint32_t top_argb, uint32_t bot_argb);
+void fill_rounded_rect_over(uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                            int32_t x, int32_t y, uint32_t w, uint32_t h,
+                            uint32_t radius, uint32_t argb);
+void fill_circle_over(uint32_t* dst_pixels, uint32_t buf_w, uint32_t buf_h,
+                      int32_t cx, int32_t cy, int32_t radius, uint32_t argb);
 void blit_surface_clamped(pixman_image_t* src, int32_t src_w, int32_t src_h,
                          pixman_image_t* dst, int32_t dst_w, int32_t dst_h,
                          int32_t dst_x, int32_t dst_y, pixman_op_t op);
@@ -213,6 +300,9 @@ void redraw_welcome_input_strip(void);
 void init_crash_dialog(const char* details);
 void render_crash_dialog_contents(void);
 void close_crash_dialog(void);
+void init_unlock_prompt(zx_handle_t crypt_ch);
+void unlock_prompt_handle_key(char ch);
+void close_unlock_prompt(void);
 void composite_window(const comp_window_t* win, bool is_focused);
 void update_screen(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h);
 void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h);
