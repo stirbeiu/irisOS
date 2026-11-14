@@ -208,16 +208,6 @@ static int iris_strcmp(const char* s1, const char* s2) {
     return *(const unsigned char*)s1 - *(const unsigned char*)s2;
 }
 
-static const char* iris_strstr(const char* haystack, const char* needle) {
-    if (!needle || !*needle) return haystack;
-    for (; *haystack; haystack++) {
-        const char *h = haystack, *n = needle;
-        while (*h && *n && *h == *n) { h++; n++; }
-        if (!*n) return haystack;
-    }
-    return NULL;
-}
-
 static void buf_putc(char* buf, size_t size, size_t* idx, char c) {
     if (size > 0 && *idx + 1 < size) buf[*idx] = c;
     (*idx)++;
@@ -984,25 +974,50 @@ static void init_hardware_rtc(void) {
 #endif
 }
 
-static bool query_crypt_unlocked(zx_handle_t crypt_ch) {
-    if (crypt_ch == ZX_HANDLE_INVALID) return false;
+static void send_compositor_boot_stage(zx_handle_t comp_ch, uint32_t stage, zx_handle_t fs_ch_for_comp) {
+    if (comp_ch == ZX_HANDLE_INVALID) {
+        if (fs_ch_for_comp != ZX_HANDLE_INVALID) g_zx_handle_close(fs_ch_for_comp);
+        return;
+    }
+    static uint32_t txid = 800;
+    uint8_t buf[sizeof(iris_msg_hdr_t) + sizeof(iris_compositor_boot_stage_req_t)] __attribute__((aligned(8)));
+    iris_msg_hdr_t* hdr = (iris_msg_hdr_t*)buf;
+    iris_compositor_boot_stage_req_t* req = (iris_compositor_boot_stage_req_t*)(buf + sizeof(iris_msg_hdr_t));
+    iris_msg_hdr_init(hdr, IRIS_PROTO_COMPOSITOR, IRIS_COMPOSITOR_OP_SET_BOOT_STAGE, txid++,
+                      sizeof(iris_compositor_boot_stage_req_t));
+    req->stage = stage;
+
+    uint32_t nh = (fs_ch_for_comp != ZX_HANDLE_INVALID) ? 1u : 0u;
+    zx_status_t st = g_zx_channel_write(comp_ch, 0, buf, sizeof(buf),
+                                        nh ? &fs_ch_for_comp : NULL, nh);
+    if (st == ZX_OK) {
+        zx_signals_t obs = 0;
+        if (g_zx_object_wait_one(comp_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                                 iris_deadline_after(5000000000ULL), &obs) == ZX_OK &&
+            (obs & ZX_CHANNEL_READABLE)) {
+            iris_msg_hdr_t rep;
+            uint32_t ab = 0, ah = 0;
+            g_zx_channel_read(comp_ch, 0, &rep, NULL, sizeof(rep), 0, &ab, &ah);
+        }
+    } else if (fs_ch_for_comp != ZX_HANDLE_INVALID) {
+        g_zx_handle_close(fs_ch_for_comp);
+    }
+}
+
+static void send_fshost_user_logout(zx_handle_t fs_ch) {
+    if (fs_ch == ZX_HANDLE_INVALID) return;
     iris_msg_hdr_t req;
-    iris_msg_hdr_init(&req, IRIS_PROTO_CRYPT, IRIS_CRYPT_OP_STATUS, 701, 0);
-    if (g_zx_channel_write(crypt_ch, 0, &req, sizeof(req), NULL, 0) != ZX_OK) return false;
-    zx_signals_t obs = 0;
-    if (g_zx_object_wait_one(crypt_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
-                             iris_deadline_after(1000000000ULL), &obs) != ZX_OK ||
-        !(obs & ZX_CHANNEL_READABLE)) {
-        return false;
+    iris_msg_hdr_init(&req, IRIS_PROTO_FS, IRIS_FS_OP_USER_LOGOUT, 704, 0);
+    if (g_zx_channel_write(fs_ch, 0, &req, sizeof(req), NULL, 0) == ZX_OK) {
+        zx_signals_t obs = 0;
+        if (g_zx_object_wait_one(fs_ch, ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
+                                 iris_deadline_after(3000000000ULL), &obs) == ZX_OK &&
+            (obs & ZX_CHANNEL_READABLE)) {
+            iris_msg_hdr_t rep;
+            uint32_t ab = 0, ah = 0;
+            g_zx_channel_read(fs_ch, 0, &rep, NULL, sizeof(rep), 0, &ab, &ah);
+        }
     }
-    uint8_t rep_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_status_resp_t)] __attribute__((aligned(8)));
-    uint32_t ab = 0, ah = 0;
-    if (g_zx_channel_read(crypt_ch, 0, rep_buf, NULL, sizeof(rep_buf), 0, &ab, &ah) != ZX_OK ||
-        ab < sizeof(rep_buf)) {
-        return false;
-    }
-    const iris_crypt_status_resp_t* resp = (const iris_crypt_status_resp_t*)(rep_buf + sizeof(iris_msg_hdr_t));
-    return resp->unlocked != 0;
 }
 
 static void send_crypt_lock(zx_handle_t crypt_ch) {
@@ -1062,7 +1077,7 @@ static void stop_process_gracefully(const char* name, zx_handle_t* proc, zx_hand
 
 static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
                                     zx_handle_t sys_ctrl_cli,
-                                    zx_handle_t crypt_client_for_ui,
+                                    bool boot_splash,
                                     bool show_crash_dialog,
                                     zx_handle_t* out_comp_client,
                                     zx_handle_t* out_proc_comp) {
@@ -1073,7 +1088,7 @@ static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
     g_zx_channel_create(0, &gpu_for_comp, &gpu_srv_comp);
     register_gpu_client(gpu_ch, gpu_srv_comp);
 
-    zx_handle_t comp_fs_client = request_fs_client_channel(fs_ch);
+    zx_handle_t comp_fs_client = (fs_ch != ZX_HANDLE_INVALID) ? request_fs_client_channel(fs_ch) : ZX_HANDLE_INVALID;
 
     zx_handle_t comp_client = ZX_HANDLE_INVALID, comp_server = ZX_HANDLE_INVALID;
     g_zx_channel_create(0, &comp_client, &comp_server);
@@ -1084,6 +1099,12 @@ static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
     comp_hnds[num_comp_hnds++] = (spawn_handle_t){ gpu_for_comp, PA_HND(PA_USER1, 0) };
     if (comp_fs_client != ZX_HANDLE_INVALID) {
         comp_hnds[num_comp_hnds++] = (spawn_handle_t){ comp_fs_client, PA_HND(PA_NS_DIR, 0) };
+    }
+    if (g_bootfs_vmo != ZX_HANDLE_INVALID) {
+        zx_handle_t bootfs_dup = ZX_HANDLE_INVALID;
+        if (g_zx_handle_duplicate(g_bootfs_vmo, ZX_RIGHT_SAME_RIGHTS, &bootfs_dup) == ZX_OK) {
+            comp_hnds[num_comp_hnds++] = (spawn_handle_t){ bootfs_dup, PA_HND(PA_VMO_BOOTFS, 0) };
+        }
     }
     if (g_root_resource != ZX_HANDLE_INVALID) {
         zx_handle_t root_res_comp = ZX_HANDLE_INVALID;
@@ -1097,15 +1118,12 @@ static zx_status_t spawn_compositor(zx_handle_t gpu_ch, zx_handle_t fs_ch,
             comp_hnds[num_comp_hnds++] = (spawn_handle_t){ sys_dup, PA_HND(PA_USER2, 1) };
         }
     }
-    if (crypt_client_for_ui != ZX_HANDLE_INVALID) {
-        comp_hnds[num_comp_hnds++] = (spawn_handle_t){ crypt_client_for_ui, PA_HND(PA_USER2, 0) };
-    }
 
     const char* comp_argv[3];
     int comp_argc = 0;
     comp_argv[comp_argc++] = "iris_compositor";
+    if (boot_splash) comp_argv[comp_argc++] = "--boot-splash";
     if (show_crash_dialog) comp_argv[comp_argc++] = "--show-crash-dialog";
-    if (crypt_client_for_ui != ZX_HANDLE_INVALID) comp_argv[comp_argc++] = "--unlock-prompt";
 
     zx_handle_t proc_comp = ZX_HANDLE_INVALID;
     zx_status_t st = spawn_bootfs_binary("iris_compositor", "bin/iris_compositor",
@@ -1227,12 +1245,8 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         zx_handle_t blk_client = ZX_HANDLE_INVALID, blk_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &blk_client, &blk_server);
         zx_handle_t root_res_blk = ZX_HANDLE_INVALID;
-        g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_blk);
-        spawn_handle_t blk_hnds[] = { { blk_server, PA_HND(PA_USER0, 0) }, { root_res_blk, PA_HND(PA_RESOURCE, 0) } };
-        zx_handle_t proc_blk = ZX_HANDLE_INVALID;
-        spawn_bootfs_binary("virtio_blk", "bin/virtio_blk", 0, NULL, blk_hnds, 2, &proc_blk);
-        g_zx_handle_close(blk_server);
-        log_status(STATUS_OKAY, "iris_init", "Spawned VirtIO Block Driver (bin/virtio_blk).");
+        zx_handle_t sys_ctrl_srv = ZX_HANDLE_INVALID, sys_ctrl_cli = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &sys_ctrl_srv, &sys_ctrl_cli);
 
         zx_handle_t gpu_client = ZX_HANDLE_INVALID, gpu_server = ZX_HANDLE_INVALID;
         zx_handle_t proc_gpu = ZX_HANDLE_INVALID;
@@ -1275,38 +1289,13 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
             spawn_bootfs_binary("virtio_gpu", "bin/virtio_gpu", 0, NULL, gpu_hnds, num_gpu_hnds, &proc_gpu);
             g_zx_handle_close(gpu_server);
             log_status(STATUS_OKAY, "iris_init", "Spawned VirtIO GPU Driver (bin/virtio_gpu).");
+
+            if (spawn_compositor(gpu_client, ZX_HANDLE_INVALID, sys_ctrl_cli,
+                                 true, false, &comp_client, &proc_comp) == ZX_OK) {
+                log_status(STATUS_OKAY, "iris_init", "Spawned Window Compositor (--boot-splash).");
+                send_compositor_boot_stage(comp_client, 1u, ZX_HANDLE_INVALID);
+            }
         }
-
-        zx_handle_t blk_for_crypt = ZX_HANDLE_INVALID, blk_srv_crypt = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &blk_for_crypt, &blk_srv_crypt);
-        register_blk_client(blk_client, blk_srv_crypt);
-
-        zx_handle_t blk_for_fshost = ZX_HANDLE_INVALID, blk_srv_fshost = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &blk_for_fshost, &blk_srv_fshost);
-        register_blk_client(blk_client, blk_srv_fshost);
-
-        zx_handle_t sys_ctrl_srv = ZX_HANDLE_INVALID, sys_ctrl_cli = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &sys_ctrl_srv, &sys_ctrl_cli);
-
-        zx_handle_t crypt_client_for_its = ZX_HANDLE_INVALID, crypt_srv_for_its = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &crypt_client_for_its, &crypt_srv_for_its);
-        zx_handle_t crypt_client_for_fshost = ZX_HANDLE_INVALID, crypt_srv_for_fshost = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &crypt_client_for_fshost, &crypt_srv_for_fshost);
-        zx_handle_t crypt_client_for_ui = ZX_HANDLE_INVALID, crypt_srv_for_ui = ZX_HANDLE_INVALID;
-        g_zx_channel_create(0, &crypt_client_for_ui, &crypt_srv_for_ui);
-
-        spawn_handle_t crypt_hnds[] = {
-            { crypt_srv_for_its,    PA_HND(PA_USER0, 0) },
-            { blk_for_crypt,        PA_HND(PA_USER1, 0) },
-            { crypt_srv_for_fshost, PA_HND(PA_USER0, 1) },
-            { crypt_srv_for_ui,     PA_HND(PA_USER0, 2) }
-        };
-        const char* crypt_argv_wait[] = { "iris_crypt", "--wait-unlock", NULL };
-        zx_handle_t proc_crypt = ZX_HANDLE_INVALID;
-        spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 2, crypt_argv_wait, crypt_hnds, 4, &proc_crypt);
-        g_zx_handle_close(crypt_srv_for_its); g_zx_handle_close(crypt_srv_for_fshost);
-        g_zx_handle_close(crypt_srv_for_ui);  g_zx_handle_close(blk_for_crypt);
-        log_status(STATUS_OKAY, "iris_init", "Spawned Storage Encryption Daemon (bin/iris_crypt --wait-unlock).");
 
         zx_handle_t pty_client = ZX_HANDLE_INVALID, pty_server = ZX_HANDLE_INVALID;
         zx_handle_t proc_pty = ZX_HANDLE_INVALID;
@@ -1327,36 +1316,39 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         }
         g_zx_handle_close(pty_server);
         log_status(STATUS_OKAY, "iris_init", "Spawned Pseudo-Terminal Server (bin/iris_pty).");
+        if (has_gpu) send_compositor_boot_stage(comp_client, 2u, ZX_HANDLE_INVALID);
 
-        if (!has_gpu) {
-            /* Headless interactive mode — spawn apps/sysutils/passphrase on iris_pty */
-            zx_handle_t pw_pty = request_pty_client_channel(pty_client);
-            zx_handle_t pw_fd0 = ZX_HANDLE_INVALID, pw_fd1 = ZX_HANDLE_INVALID, pw_fd2 = ZX_HANDLE_INVALID;
-            if (pw_pty != ZX_HANDLE_INVALID) {
-                g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd0);
-                g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd1);
-                g_zx_handle_duplicate(pw_pty, ZX_RIGHT_SAME_RIGHTS, &pw_fd2);
-            }
-            spawn_handle_t pw_hnds[] = {
-                { pw_pty,              PA_HND(PA_USER0, 0) },
-                { pw_fd0,              PA_HND(PA_FD, 0) },
-                { pw_fd1,              PA_HND(PA_FD, 1) },
-                { pw_fd2,              PA_HND(PA_FD, 2) },
-                { crypt_client_for_ui, PA_HND(PA_USER2, 0) }
-            };
-            const char* pw_argv[] = { "passphrase", NULL };
-            zx_handle_t proc_pw = ZX_HANDLE_INVALID;
-            zx_status_t pw_st = spawn_bootfs_binary("passphrase", "bin/passphrase", 1, pw_argv, pw_hnds, 5, &proc_pw);
-            crypt_client_for_ui = ZX_HANDLE_INVALID;
-            if (pw_st == ZX_OK && proc_pw != ZX_HANDLE_INVALID) {
-                log_status(STATUS_OKAY, "iris_init", "Spawned Interactive Disk Passphrase Prompt (bin/passphrase).");
-                zx_signals_t obs = 0;
-                g_zx_object_wait_one(proc_pw, ZX_PROCESS_TERMINATED, ZX_TIME_INFINITE, &obs);
-                g_zx_handle_close(proc_pw);
-            } else {
-                log_status(STATUS_FAIL, "iris_init", "Failed to spawn bin/passphrase (%d).", pw_st);
-            }
-        }
+        g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_blk);
+        spawn_handle_t blk_hnds[] = { { blk_server, PA_HND(PA_USER0, 0) }, { root_res_blk, PA_HND(PA_RESOURCE, 0) } };
+        zx_handle_t proc_blk = ZX_HANDLE_INVALID;
+        spawn_bootfs_binary("virtio_blk", "bin/virtio_blk", 0, NULL, blk_hnds, 2, &proc_blk);
+        g_zx_handle_close(blk_server);
+        log_status(STATUS_OKAY, "iris_init", "Spawned VirtIO Block Driver (bin/virtio_blk).");
+        if (has_gpu) send_compositor_boot_stage(comp_client, 3u, ZX_HANDLE_INVALID);
+
+        zx_handle_t blk_for_crypt = ZX_HANDLE_INVALID, blk_srv_crypt = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &blk_for_crypt, &blk_srv_crypt);
+        register_blk_client(blk_client, blk_srv_crypt);
+
+        zx_handle_t blk_for_fshost = ZX_HANDLE_INVALID, blk_srv_fshost = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &blk_for_fshost, &blk_srv_fshost);
+        register_blk_client(blk_client, blk_srv_fshost);
+
+        zx_handle_t crypt_client_for_its = ZX_HANDLE_INVALID, crypt_srv_for_its = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &crypt_client_for_its, &crypt_srv_for_its);
+        zx_handle_t crypt_client_for_fshost = ZX_HANDLE_INVALID, crypt_srv_for_fshost = ZX_HANDLE_INVALID;
+        g_zx_channel_create(0, &crypt_client_for_fshost, &crypt_srv_for_fshost);
+
+        spawn_handle_t crypt_hnds[] = {
+            { crypt_srv_for_its,    PA_HND(PA_USER0, 0) },
+            { blk_for_crypt,        PA_HND(PA_USER1, 0) },
+            { crypt_srv_for_fshost, PA_HND(PA_USER0, 1) }
+        };
+        zx_handle_t proc_crypt = ZX_HANDLE_INVALID;
+        spawn_bootfs_binary("iris_crypt", "bin/iris_crypt", 0, NULL, crypt_hnds, 3, &proc_crypt);
+        g_zx_handle_close(crypt_srv_for_its); g_zx_handle_close(crypt_srv_for_fshost);
+        g_zx_handle_close(blk_for_crypt);
+        log_status(STATUS_OKAY, "iris_init", "Spawned Storage Encryption Daemon (bin/iris_crypt).");
 
         zx_handle_t fshost_client = ZX_HANDLE_INVALID, fshost_server = ZX_HANDLE_INVALID;
         g_zx_channel_create(0, &fshost_client, &fshost_server);
@@ -1371,20 +1363,8 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         log_status(STATUS_OKAY, "iris_init", "Spawned VFS Router & Filesystem Daemon (bin/iris_fshost).");
 
         if (has_gpu) {
-            zx_status_t comp_st = spawn_compositor(gpu_client, fshost_client, sys_ctrl_cli,
-                                                   crypt_client_for_ui, false, &comp_client, &proc_comp);
-            crypt_client_for_ui = ZX_HANDLE_INVALID;
-            if (comp_st == ZX_OK) {
-                log_status(STATUS_OKAY, "iris_init", "Spawned Window Compositor Daemon (bin/iris_compositor).");
-            } else {
-                log_status(STATUS_FAIL, "iris_init", "Failed to spawn iris_compositor (%d).", comp_st);
-            }
-
-            /* Wait for user to unlock Data partition via graphical prompt before mounting /Users & spawning terminal */
-            while (proc_comp != ZX_HANDLE_INVALID && !query_crypt_unlocked(crypt_client_for_its)) {
-                g_zx_nanosleep(iris_deadline_after(50000000ULL));
-            }
-            send_fshost_sync(fshost_client);
+            zx_handle_t comp_fs_ch = request_fs_client_channel(fshost_client);
+            send_compositor_boot_stage(comp_client, 4u, comp_fs_ch);
         }
 
         /* Confirm active A/B GPT slot boot */
@@ -1393,47 +1373,11 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 log_status(STATUS_OKAY, "iris_init", "Confirmed active A/B GPT slot (boot_successful=1).");
             }
         }
-
-        /* Spawn default desktop apps (e.g. graphical terminal) */
-        if (has_gpu && comp_client != ZX_HANDLE_INVALID && pty_client != ZX_HANDLE_INVALID) {
-            zx_handle_t term_fs_client   = request_fs_client_channel(fshost_client);
-            zx_handle_t term_pty_client  = request_pty_client_channel(pty_client);
-            zx_handle_t term_comp_client = request_compositor_client_channel(comp_client);
-            zx_handle_t root_res_term    = ZX_HANDLE_INVALID;
-            g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_term);
-            zx_handle_t sys_dup_term     = ZX_HANDLE_INVALID;
-            if (sys_ctrl_cli != ZX_HANDLE_INVALID) {
-                g_zx_handle_duplicate(sys_ctrl_cli, ZX_RIGHT_SAME_RIGHTS, &sys_dup_term);
-            }
-
-            spawn_handle_t term_hnds[5];
-            size_t num_term_hnds = 0;
-            if (term_fs_client != ZX_HANDLE_INVALID) {
-                term_hnds[num_term_hnds++] = (spawn_handle_t){ term_fs_client,   PA_HND(PA_NS_DIR, 0) };
-            }
-            if (term_pty_client != ZX_HANDLE_INVALID) {
-                term_hnds[num_term_hnds++] = (spawn_handle_t){ term_pty_client,  PA_HND(PA_USER0, 0) };
-            }
-            if (term_comp_client != ZX_HANDLE_INVALID) {
-                term_hnds[num_term_hnds++] = (spawn_handle_t){ term_comp_client, PA_HND(PA_USER0, 1) };
-            }
-            if (root_res_term != ZX_HANDLE_INVALID) {
-                term_hnds[num_term_hnds++] = (spawn_handle_t){ root_res_term,    PA_HND(PA_RESOURCE, 0) };
-            }
-            if (sys_dup_term != ZX_HANDLE_INVALID) {
-                term_hnds[num_term_hnds++] = (spawn_handle_t){ sys_dup_term,     PA_HND(PA_USER2, 1) };
-            }
-
-            zx_handle_t proc_term = ZX_HANDLE_INVALID;
-            zx_status_t term_st = spawn_bootfs_binary("terminal", "bin/terminal", 0, NULL,
-                                                      term_hnds, num_term_hnds, &proc_term);
-            if (term_st == ZX_OK) {
-                log_status(STATUS_OKAY, "iris_init", "Spawned Graphical Terminal Emulator (bin/terminal).");
-                g_zx_handle_close(proc_term);
-            } else {
-                log_status(STATUS_FAIL, "iris_init", "Failed to spawn bin/terminal (%d).", term_st);
-            }
+        if (has_gpu) {
+            send_compositor_boot_stage(comp_client, 5u, ZX_HANDLE_INVALID);
         }
+
+        zx_handle_t proc_session_term = ZX_HANDLE_INVALID;
 
         /* ======================================================================
          * Phase 7: Full Service Supervision & Graceful Shutdown Loop
@@ -1483,26 +1427,64 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 if (items[idx].pending == 0) continue;
 
                 if (kinds[idx] == 0 && (items[idx].pending & ZX_CHANNEL_READABLE)) {
-                    iris_msg_hdr_t req;
+                    uint8_t msg_buf[sizeof(iris_msg_hdr_t) + sizeof(iris_sys_session_req_t)] __attribute__((aligned(8)));
                     uint32_t ab = 0, ah = 0;
-                    while (g_zx_channel_read(sys_ctrl_srv, 0, &req, NULL, sizeof(req), 0, &ab, &ah) == ZX_OK) {
-                        if (ab < sizeof(iris_msg_hdr_t) || !iris_msg_hdr_is_valid(&req, IRIS_PROTO_SYSTEM)) {
+                    while (g_zx_channel_read(sys_ctrl_srv, 0, msg_buf, NULL, sizeof(msg_buf), 0, &ab, &ah) == ZX_OK) {
+                        const iris_msg_hdr_t* req = (const iris_msg_hdr_t*)msg_buf;
+                        if (ab < sizeof(iris_msg_hdr_t) || !iris_msg_hdr_is_valid(req, IRIS_PROTO_SYSTEM)) {
                             continue;
                         }
-                        if (req.opcode == IRIS_SYS_OP_SHUTDOWN || req.opcode == IRIS_SYS_OP_REBOOT) {
+                        if (req->opcode == IRIS_SYS_OP_SHUTDOWN || req->opcode == IRIS_SYS_OP_REBOOT) {
                             do_shutdown = true;
-                            do_reboot = (req.opcode == IRIS_SYS_OP_REBOOT);
+                            do_reboot = (req->opcode == IRIS_SYS_OP_REBOOT);
                             iris_msg_hdr_t rep;
-                            iris_msg_hdr_init_reply(&rep, &req, ZX_OK, 0);
+                            iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
                             g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
                             break;
-                        } else if (req.opcode == IRIS_SYS_OP_PING) {
+                        } else if (req->opcode == IRIS_SYS_OP_SESSION_LOGIN) {
+                            if (proc_session_term != ZX_HANDLE_INVALID) {
+                                stop_process_gracefully("terminal", &proc_session_term, NULL, true);
+                            }
+                            if (has_gpu && comp_client != ZX_HANDLE_INVALID && pty_client != ZX_HANDLE_INVALID) {
+                                zx_handle_t term_fs_client   = request_fs_client_channel(fshost_client);
+                                zx_handle_t term_pty_client  = request_pty_client_channel(pty_client);
+                                zx_handle_t term_comp_client = request_compositor_client_channel(comp_client);
+                                zx_handle_t root_res_term    = ZX_HANDLE_INVALID;
+                                g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_term);
+                                zx_handle_t sys_dup_term     = ZX_HANDLE_INVALID;
+                                if (sys_ctrl_cli != ZX_HANDLE_INVALID) {
+                                    g_zx_handle_duplicate(sys_ctrl_cli, ZX_RIGHT_SAME_RIGHTS, &sys_dup_term);
+                                }
+                                spawn_handle_t term_hnds[5];
+                                size_t num_term_hnds = 0;
+                                if (term_fs_client != ZX_HANDLE_INVALID)   term_hnds[num_term_hnds++] = (spawn_handle_t){ term_fs_client,   PA_HND(PA_NS_DIR, 0) };
+                                if (term_pty_client != ZX_HANDLE_INVALID)  term_hnds[num_term_hnds++] = (spawn_handle_t){ term_pty_client,  PA_HND(PA_USER0, 0) };
+                                if (term_comp_client != ZX_HANDLE_INVALID) term_hnds[num_term_hnds++] = (spawn_handle_t){ term_comp_client, PA_HND(PA_USER0, 1) };
+                                if (root_res_term != ZX_HANDLE_INVALID)    term_hnds[num_term_hnds++] = (spawn_handle_t){ root_res_term,    PA_HND(PA_RESOURCE, 0) };
+                                if (sys_dup_term != ZX_HANDLE_INVALID)     term_hnds[num_term_hnds++] = (spawn_handle_t){ sys_dup_term,     PA_HND(PA_USER2, 1) };
+                                if (spawn_bootfs_binary("terminal", "bin/terminal", 0, NULL,
+                                                        term_hnds, num_term_hnds, &proc_session_term) == ZX_OK) {
+                                    log_status(STATUS_OKAY, "iris_init", "Spawned session terminal (bin/terminal).");
+                                }
+                            }
                             iris_msg_hdr_t rep;
-                            iris_msg_hdr_init(&rep, IRIS_PROTO_SYSTEM, IRIS_SYS_OP_PONG, req.txid, 0);
+                            iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
                             g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
-                        } else if (req.opcode == IRIS_SYS_OP_GET_VERSION) {
+                        } else if (req->opcode == IRIS_SYS_OP_SESSION_LOGOUT) {
+                            if (proc_session_term != ZX_HANDLE_INVALID) {
+                                stop_process_gracefully("terminal", &proc_session_term, NULL, true);
+                            }
+                            send_fshost_user_logout(fshost_client);
                             iris_msg_hdr_t rep;
-                            iris_msg_hdr_init_reply(&rep, &req, ZX_OK, 0);
+                            iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
+                            g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
+                        } else if (req->opcode == IRIS_SYS_OP_PING) {
+                            iris_msg_hdr_t rep;
+                            iris_msg_hdr_init(&rep, IRIS_PROTO_SYSTEM, IRIS_SYS_OP_PONG, req->txid, 0);
+                            g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
+                        } else if (req->opcode == IRIS_SYS_OP_GET_VERSION) {
+                            iris_msg_hdr_t rep;
+                            iris_msg_hdr_init_reply(&rep, req, ZX_OK, 0);
                             g_zx_channel_write(sys_ctrl_srv, 0, &rep, sizeof(rep), NULL, 0);
                         }
                     }
@@ -1533,7 +1515,7 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                     vfs_write_file_from_buffer(fshost_client, "/tmp/compositor_crash.log",
                                                crash_buf, iris_strlen(crash_buf));
                     if (spawn_compositor(gpu_client, fshost_client, sys_ctrl_cli,
-                                         ZX_HANDLE_INVALID, true, &comp_client, &proc_comp) != ZX_OK) {
+                                         false, true, &comp_client, &proc_comp) != ZX_OK) {
                         log_status(STATUS_FAIL, "iris_init", "Failed to respawn iris_compositor.");
                     }
                 } else if (items[idx].pending & ZX_PROCESS_TERMINATED) {
@@ -1561,6 +1543,10 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         if (do_shutdown) {
             log_status(STATUS_OKAY, "iris_init", "Initiating reverse-dependency graceful %s...",
                        do_reboot ? "reboot" : "poweroff");
+            if (proc_session_term != ZX_HANDLE_INVALID) {
+                stop_process_gracefully("terminal", &proc_session_term, NULL, true);
+            }
+            send_fshost_user_logout(fshost_client);
             stop_process_gracefully("iris_compositor", &proc_comp, &comp_client, true);
             stop_process_gracefully("iris_pty", &proc_pty, &pty_client, true);
             send_fshost_sync(fshost_client);

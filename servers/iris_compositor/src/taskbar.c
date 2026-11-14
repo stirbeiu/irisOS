@@ -12,6 +12,7 @@
  */
 
 #include "taskbar.h"
+#include "login.h"
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -83,7 +84,6 @@ static char             g_privacy_owner[32] = "None";
 
 static bool             g_is_sleeping    = false;
 static bool             g_pins_loaded    = false;
-static char             g_session_user[32] = "admin";
 
 static taskbar_flyout_t g_active_flyout  = FLYOUT_NONE;
 static int32_t          g_flyout_x       = 0;
@@ -332,6 +332,11 @@ bool taskbar_wake_from_sleep(void) {
     g_is_sleeping = false;
     dirty_rect_union(0, 0, g_fb_width, g_fb_height);
     return true;
+}
+
+void taskbar_enter_sleep(void) {
+    g_is_sleeping = true;
+    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
 }
 
 /* ==============================================================================
@@ -768,9 +773,10 @@ void taskbar_render_flyout(uint32_t* dst_pixels, pixman_image_t* dst_surface) {
         draw_tray_glyph(dst_pixels, dst_surface, fx + 20, fy + 17, 20, MAT_ICON_PERSON, 0xFFFFFFFFu);
 
         draw_text_ft_ex(dst_pixels, g_fb_width, g_fb_height, fx + 54, fy + 13, 13,
-                        FONT_FAMILY_INTER_DISPLAY, FONT_WEIGHT_SEMIBOLD, false, g_session_user, 0xFF141418u);
+                        FONT_FAMILY_INTER_DISPLAY, FONT_WEIGHT_SEMIBOLD, false, login_active_display_name(), 0xFF141418u);
         draw_text_ft_ex(dst_pixels, g_fb_width, g_fb_height, fx + 54, fy + 29, 11,
-                        FONT_FAMILY_INTER_DISPLAY, FONT_WEIGHT_REGULAR, false, "Administrator • irisOS", 0xFF6B7280u);
+                        FONT_FAMILY_INTER_DISPLAY, FONT_WEIGHT_REGULAR, false,
+                        login_active_is_guest() ? "Guest Session • Ephemeral" : "Administrator • irisOS", 0xFF6B7280u);
 
         /* Quick session icons on header right: Switch User, Log Out */
         fill_rounded_rect_over(dst_pixels, g_fb_width, g_fb_height, fx + (int32_t)fw - 70, fy + 13, 28, 28, 6, 0x10141418u);
@@ -1004,18 +1010,10 @@ bool taskbar_handle_mouse_down(int32_t mx, int32_t my) {
             if (g_active_flyout == FLYOUT_START_MENU) {
                 /* Quick header actions (Switch User, Log Out) */
                 if (my >= g_flyout_y + 13 && my < g_flyout_y + 41) {
-                    if (mx >= g_flyout_x + (int32_t)g_flyout_w - 70 && mx < g_flyout_x + (int32_t)g_flyout_w - 42) {
-                        taskbar_push_notification("Switch User", "Active user: admin");
+                    if ((mx >= g_flyout_x + (int32_t)g_flyout_w - 70 && mx < g_flyout_x + (int32_t)g_flyout_w - 42) ||
+                        (mx >= g_flyout_x + (int32_t)g_flyout_w - 38 && mx < g_flyout_x + (int32_t)g_flyout_w - 10)) {
                         taskbar_close_flyout();
-                        return true;
-                    }
-                    if (mx >= g_flyout_x + (int32_t)g_flyout_w - 38 && mx < g_flyout_x + (int32_t)g_flyout_w - 10) {
-                        for (size_t w = 0; w < g_num_windows; ++w) {
-                            g_windows[w].is_minimized = true;
-                        }
-                        taskbar_push_notification("Session", "User windows minimized (logged out view).");
-                        taskbar_close_flyout();
-                        dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                        login_trigger_logout();
                         return true;
                     }
                 }
@@ -1075,14 +1073,8 @@ bool taskbar_handle_mouse_down(int32_t mx, int32_t my) {
                                 char* argv[] = { (char*)"poweroff", NULL };
                                 pid_t pid = -1;
                                 posix_spawn(&pid, "/System/Bin/poweroff", NULL, NULL, argv, environ);
-                            } else if (b == 3) {
-                                for (size_t w = 0; w < g_num_windows; ++w) {
-                                    g_windows[w].is_minimized = true;
-                                }
-                                taskbar_push_notification("Session", "Logged out active desktop windows.");
-                                dirty_rect_union(0, 0, g_fb_width, g_fb_height);
-                            } else if (b == 4) {
-                                taskbar_push_notification("Switch User", "Active user: admin");
+                            } else if (b == 3 || b == 4) {
+                                login_trigger_logout();
                             }
                             return true;
                         }
@@ -1092,7 +1084,8 @@ bool taskbar_handle_mouse_down(int32_t mx, int32_t my) {
                 if (mx >= g_flyout_x + (int32_t)g_flyout_w - 58 && mx <= g_flyout_x + (int32_t)g_flyout_w - 12 &&
                     my >= g_flyout_y + 8 && my <= g_flyout_y + 28) {
                     g_volume_muted = !g_volume_muted;
-                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
+                    dirty_rect_union((int32_t)g_fb_width - 260, tb_top, 260, IRIS_TASKBAR_H);
                     return true;
                 }
                 if (mx >= g_flyout_x + 14 && mx <= g_flyout_x + (int32_t)g_flyout_w - 14 &&
@@ -1105,34 +1098,37 @@ bool taskbar_handle_mouse_down(int32_t mx, int32_t my) {
                         if (pct > 100) pct = 100;
                         g_volume_pct = (uint8_t)pct;
                         g_volume_muted = (pct == 0);
-                        dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                        dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
+                        dirty_rect_union((int32_t)g_fb_width - 260, tb_top, 260, IRIS_TASKBAR_H);
                     }
                     return true;
                 }
             } else if (g_active_flyout == FLYOUT_BLUETOOTH) {
                 if (mx >= g_flyout_x + (int32_t)g_flyout_w - 56 && my >= g_flyout_y + 8 && my <= g_flyout_y + 32) {
                     g_bt_enabled = !g_bt_enabled;
-                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
+                    dirty_rect_union((int32_t)g_fb_width - 260, tb_top, 260, IRIS_TASKBAR_H);
                 }
             } else if (g_active_flyout == FLYOUT_NOTIFICATIONS) {
                 if (mx >= g_flyout_x + (int32_t)g_flyout_w - 68 && my >= g_flyout_y + 8 && my <= g_flyout_y + 32) {
                     g_num_notifs = 0;
                     g_unread_notifs = false;
-                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
+                    dirty_rect_union((int32_t)g_fb_width - 260, tb_top, 260, IRIS_TASKBAR_H);
                 }
             } else if (g_active_flyout == FLYOUT_TRAY_OVERFLOW) {
                 if (my >= g_flyout_y + 32 && my < g_flyout_y + 64) {
                     uint32_t next = g_privacy_mask ^ IRIS_PRIVACY_MIC;
                     taskbar_set_privacy_active(next, "Audio Monitor");
-                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
                 } else if (my >= g_flyout_y + 70 && my < g_flyout_y + 102) {
                     uint32_t next = g_privacy_mask ^ IRIS_PRIVACY_CAMERA;
                     taskbar_set_privacy_active(next, "Camera Daemon");
-                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
                 } else if (my >= g_flyout_y + 108 && my < g_flyout_y + 140) {
                     uint32_t next = g_privacy_mask ^ IRIS_PRIVACY_LOCATION;
                     taskbar_set_privacy_active(next, "Location Service");
-                    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
                 }
             }
             return true;
@@ -1236,7 +1232,70 @@ bool taskbar_handle_mouse_down(int32_t mx, int32_t my) {
     return true;
 }
 
+void taskbar_update_hover(int32_t mx, int32_t my) {
+    static int      s_prev_hover_id = -1;
+    static int32_t  s_prev_hx       = 0;
+    static uint32_t s_prev_hw       = 0;
+
+    int32_t  tb_top = (int32_t)g_fb_height - IRIS_TASKBAR_H;
+    int      cur_id = -1;
+    int32_t  cur_hx = 0;
+    uint32_t cur_hw = 0;
+
+    if (!g_drag_active && my >= tb_top) {
+        if (mx >= 10 && mx <= 66) {
+            cur_id = 0;
+            cur_hx = 8;
+            cur_hw = 60u;
+        } else {
+            int32_t dock_x = get_dock_start_x();
+            for (size_t s = 0; s < g_num_dock_slots; ++s) {
+                int32_t ix = dock_x + (int32_t)(s * TASKBAR_DOCK_STEP);
+                if (mx >= ix - 4 && mx < ix + TASKBAR_DOCK_ICON_SZ + 4) {
+                    cur_id = 1 + (int)s;
+                    cur_hx = ix - 6;
+                    cur_hw = (uint32_t)(TASKBAR_DOCK_ICON_SZ + 12);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (cur_id != s_prev_hover_id) {
+        if (s_prev_hover_id >= 0 && s_prev_hw > 0) {
+            dirty_rect_union(s_prev_hx, tb_top, s_prev_hw, IRIS_TASKBAR_H);
+        }
+        if (cur_id >= 0 && cur_hw > 0) {
+            dirty_rect_union(cur_hx, tb_top, cur_hw, IRIS_TASKBAR_H);
+        }
+        s_prev_hover_id = cur_id;
+        s_prev_hx       = cur_hx;
+        s_prev_hw       = cur_hw;
+    }
+}
+
 bool taskbar_handle_mouse_move(int32_t mx, int32_t my) {
+    if (g_active_flyout == FLYOUT_VOLUME && !g_drag_pending) {
+        if (mx >= g_flyout_x + 14 && mx <= g_flyout_x + (int32_t)g_flyout_w - 14 &&
+            my >= g_flyout_y + 24 && my <= g_flyout_y + 60) {
+            int32_t rel = mx - (g_flyout_x + 14);
+            int32_t total = (int32_t)g_flyout_w - 28;
+            if (total > 0) {
+                int32_t pct = (rel * 100) / total;
+                if (pct < 0) pct = 0;
+                if (pct > 100) pct = 100;
+                if ((uint8_t)pct != g_volume_pct) {
+                    int32_t tb_top = (int32_t)g_fb_height - IRIS_TASKBAR_H;
+                    g_volume_pct = (uint8_t)pct;
+                    g_volume_muted = (pct == 0);
+                    dirty_rect_union(g_flyout_x - 6, g_flyout_y - 6, g_flyout_w + 12, g_flyout_h + 12);
+                    dirty_rect_union((int32_t)g_fb_width - 260, tb_top, 260, IRIS_TASKBAR_H);
+                }
+            }
+            return true;
+        }
+    }
+
     if (!g_drag_pending) {
         return false;
     }

@@ -60,10 +60,15 @@ void taskbar_render(uint32_t* dst_pixels, pixman_image_t* dst_surface);
 bool taskbar_handle_mouse_down(int32_t mx, int32_t my);
 
 /**
- * @brief Handle pointer movement for taskbar hover highlights and dock drag-and-drop.
+ * @brief Handle pointer movement for dock/Start-Menu drag-and-drop.
  * @return true if taskbar state consumed/updated pointer movement.
  */
 bool taskbar_handle_mouse_move(int32_t mx, int32_t my);
+
+/**
+ * @brief Update hover highlight state for Start button and dock icons, dirtying only changed button rects.
+ */
+void taskbar_update_hover(int32_t mx, int32_t my);
 
 /**
  * @brief Handle mouse button release for click activation or drag-and-drop pin/unpin.
@@ -111,5 +116,6 @@ void taskbar_push_notification(const char* title, const char* body);
  * @return true if the compositor was sleeping and woke up, false otherwise.
  */
 bool taskbar_wake_from_sleep(void);
+void taskbar_enter_sleep(void);
 
 #endif /* IRIS_COMPOSITOR_TASKBAR_H */

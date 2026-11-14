@@ -996,6 +996,7 @@ iris_add_userland_executable(iris_crypt
 # 4. Central VFS Router & UFS2 Filesystem Daemon
 iris_add_userland_executable(iris_fshost
     SOURCES "${IRIS_ROOT}/servers/iris_fshost/src/main.c"
+            "${IRIS_ROOT}/servers/iris_fshost/src/user_session.c"
     LIBRARIES ufs
     INCLUDES
         "${IRIS_ROOT}/servers/iris_fshost/include/compat"
@@ -1028,6 +1029,7 @@ iris_add_userland_executable(iris_compositor
         "${IRIS_ROOT}/servers/iris_compositor/src/render.c"
         "${IRIS_ROOT}/servers/iris_compositor/src/input.c"
         "${IRIS_ROOT}/servers/iris_compositor/src/taskbar.c"
+        "${IRIS_ROOT}/servers/iris_compositor/src/login.c"
         "${IRIS_ROOT}/servers/drivers/virtio_input/src/virtio_input.c"
     LIBRARIES pixman freetype
     INCLUDES

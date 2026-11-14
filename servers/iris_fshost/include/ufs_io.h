@@ -28,6 +28,10 @@ extern "C" {
 #define IRIS_UFS_SECTOR_SZ  512u
 
 #ifndef IRIS_HOST_BUILD
+typedef zx_status_t (*iris_ufs_custom_read_fn)(uint64_t lba, uint32_t count, void* out_buf);
+typedef zx_status_t (*iris_ufs_custom_write_fn)(uint64_t lba, uint32_t count, const void* in_buf);
+typedef zx_status_t (*iris_ufs_custom_flush_fn)(void);
+
 /**
  * @brief Register an IPC block channel slot for use with libufs (d_fd).
  *
@@ -43,6 +47,21 @@ int iris_ufs_register_device(int dev_id,
                              uint64_t start_lba,
                              uint64_t sector_count,
                              bool read_only);
+
+/**
+ * @brief Register a custom sector-callback block device (e.g., encrypted user vault file).
+ */
+int iris_ufs_register_custom(int dev_id,
+                             uint64_t sector_count,
+                             bool read_only,
+                             iris_ufs_custom_read_fn read_fn,
+                             iris_ufs_custom_write_fn write_fn,
+                             iris_ufs_custom_flush_fn flush_fn);
+
+/**
+ * @brief Unregister a block device slot.
+ */
+void iris_ufs_unregister_device(int dev_id);
 #endif
 
 /**

@@ -340,6 +340,120 @@ static void detect_gpt_data_partition(void) {
  */
 static bool g_wait_unlock = false;
 
+#define MAX_USER_KEY_SLOTS 8u
+
+typedef struct user_key_slot {
+    bool                    active;
+    uint8_t                 master_key[IRIS_CRYPT_MASTER_KEY_LEN];
+    mbedtls_aes_xts_context xts_enc;
+    mbedtls_aes_xts_context xts_dec;
+} user_key_slot_t;
+
+static user_key_slot_t g_user_slots[MAX_USER_KEY_SLOTS];
+
+static void zeroize_user_slot(uint32_t slot_id) {
+    if (slot_id >= MAX_USER_KEY_SLOTS) return;
+    if (g_user_slots[slot_id].active) {
+        mbedtls_aes_xts_free(&g_user_slots[slot_id].xts_enc);
+        mbedtls_aes_xts_free(&g_user_slots[slot_id].xts_dec);
+        g_user_slots[slot_id].active = false;
+    }
+    mbedtls_platform_zeroize(g_user_slots[slot_id].master_key, IRIS_CRYPT_MASTER_KEY_LEN);
+}
+
+static zx_status_t unlock_user_header(const uint8_t* pw, size_t pw_len,
+                                      const iris_crypt_header_t* hdr, uint32_t* out_slot) {
+    if (!pw || pw_len == 0 || !hdr || !out_slot) return ZX_ERR_INVALID_ARGS;
+    if (hdr->magic != IRIS_CRYPT_HEADER_MAGIC || hdr->version != IRIS_CRYPT_HEADER_VERSION) {
+        return ZX_ERR_IO_DATA_INTEGRITY;
+    }
+
+    uint8_t expected_csum[IRIS_CRYPT_SHA256_LEN];
+    compute_header_checksum(hdr, expected_csum);
+    if (memcmp(expected_csum, hdr->header_checksum, IRIS_CRYPT_SHA256_LEN) != 0) {
+        return ZX_ERR_IO_DATA_INTEGRITY;
+    }
+
+    int32_t free_idx = -1;
+    for (uint32_t i = 0; i < MAX_USER_KEY_SLOTS; ++i) {
+        if (!g_user_slots[i].active) {
+            free_idx = (int32_t)i;
+            break;
+        }
+    }
+    if (free_idx < 0) return ZX_ERR_NO_RESOURCES;
+
+    uint8_t kek[IRIS_CRYPT_MASTER_KEY_LEN];
+    if (iris_argon2id_derive(pw, pw_len,
+                             hdr->argon2_salt, IRIS_CRYPT_SALT_LEN,
+                             hdr->argon2_t_cost, hdr->argon2_m_cost, hdr->argon2_lanes,
+                             kek, sizeof(kek)) != 0) {
+        mbedtls_platform_zeroize(kek, sizeof(kek));
+        return ZX_ERR_INTERNAL;
+    }
+
+    user_key_slot_t* slot = &g_user_slots[free_idx];
+    mbedtls_aes_xts_context kek_xts;
+    mbedtls_aes_xts_init(&kek_xts);
+    if (mbedtls_aes_xts_setkey_dec(&kek_xts, kek, 512) != 0) {
+        mbedtls_aes_xts_free(&kek_xts);
+        mbedtls_platform_zeroize(kek, sizeof(kek));
+        return ZX_ERR_INTERNAL;
+    }
+    uint8_t zero_tweak[16] = {0};
+    mbedtls_aes_crypt_xts(&kek_xts, MBEDTLS_AES_DECRYPT, IRIS_CRYPT_MASTER_KEY_LEN,
+                          zero_tweak, hdr->encrypted_master_key, slot->master_key);
+    mbedtls_aes_xts_free(&kek_xts);
+    mbedtls_platform_zeroize(kek, sizeof(kek));
+
+    uint8_t verify_tag[IRIS_CRYPT_SHA256_LEN];
+    mbedtls_sha256(slot->master_key, IRIS_CRYPT_MASTER_KEY_LEN, verify_tag, 0);
+    if (memcmp(verify_tag, hdr->key_verification_tag, IRIS_CRYPT_SHA256_LEN) != 0) {
+        /* Fallback for dev-key formatted vaults when "irisos" is entered */
+        bool fallback_ok = false;
+        if ((hdr->flags & IRIS_CRYPT_FLAG_DEV_KEY) && pw_len == 6u && memcmp(pw, "irisos", 6u) == 0) {
+            const uint8_t* dev_pw = (const uint8_t*)IRIS_CRYPT_DEV_PASSPHRASE;
+            size_t dev_pw_len = strlen(IRIS_CRYPT_DEV_PASSPHRASE);
+            uint8_t dev_kek[IRIS_CRYPT_MASTER_KEY_LEN];
+            if (iris_argon2id_derive(dev_pw, dev_pw_len,
+                                     hdr->argon2_salt, IRIS_CRYPT_SALT_LEN,
+                                     hdr->argon2_t_cost, hdr->argon2_m_cost, hdr->argon2_lanes,
+                                     dev_kek, sizeof(dev_kek)) == 0) {
+                mbedtls_aes_xts_context dev_xts;
+                mbedtls_aes_xts_init(&dev_xts);
+                if (mbedtls_aes_xts_setkey_dec(&dev_xts, dev_kek, 512) == 0) {
+                    mbedtls_aes_crypt_xts(&dev_xts, MBEDTLS_AES_DECRYPT, IRIS_CRYPT_MASTER_KEY_LEN,
+                                          zero_tweak, hdr->encrypted_master_key, slot->master_key);
+                    mbedtls_sha256(slot->master_key, IRIS_CRYPT_MASTER_KEY_LEN, verify_tag, 0);
+                    if (memcmp(verify_tag, hdr->key_verification_tag, IRIS_CRYPT_SHA256_LEN) == 0) {
+                        fallback_ok = true;
+                    }
+                }
+                mbedtls_aes_xts_free(&dev_xts);
+            }
+            mbedtls_platform_zeroize(dev_kek, sizeof(dev_kek));
+        }
+        if (!fallback_ok) {
+            mbedtls_platform_zeroize(slot->master_key, IRIS_CRYPT_MASTER_KEY_LEN);
+            return ZX_ERR_ACCESS_DENIED;
+        }
+    }
+
+    mbedtls_aes_xts_init(&slot->xts_enc);
+    mbedtls_aes_xts_init(&slot->xts_dec);
+    if (mbedtls_aes_xts_setkey_enc(&slot->xts_enc, slot->master_key, 512) != 0 ||
+        mbedtls_aes_xts_setkey_dec(&slot->xts_dec, slot->master_key, 512) != 0) {
+        mbedtls_aes_xts_free(&slot->xts_enc);
+        mbedtls_aes_xts_free(&slot->xts_dec);
+        mbedtls_platform_zeroize(slot->master_key, IRIS_CRYPT_MASTER_KEY_LEN);
+        return ZX_ERR_INTERNAL;
+    }
+
+    slot->active = true;
+    *out_slot = (uint32_t)free_idx;
+    return ZX_OK;
+}
+
 static zx_status_t unlock_with_passphrase(const uint8_t* pw, size_t pw_len, bool is_dev_fallback) {
     static iris_crypt_header_t hdr __attribute__((aligned(8)));
     memset(&hdr, 0, sizeof(hdr));
@@ -599,7 +713,85 @@ static void handle_client_request(zx_handle_t ch, const uint8_t* req_buf, uint32
                     mbedtls_platform_zeroize(g_master_key, sizeof(g_master_key));
                     g_unlocked = false;
                 }
+                for (uint32_t s = 0; s < MAX_USER_KEY_SLOTS; ++s) {
+                    zeroize_user_slot(s);
+                }
                 iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
+                break;
+            }
+            case IRIS_CRYPT_OP_UNLOCK_USER: {
+                uint32_t min_sz = (uint32_t)(sizeof(iris_crypt_unlock_user_req_t) + sizeof(iris_crypt_header_t));
+                if (req_hdr->payload_len < min_sz) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                    break;
+                }
+                const iris_crypt_unlock_user_req_t* ureq =
+                    (const iris_crypt_unlock_user_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                static iris_crypt_header_t uhdr_aligned __attribute__((aligned(8)));
+                memcpy(&uhdr_aligned,
+                       req_buf + sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_unlock_user_req_t),
+                       sizeof(iris_crypt_header_t));
+                const iris_crypt_header_t* uhdr = &uhdr_aligned;
+                uint32_t ulen = ureq->passphrase_len;
+                if (ulen == 0 || ulen > sizeof(ureq->passphrase)) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ACCESS_DENIED, 0);
+                    break;
+                }
+                uint32_t slot_id = 0;
+                zx_status_t ust = unlock_user_header((const uint8_t*)ureq->passphrase, (size_t)ulen, uhdr, &slot_id);
+                if (ust == ZX_OK) {
+                    iris_crypt_user_slot_msg_t* resp = (iris_crypt_user_slot_msg_t*)(rep_buf + sizeof(iris_msg_hdr_t));
+                    resp->slot_id = slot_id;
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_crypt_user_slot_msg_t));
+                    rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_user_slot_msg_t);
+                } else {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ust, 0);
+                }
+                break;
+            }
+            case IRIS_CRYPT_OP_LOCK_USER: {
+                if (req_hdr->payload_len < sizeof(iris_crypt_user_slot_msg_t)) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                    break;
+                }
+                const iris_crypt_user_slot_msg_t* sreq =
+                    (const iris_crypt_user_slot_msg_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                zeroize_user_slot(sreq->slot_id);
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
+                break;
+            }
+            case IRIS_CRYPT_OP_CRYPT_SECTORS: {
+                if (req_hdr->payload_len < sizeof(iris_crypt_sectors_req_t)) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                    break;
+                }
+                const iris_crypt_sectors_req_t* creq =
+                    (const iris_crypt_sectors_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                if (creq->slot_id >= MAX_USER_KEY_SLOTS || !g_user_slots[creq->slot_id].active ||
+                    creq->sector_count == 0 || creq->sector_count > 64u) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                    break;
+                }
+                uint32_t data_bytes = creq->sector_count * 512u;
+                if (req_hdr->payload_len < sizeof(iris_crypt_sectors_req_t) + data_bytes) {
+                    iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_BUFFER_TOO_SMALL, 0);
+                    break;
+                }
+                const uint8_t* src_data = req_buf + sizeof(iris_msg_hdr_t) + sizeof(iris_crypt_sectors_req_t);
+                uint8_t* dst_data = rep_buf + sizeof(iris_msg_hdr_t);
+                user_key_slot_t* slot = &g_user_slots[creq->slot_id];
+                int mode = creq->encrypt ? MBEDTLS_AES_ENCRYPT : MBEDTLS_AES_DECRYPT;
+                mbedtls_aes_xts_context* ctx = creq->encrypt ? &slot->xts_enc : &slot->xts_dec;
+
+                for (uint32_t s = 0; s < creq->sector_count; ++s) {
+                    uint8_t tweak[16];
+                    make_xts_data_unit(creq->start_lba + (uint64_t)s, tweak);
+                    mbedtls_aes_crypt_xts(ctx, mode, 512u, tweak,
+                                          src_data + (size_t)s * 512u,
+                                          dst_data + (size_t)s * 512u);
+                }
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, data_bytes);
+                rep_total_len = sizeof(iris_msg_hdr_t) + data_bytes;
                 break;
             }
             default:
@@ -877,6 +1069,9 @@ int main(int argc, char* argv[]) {
         mbedtls_aes_xts_free(&g_xts_dec);
     }
     mbedtls_platform_zeroize(g_master_key, sizeof(g_master_key));
+    for (uint32_t s = 0; s < MAX_USER_KEY_SLOTS; ++s) {
+        zeroize_user_slot(s);
+    }
 
     for (uint32_t i = 0; i < g_num_clients; ++i) {
         if (g_client_channels[i] != ZX_HANDLE_INVALID) {

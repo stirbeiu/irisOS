@@ -251,8 +251,15 @@ static void write_planned_file(int disk_fd, struct fs* sblock, const host_file_a
     write_inode_entry(disk_fd, sblock, fa->ino, &di);
 }
 
-static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname, bool is_system,
+enum {
+    UFS_FMT_SYSTEM = 0,
+    UFS_FMT_DATA   = 1,
+    UFS_FMT_VAULT  = 2,
+};
+
+static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname, int fmt_kind,
                             const char* toybox_path, const char* const* lib_paths, size_t num_libs) {
+    bool is_system = (fmt_kind == UFS_FMT_SYSTEM);
     const int32_t bsize = 4096;
     const int32_t fsize = 4096;
     const int32_t frag  = 1;
@@ -708,21 +715,57 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
             memcpy(di.di_db, active_font_symlinks[s].target_name, tlen + 1);
             write_inode_entry(fd, sblock, active_font_symlinks[s].ino, &di);
         }
-    } else {
+    } else if (fmt_kind == UFS_FMT_DATA) {
         /* Encrypted Data partition hierarchy:
-         *  ino 2: / (root of Data volume, mounted at /Users) -> admin (3), Applications (4)
+         *  ino 2: / (root of Data volume, mounted at /Users) -> admin (3), Applications (4), Vaults (5), .accounts (6)
          *  ino 3: /admin
          *  ino 4: /Applications
+         *  ino 5: /Vaults -> admin.img (7)
+         *  ino 6: /.accounts
+         *  ino 7: /Vaults/admin.img (6 MB encrypted user UFS2 vault, when provided in lib_paths[0])
          */
-        for (uint32_t ino = 2; ino <= 4; ++ino) {
+        const char* admin_vault_path = (lib_paths && num_libs > 0) ? lib_paths[0] : NULL;
+        host_file_alloc_t vault_alloc;
+        memset(&vault_alloc, 0, sizeof(vault_alloc));
+        vault_alloc.fd = -1;
+        bool has_vault = false;
+        if (admin_vault_path && admin_vault_path[0] != '\0') {
+            int vfd = open(admin_vault_path, O_RDONLY);
+            struct stat vst;
+            if (vfd >= 0 && fstat(vfd, &vst) == 0 && vst.st_size > 0) {
+                vault_alloc.fd   = vfd;
+                vault_alloc.ino  = 7;
+                vault_alloc.mode = 0600;
+                vault_alloc.size = (uint64_t)vst.st_size;
+                has_vault        = true;
+            } else if (vfd >= 0) {
+                close(vfd);
+            }
+        }
+
+        uint32_t max_ino = has_vault ? 7u : 6u;
+        for (uint32_t ino = 2; ino <= max_ino; ++ino) {
             setbit(inosused, ino);
             used_inodes++;
         }
-        used_dirs = 3;
+        used_dirs = 4;
 
-        uint32_t blk_root  = next_blk++;
-        uint32_t blk_admin = next_blk++;
-        uint32_t blk_apps  = next_blk++;
+        uint32_t blk_root     = next_blk++;
+        uint32_t blk_admin    = next_blk++;
+        uint32_t blk_apps     = next_blk++;
+        uint32_t blk_vaults   = next_blk++;
+        uint32_t blk_accounts = next_blk++;
+
+        if (has_vault) {
+            plan_file_blocks(&vault_alloc, &next_blk);
+        }
+
+        if ((int32_t)next_blk >= total_blocks) {
+            fprintf(stderr, "mkufs2: error: Data volume '%s' out of blocks (needed %u, total %d)\n",
+                    volname, next_blk, total_blocks);
+            if (vault_alloc.fd >= 0) close(vault_alloc.fd);
+            return -1;
+        }
 
         for (uint32_t b = 38; b < next_blk; ++b) {
             ffs_clrblock(sblock, blksfree, (int32_t)b);
@@ -732,24 +775,108 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
         dir_item_t root_items[] = {
             { 3, DT_DIR, "admin" },
             { 4, DT_DIR, "Applications" },
+            { 5, DT_DIR, "Vaults" },
+            { 6, DT_REG, ".accounts" },
         };
-        build_dir_block(dir_blk, 2, 2, root_items, 2);
+        uint32_t sz_root = build_dir_block(dir_blk, 2, 2, root_items, 4);
         pwrite(fd, dir_blk, 4096, (off_t)blk_root * 4096);
 
-        build_dir_block(dir_blk, 3, 2, NULL, 0);
+        uint32_t sz_admin = build_dir_block(dir_blk, 3, 2, NULL, 0);
         pwrite(fd, dir_blk, 4096, (off_t)blk_admin * 4096);
 
-        build_dir_block(dir_blk, 4, 2, NULL, 0);
+        uint32_t sz_apps = build_dir_block(dir_blk, 4, 2, NULL, 0);
         pwrite(fd, dir_blk, 4096, (off_t)blk_apps * 4096);
 
+        dir_item_t vault_items[] = { { 7, DT_REG, "admin.img" } };
+        uint32_t sz_vaults = build_dir_block(dir_blk, 5, 2, vault_items, has_vault ? 1u : 0u);
+        pwrite(fd, dir_blk, 4096, (off_t)blk_vaults * 4096);
+
+        const char* accounts_txt =
+            "admin|Administrator|/System/Resources/avatar_admin.qoi|/System/Resources/wallpaper_admin.qoi|/Vaults/admin.img|0\n"
+            "guest|Guest||/System/Resources/wallpaper_guest.qoi||1\n";
+        uint8_t acc_blk[4096];
+        memset(acc_blk, 0, sizeof(acc_blk));
+        memcpy(acc_blk, accounts_txt, strlen(accounts_txt));
+        pwrite(fd, acc_blk, 4096, (off_t)blk_accounts * 4096);
+
         struct ufs2_dinode di;
-        uint32_t dir_blks[3] = { blk_root, blk_admin, blk_apps };
+        uint32_t dir_blks[4]   = { blk_root, blk_admin, blk_apps, blk_vaults };
+        uint32_t dir_sizes[4]  = { sz_root, sz_admin, sz_apps, sz_vaults };
+        uint16_t dir_nlinks[4] = { 5, 2, 2, 2 };
+        for (int i = 0; i < 4; ++i) {
+            memset(&di, 0, sizeof(di));
+            di.di_mode    = IFDIR | 0755;
+            di.di_nlink   = dir_nlinks[i];
+            di.di_size    = dir_sizes[i];
+            di.di_blocks  = 8;
+            di.di_blksize = 4096;
+            di.di_gen     = 1;
+            di.di_mtime   = sblock->fs_time;
+            di.di_atime   = sblock->fs_time;
+            di.di_ctime   = sblock->fs_time;
+            di.di_db[0]   = dir_blks[i];
+            write_inode_entry(fd, sblock, (uint32_t)(2 + i), &di);
+        }
+
+        /* Write inode 6 (/.accounts) */
+        memset(&di, 0, sizeof(di));
+        di.di_mode    = IFREG | 0644;
+        di.di_nlink   = 1;
+        di.di_size    = (int64_t)strlen(accounts_txt);
+        di.di_blocks  = 8;
+        di.di_blksize = 4096;
+        di.di_gen     = 1;
+        di.di_mtime   = sblock->fs_time;
+        di.di_atime   = sblock->fs_time;
+        di.di_ctime   = sblock->fs_time;
+        di.di_db[0]   = blk_accounts;
+        write_inode_entry(fd, sblock, 6, &di);
+
+        if (has_vault) {
+            write_planned_file(fd, sblock, &vault_alloc);
+            close(vault_alloc.fd);
+        }
+    } else {
+        /* Per-user encrypted vault home hierarchy:
+         *  ino 2: / (user home root) -> Desktop (3), Documents (4)
+         *  ino 3: /Desktop
+         *  ino 4: /Documents
+         */
+        for (uint32_t ino = 2; ino <= 4; ++ino) {
+            setbit(inosused, ino);
+            used_inodes++;
+        }
+        used_dirs = 3;
+
+        uint32_t blk_root = next_blk++;
+        uint32_t blk_desk = next_blk++;
+        uint32_t blk_docs = next_blk++;
+
+        for (uint32_t b = 38; b < next_blk; ++b) {
+            ffs_clrblock(sblock, blksfree, (int32_t)b);
+        }
+
+        uint8_t dir_blk[4096];
+        dir_item_t root_items[] = {
+            { 3, DT_DIR, "Desktop" },
+            { 4, DT_DIR, "Documents" },
+        };
+        uint32_t sz_root = build_dir_block(dir_blk, 2, 2, root_items, 2);
+        pwrite(fd, dir_blk, 4096, (off_t)blk_root * 4096);
+        uint32_t sz_desk = build_dir_block(dir_blk, 3, 2, NULL, 0);
+        pwrite(fd, dir_blk, 4096, (off_t)blk_desk * 4096);
+        uint32_t sz_docs = build_dir_block(dir_blk, 4, 2, NULL, 0);
+        pwrite(fd, dir_blk, 4096, (off_t)blk_docs * 4096);
+
+        struct ufs2_dinode di;
+        uint32_t dir_blks[3]   = { blk_root, blk_desk, blk_docs };
+        uint32_t dir_sizes[3]  = { sz_root, sz_desk, sz_docs };
         uint16_t dir_nlinks[3] = { 4, 2, 2 };
         for (int i = 0; i < 3; ++i) {
             memset(&di, 0, sizeof(di));
             di.di_mode    = IFDIR | 0755;
             di.di_nlink   = dir_nlinks[i];
-            di.di_size    = DIRBLKSIZ;
+            di.di_size    = dir_sizes[i];
             di.di_blocks  = 8;
             di.di_blksize = 4096;
             di.di_gen     = 1;
@@ -814,7 +941,8 @@ static int format_ufs2_file(int fd, uint64_t total_sectors, const char* volname,
     return 0;
 }
 
-static int encrypt_data_partition(int plain_fd, const char* out_path, uint64_t total_phys_sectors) {
+static int encrypt_data_partition(int plain_fd, const char* out_path, uint64_t total_phys_sectors,
+                                  const char* custom_passphrase) {
     uint64_t logical_sectors = total_phys_sectors - IRIS_CRYPT_HEADER_SECTORS;
 
     iris_crypt_header_t hdr;
@@ -836,8 +964,10 @@ static int encrypt_data_partition(int plain_fd, const char* out_path, uint64_t t
     };
     memcpy(hdr.argon2_salt, k_dev_salt, IRIS_CRYPT_SALT_LEN);
 
-    const uint8_t* dev_pw = (const uint8_t*)IRIS_CRYPT_DEV_PASSPHRASE;
-    size_t dev_pw_len = strlen(IRIS_CRYPT_DEV_PASSPHRASE);
+    const char* pw_str = (custom_passphrase && custom_passphrase[0] != '\0')
+                         ? custom_passphrase : IRIS_CRYPT_DEV_PASSPHRASE;
+    const uint8_t* dev_pw = (const uint8_t*)pw_str;
+    size_t dev_pw_len = strlen(pw_str);
 
     uint8_t kek[IRIS_CRYPT_MASTER_KEY_LEN];
     if (iris_argon2id_derive(dev_pw, dev_pw_len,
@@ -943,32 +1073,61 @@ int main(int argc, char* argv[]) {
             perror("open");
             return 1;
         }
-        if (format_ufs2_file(fd, total_sectors, volname, true, toybox_bin, lib_paths, num_libs) != 0) {
+        if (format_ufs2_file(fd, total_sectors, volname, UFS_FMT_SYSTEM, toybox_bin, lib_paths, num_libs) != 0) {
             close(fd);
             return 1;
         }
         close(fd);
     } else if (strcmp(mode, "data-encrypted") == 0) {
+        /* 1. Build 6 MB encrypted Administrator UFS2 vault (12288 sectors, dev passphrase "irisos") */
+        char tmp_vault_plain[512];
+        char tmp_vault_crypt[512];
+        snprintf(tmp_vault_plain, sizeof(tmp_vault_plain), "%s.vault.plain.tmp", out_path);
+        snprintf(tmp_vault_crypt, sizeof(tmp_vault_crypt), "%s.vault.crypt.tmp", out_path);
+
+        const uint64_t vault_total_sectors = 12288ULL; /* 6 MB */
+        const uint64_t vault_logical_sectors = vault_total_sectors - IRIS_CRYPT_HEADER_SECTORS;
+        int vfd = open(tmp_vault_plain, O_CREAT | O_TRUNC | O_RDWR, 0644);
+        if (vfd < 0) {
+            perror("open vault tmp");
+            return 1;
+        }
+        if (format_ufs2_file(vfd, vault_logical_sectors, "admin_home", UFS_FMT_VAULT, NULL, NULL, 0) != 0 ||
+            encrypt_data_partition(vfd, tmp_vault_crypt, vault_total_sectors, "irisos") != 0) {
+            close(vfd);
+            unlink(tmp_vault_plain);
+            unlink(tmp_vault_crypt);
+            return 1;
+        }
+        close(vfd);
+        unlink(tmp_vault_plain);
+
+        /* 2. Build outer 30 MB encrypted Data volume containing /Users/.accounts & /Vaults/admin.img */
         char tmp_plain[512];
         snprintf(tmp_plain, sizeof(tmp_plain), "%s.plain.tmp", out_path);
         int fd = open(tmp_plain, O_CREAT | O_TRUNC | O_RDWR, 0644);
         if (fd < 0) {
             perror("open tmp");
+            unlink(tmp_vault_crypt);
             return 1;
         }
         uint64_t logical_sectors = total_sectors - IRIS_CRYPT_HEADER_SECTORS;
-        if (format_ufs2_file(fd, logical_sectors, volname, false, NULL, NULL, 0) != 0) {
+        const char* vault_libs[1] = { tmp_vault_crypt };
+        if (format_ufs2_file(fd, logical_sectors, volname, UFS_FMT_DATA, NULL, vault_libs, 1) != 0) {
             close(fd);
             unlink(tmp_plain);
+            unlink(tmp_vault_crypt);
             return 1;
         }
-        if (encrypt_data_partition(fd, out_path, total_sectors) != 0) {
+        if (encrypt_data_partition(fd, out_path, total_sectors, NULL) != 0) {
             close(fd);
             unlink(tmp_plain);
+            unlink(tmp_vault_crypt);
             return 1;
         }
         close(fd);
         unlink(tmp_plain);
+        unlink(tmp_vault_crypt);
     } else {
         fprintf(stderr, "Unknown mode '%s'\n", mode);
         return 1;

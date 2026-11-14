@@ -204,11 +204,26 @@ static FT_Face load_face_with_fallback(const char* primary, const char* fallback
     return NULL;
 }
 
+zx_status_t init_material_icons_from_memory(const uint8_t* ttf_bytes, size_t len) {
+    if (!ttf_bytes || len == 0) return ZX_ERR_INVALID_ARGS;
+    if (!g_ft_lib && FT_Init_FreeType(&g_ft_lib) != 0) {
+        return ZX_ERR_INTERNAL;
+    }
+    if (g_ft_material_face) {
+        FT_Done_Face(g_ft_material_face);
+        g_ft_material_face = NULL;
+    }
+    if (FT_New_Memory_Face(g_ft_lib, ttf_bytes, (FT_Long)len, 0, &g_ft_material_face) != 0) {
+        g_ft_material_face = NULL;
+        return ZX_ERR_IO;
+    }
+    return ZX_OK;
+}
+
 zx_status_t init_font_subsystem(void) {
     memset(g_family_faces, 0, sizeof(g_family_faces));
-    g_ft_material_face = NULL;
 
-    if (FT_Init_FreeType(&g_ft_lib) != 0) {
+    if (!g_ft_lib && FT_Init_FreeType(&g_ft_lib) != 0) {
         log_status(STATUS_FAIL, "iris_compositor", "Failed to initialize FreeType 2 engine.");
         return ZX_ERR_INTERNAL;
     }
@@ -249,8 +264,22 @@ zx_status_t init_font_subsystem(void) {
         g_family_faces[FONT_FAMILY_JETBRAINS][1] = g_family_faces[FONT_FAMILY_JETBRAINS][0];
     }
 
-    /* 4. Material Icons */
-    g_ft_material_face = load_face_with_fallback(MATERIAL_ICONS_PATH, NULL, NULL);
+    /* 4. Instrument Serif (Display Headers) */
+    g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][0] =
+        load_face_with_fallback(INSTRUMENT_SERIF_REG_PATH, NULL, NULL);
+    if (!g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][0]) {
+        g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][0] = g_family_faces[FONT_FAMILY_INTER_DISPLAY][0];
+    }
+    g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][1] =
+        load_face_with_fallback(INSTRUMENT_SERIF_IT_PATH, NULL, NULL);
+    if (!g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][1]) {
+        g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][1] = g_family_faces[FONT_FAMILY_INSTRUMENT_SERIF][0];
+    }
+
+    /* 5. Material Icons (keep memory face if already loaded from BOOTFS) */
+    if (!g_ft_material_face) {
+        g_ft_material_face = load_face_with_fallback(MATERIAL_ICONS_PATH, NULL, NULL);
+    }
 
     if (!g_family_faces[FONT_FAMILY_INTER_DISPLAY][0]) {
         log_status(STATUS_WARN, "iris_compositor",
@@ -477,6 +506,20 @@ static const cached_glyph_t* get_cached_material_glyph(uint32_t codepoint, uint3
     return g;
 }
 
+typedef struct unicode_glyph_entry {
+    bool           in_use;
+    font_family_t  family;
+    uint16_t       weight;
+    bool           italic;
+    uint32_t       pixel_size;
+    uint32_t       codepoint;
+    uint32_t       last_used;
+    cached_glyph_t glyph;
+} unicode_glyph_entry_t;
+
+#define UNICODE_CACHE_SLOTS 32u
+static unicode_glyph_entry_t g_unicode_cache[UNICODE_CACHE_SLOTS];
+
 void cleanup_font_subsystem(void) {
     for (uint32_t b = 0; b < GLYPH_CACHE_BUCKETS; ++b) {
         free_bucket_glyphs(&g_glyph_buckets[b]);
@@ -488,6 +531,13 @@ void cleanup_font_subsystem(void) {
         }
     }
     memset(g_mat_icon_cache, 0, sizeof(g_mat_icon_cache));
+    for (uint32_t i = 0; i < UNICODE_CACHE_SLOTS; ++i) {
+        if (g_unicode_cache[i].glyph.alpha != NULL) {
+            free(g_unicode_cache[i].glyph.alpha);
+            g_unicode_cache[i].glyph.alpha = NULL;
+        }
+    }
+    memset(g_unicode_cache, 0, sizeof(g_unicode_cache));
 
     /* Deduplicate FT_Face pointers before calling FT_Done_Face */
     FT_Face unique_faces[FONT_FAMILY_COUNT * 2 + 1];
@@ -595,6 +645,106 @@ static void blend_glyph_bitmap(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
     }
 }
 
+static uint32_t decode_utf8_cp(const char* s, size_t* io_idx) {
+    uint8_t b0 = (uint8_t)s[*io_idx];
+    if (b0 < 0x80u) {
+        (*io_idx) += 1u;
+        return b0;
+    }
+    if ((b0 & 0xE0u) == 0xC0u && (s[*io_idx + 1u] & 0xC0u) == 0x80u) {
+        uint32_t cp = ((uint32_t)(b0 & 0x1Fu) << 6) | (uint32_t)((uint8_t)s[*io_idx + 1u] & 0x3Fu);
+        (*io_idx) += 2u;
+        return cp;
+    }
+    if ((b0 & 0xF0u) == 0xE0u && (s[*io_idx + 1u] & 0xC0u) == 0x80u && (s[*io_idx + 2u] & 0xC0u) == 0x80u) {
+        uint32_t cp = ((uint32_t)(b0 & 0x0Fu) << 12) |
+                      ((uint32_t)((uint8_t)s[*io_idx + 1u] & 0x3Fu) << 6) |
+                      (uint32_t)((uint8_t)s[*io_idx + 2u] & 0x3Fu);
+        (*io_idx) += 3u;
+        return cp;
+    }
+    if ((b0 & 0xF8u) == 0xF0u && (s[*io_idx + 1u] & 0xC0u) == 0x80u &&
+        (s[*io_idx + 2u] & 0xC0u) == 0x80u && (s[*io_idx + 3u] & 0xC0u) == 0x80u) {
+        uint32_t cp = ((uint32_t)(b0 & 0x07u) << 18) |
+                      ((uint32_t)((uint8_t)s[*io_idx + 1u] & 0x3Fu) << 12) |
+                      ((uint32_t)((uint8_t)s[*io_idx + 2u] & 0x3Fu) << 6) |
+                      (uint32_t)((uint8_t)s[*io_idx + 3u] & 0x3Fu);
+        (*io_idx) += 4u;
+        return cp;
+    }
+    (*io_idx) += 1u;
+    return 0xFFFDu;
+}
+
+static const cached_glyph_t* get_cached_unicode_glyph(font_family_t family, uint16_t weight, bool italic,
+                                                      FT_Face face, uint32_t pixel_size, uint32_t cp) {
+    if (!face || pixel_size == 0) return NULL;
+    unicode_glyph_entry_t* slot_entry = NULL;
+    uint32_t lru_idx = 0;
+    uint32_t lru_seq = UINT32_MAX;
+
+    for (uint32_t i = 0; i < UNICODE_CACHE_SLOTS; ++i) {
+        if (g_unicode_cache[i].in_use &&
+            g_unicode_cache[i].family == family &&
+            g_unicode_cache[i].weight == weight &&
+            g_unicode_cache[i].italic == italic &&
+            g_unicode_cache[i].pixel_size == pixel_size &&
+            g_unicode_cache[i].codepoint == cp) {
+            g_unicode_cache[i].last_used = g_cache_use_seq++;
+            return g_unicode_cache[i].glyph.load_failed ? NULL : &g_unicode_cache[i].glyph;
+        }
+        if (!g_unicode_cache[i].in_use && !slot_entry) {
+            slot_entry = &g_unicode_cache[i];
+        } else if (g_unicode_cache[i].in_use && g_unicode_cache[i].last_used < lru_seq) {
+            lru_seq = g_unicode_cache[i].last_used;
+            lru_idx = i;
+        }
+    }
+
+    if (!slot_entry) {
+        slot_entry = &g_unicode_cache[lru_idx];
+        if (slot_entry->glyph.alpha) free(slot_entry->glyph.alpha);
+        memset(slot_entry, 0, sizeof(*slot_entry));
+    }
+    slot_entry->in_use     = true;
+    slot_entry->family     = family;
+    slot_entry->weight     = weight;
+    slot_entry->italic     = italic;
+    slot_entry->pixel_size = pixel_size;
+    slot_entry->codepoint  = cp;
+    slot_entry->last_used  = g_cache_use_seq++;
+
+    cached_glyph_t* g = &slot_entry->glyph;
+    g->valid = true;
+    apply_variable_axes(face, family, weight);
+    FT_Set_Pixel_Sizes(face, 0, pixel_size);
+    if (FT_Load_Char(face, (FT_ULong)cp, FT_LOAD_RENDER) != 0) {
+        g->load_failed = true;
+        return NULL;
+    }
+    FT_GlyphSlot slot = face->glyph;
+    FT_Bitmap* bmp = &slot->bitmap;
+    g->bitmap_left = (int16_t)slot->bitmap_left;
+    g->bitmap_top  = (int16_t)slot->bitmap_top;
+    g->advance_x   = (int16_t)(slot->advance.x >> 6);
+    g->width       = (uint16_t)bmp->width;
+    g->rows        = (uint16_t)bmp->rows;
+    g->alpha       = NULL;
+    if (bmp->buffer && bmp->width > 0 && bmp->rows > 0) {
+        size_t total = (size_t)bmp->width * (size_t)bmp->rows;
+        g->alpha = (uint8_t*)malloc(total);
+        if (g->alpha) {
+            int pitch = bmp->pitch < 0 ? -bmp->pitch : bmp->pitch;
+            for (unsigned int r = 0; r < bmp->rows; ++r) {
+                memcpy(g->alpha + ((size_t)r * bmp->width),
+                       bmp->buffer + ((size_t)r * (unsigned int)pitch),
+                       bmp->width);
+            }
+        }
+    }
+    return g;
+}
+
 void draw_text_ft_ex(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                      int32_t x, int32_t y, uint32_t pixel_size,
                      font_family_t family, uint16_t weight, bool italic,
@@ -612,13 +762,15 @@ void draw_text_ft_ex(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
     int32_t pen_x      = x;
     int32_t baseline_y = y + (int32_t)pixel_size - 2;
 
-    for (size_t i = 0; str[i] != '\0'; ++i) {
-        uint8_t ch = (uint8_t)str[i];
-        if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR) {
-            continue;
+    size_t i = 0;
+    while (str[i] != '\0') {
+        uint32_t cp = decode_utf8_cp(str, &i);
+        const cached_glyph_t* g = NULL;
+        if (cp >= GLYPH_CACHE_MIN_CHAR && cp <= GLYPH_CACHE_MAX_CHAR) {
+            g = get_cached_glyph(family, weight, italic, face, pixel_size, (uint8_t)cp);
+        } else if (cp >= 0x80u) {
+            g = get_cached_unicode_glyph(family, weight, italic, face, pixel_size, cp);
         }
-
-        const cached_glyph_t* g = get_cached_glyph(family, weight, italic, face, pixel_size, ch);
         if (!g) {
             continue;
         }
@@ -643,12 +795,15 @@ int32_t measure_text_ft_ex(font_family_t family, uint16_t weight, bool italic,
         return (int32_t)strlen(str) * 8;
     }
     int32_t total_w = 0;
-    for (size_t i = 0; str[i] != '\0'; ++i) {
-        uint8_t ch = (uint8_t)str[i];
-        if (ch < GLYPH_CACHE_MIN_CHAR || ch > GLYPH_CACHE_MAX_CHAR) {
-            continue;
+    size_t i = 0;
+    while (str[i] != '\0') {
+        uint32_t cp = decode_utf8_cp(str, &i);
+        const cached_glyph_t* g = NULL;
+        if (cp >= GLYPH_CACHE_MIN_CHAR && cp <= GLYPH_CACHE_MAX_CHAR) {
+            g = get_cached_glyph(family, weight, italic, face, pixel_size, (uint8_t)cp);
+        } else if (cp >= 0x80u) {
+            g = get_cached_unicode_glyph(family, weight, italic, face, pixel_size, cp);
         }
-        const cached_glyph_t* g = get_cached_glyph(family, weight, italic, face, pixel_size, ch);
         if (g) {
             total_w += g->advance_x;
         }

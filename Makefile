@@ -1,10 +1,11 @@
 # ==============================================================================
 # irisOS - Root Makefile
 # ==============================================================================
-# Dispatches high-level build and run commands:
+# Dispatches high-level build, run, and maintenance commands:
 #   make build all | x86_64 | aarch64
 #   make run all   | x86_64 | aarch64
-#   make clean
+#   make reset-data all | x86_64 | aarch64
+#   make status | doctor | graph | clean
 # ==============================================================================
 
 SHELL := /bin/bash
@@ -15,7 +16,6 @@ CMD := $(firstword $(MAKECMDGOALS))
 
 ifeq ($(CMD),build)
   BUILD_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-  # Suppress errors for subsequent words treated as goals
   %::
 	@:
 .PHONY: build
@@ -24,25 +24,22 @@ build:
 
 else ifeq ($(CMD),run)
   RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-  # Suppress errors for subsequent words treated as goals
   %::
 	@:
 .PHONY: run
 run:
 	@$(IRIS_CLI) run $(RUN_ARGS)
 
-else ifeq ($(CMD),test)
-  TEST_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-  # Suppress errors for subsequent words treated as goals
+else ifeq ($(CMD),reset-data)
+  RESET_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
   %::
 	@:
-.PHONY: test
-test:
-	@$(IRIS_CLI) test $(TEST_ARGS)
+.PHONY: reset-data
+reset-data:
+	@$(IRIS_CLI) reset-data $(RESET_ARGS)
 
 else ifeq ($(CMD),image)
   IMAGE_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-  # Suppress errors for subsequent words treated as goals
   %::
 	@:
 .PHONY: image
@@ -51,7 +48,7 @@ image:
 
 else
 
-.PHONY: default help all clean x86_64 aarch64 image graph
+.PHONY: default help all clean x86_64 aarch64 image graph status doctor
 
 default: help
 
@@ -66,6 +63,12 @@ clean:
 
 graph:
 	@$(IRIS_CLI) graph
+
+status:
+	@$(IRIS_CLI) status
+
+doctor:
+	@$(IRIS_CLI) doctor
 
 x86_64:
 	@$(IRIS_CLI) build x86_64

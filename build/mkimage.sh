@@ -119,7 +119,9 @@ fi
             -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost" \
             -e "bin/iris_pty=${BUILD_DIR}/bin/iris_pty" \
             -e "bin/terminal=${BUILD_DIR}/bin/terminal" \
-            -e "bin/toybox=${BUILD_DIR}/bin/toybox"
+            -e "bin/toybox=${BUILD_DIR}/bin/toybox" \
+            -e "resources/eye_dark.svg=${ROOT_DIR}/resources/icons/eye_dark.svg" \
+            -e "resources/MaterialIcons-Regular.ttf=${ROOT_DIR}/resources/fonts/MaterialIcons-Regular.ttf"
 
 cp -f "${IRIS_ZBI_A}" "${IRIS_ZBI_B}"
 
@@ -164,20 +166,31 @@ INTER_TIGHT_VAR="${ROOT_DIR}/resources/fonts/InterTight-Variable.ttf"
 INTER_TIGHT_IT_VAR="${ROOT_DIR}/resources/fonts/InterTight-Italic-Variable.ttf"
 JETBRAINS_VAR="${ROOT_DIR}/resources/fonts/JetBrainsMono-Variable.ttf"
 JETBRAINS_IT_VAR="${ROOT_DIR}/resources/fonts/JetBrainsMono-Italic-Variable.ttf"
+INSTRUMENT_SERIF_REG="${ROOT_DIR}/resources/fonts/InstrumentSerif-Regular.ttf"
+INSTRUMENT_SERIF_IT="${ROOT_DIR}/resources/fonts/InstrumentSerif-Italic.ttf"
 MATERIAL_ICONS_TTF="${ROOT_DIR}/resources/fonts/MaterialIcons-Regular.ttf"
 WALLPAPER_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper.qoi"
+WALLPAPER_ADMIN_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper_admin.qoi"
+WALLPAPER_GUEST_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper_guest.qoi"
+AVATAR_ADMIN_QOI="${ROOT_DIR}/resources/avatars/avatar_admin.qoi"
 EYE_LIGHT_SVG="${ROOT_DIR}/resources/icons/eye_light.svg"
+EYE_DARK_SVG="${ROOT_DIR}/resources/icons/eye_dark.svg"
 
 if [[ ! -f "${INTER_VAR}" || ! -f "${INTER_IT_VAR}" || \
       ! -f "${INTER_TIGHT_VAR}" || ! -f "${INTER_TIGHT_IT_VAR}" || \
       ! -f "${JETBRAINS_VAR}" || ! -f "${JETBRAINS_IT_VAR}" || \
+      ! -f "${INSTRUMENT_SERIF_REG}" || ! -f "${INSTRUMENT_SERIF_IT}" || \
       ! -f "${MATERIAL_ICONS_TTF}" ]]; then
-    echo "==> Fetching variable fonts and Material Icons..."
+    echo "==> Fetching variable fonts, Instrument Serif, and Material Icons..."
     bash "${ROOT_DIR}/scripts/fetch_fonts.sh"
 fi
 if [[ ! -f "${WALLPAPER_QOI}" ]]; then
     echo "==> Fetching Unsplash wallpaper (${WALLPAPER_QOI})..."
     python3 "${ROOT_DIR}/scripts/fetch_wallpaper.py"
+fi
+if [[ ! -f "${WALLPAPER_ADMIN_QOI}" || ! -f "${WALLPAPER_GUEST_QOI}" || ! -f "${AVATAR_ADMIN_QOI}" ]]; then
+    echo "==> Generating default per-user wallpapers and avatars..."
+    python3 "${ROOT_DIR}/scripts/gen_user_assets.py"
 fi
 SYS_LIBS=(
     "${BUILD_DIR}/lib/libzircon.so"
@@ -196,9 +209,15 @@ SYS_LIBS=(
     "${INTER_TIGHT_IT_VAR}"
     "${JETBRAINS_VAR}"
     "${JETBRAINS_IT_VAR}"
+    "${INSTRUMENT_SERIF_REG}"
+    "${INSTRUMENT_SERIF_IT}"
     "${MATERIAL_ICONS_TTF}"
     "${WALLPAPER_QOI}"
+    "${WALLPAPER_ADMIN_QOI}"
+    "${WALLPAPER_GUEST_QOI}"
+    "${AVATAR_ADMIN_QOI}"
     "${EYE_LIGHT_SVG}"
+    "${EYE_DARK_SVG}"
 )
 echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries, Variable Fonts & Material Icons..."
 "${HOST_TOOLS}/mkufs2" "${SYS_A_IMG}" 65536 system System_A "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
@@ -208,13 +227,13 @@ echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2
 DISK_RAW="${IMAGES_DIR}/disk_${ARCH_NAME}.raw"
 DATA_IMG="${IMAGES_DIR}/data_${ARCH_NAME}.crypt"
 
-# If disk_${ARCH_NAME}.raw already exists with valid size (and not packaging clean test image), preserve Partition 4 (Data)
+# If disk_${ARCH_NAME}.raw already exists with valid size and IRIS_RESET_DATA!=1, preserve Partition 4 (Data)
 RAW_SIZE=$(stat -f%z "${DISK_RAW}" 2>/dev/null || stat -c%s "${DISK_RAW}" 2>/dev/null || echo 0)
-if [[ "${IRIS_MODE}" != "test" && -f "${DISK_RAW}" && ${RAW_SIZE} -ge 134217728 ]]; then
+if [[ "${IRIS_RESET_DATA:-0}" != "1" && -f "${DISK_RAW}" && ${RAW_SIZE} -ge 134217728 ]]; then
     echo "==> Preserving existing Partition 4 (Data) from ${DISK_RAW}..."
     dd if="${DISK_RAW}" of="${DATA_IMG}" bs=512 skip=198656 count=61440 status=none
 else
-    echo "==> Formatting Partition 4 (Data): 30 MB AES-256-XTS Encrypted UFS2..."
+    echo "==> Formatting Partition 4 (Data): 30 MB AES-256-XTS Encrypted UFS2 (with Administrator Vault)..."
     "${HOST_TOOLS}/mkufs2" "${DATA_IMG}" 61440 data-encrypted Data
 fi
 

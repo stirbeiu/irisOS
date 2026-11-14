@@ -20,6 +20,8 @@ INTER_TIGHT_REG_URL="https://raw.githubusercontent.com/google/fonts/main/ofl/int
 INTER_TIGHT_IT_URL="https://raw.githubusercontent.com/google/fonts/main/ofl/intertight/InterTight-Italic%5Bwght%5D.ttf"
 JB_MONO_REG_URL="https://raw.githubusercontent.com/google/fonts/main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf"
 JB_MONO_IT_URL="https://raw.githubusercontent.com/google/fonts/main/ofl/jetbrainsmono/JetBrainsMono-Italic%5Bwght%5D.ttf"
+INSTRUMENT_SERIF_REG_URL="https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentserif/InstrumentSerif-Regular.ttf"
+INSTRUMENT_SERIF_IT_URL="https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentserif/InstrumentSerif-Italic.ttf"
 MATERIAL_ICONS_URL="https://raw.githubusercontent.com/google/material-design-icons/master/font/MaterialIcons-Regular.ttf"
 
 if [[ "${1:-}" == "--clean" ]]; then
@@ -32,6 +34,8 @@ if [[ "${1:-}" == "--clean" ]]; then
         "${FONTS_DIR}/InterTight-Italic-Variable.ttf" \
         "${FONTS_DIR}/JetBrainsMono-Variable.ttf" \
         "${FONTS_DIR}/JetBrainsMono-Italic-Variable.ttf" \
+        "${FONTS_DIR}/InstrumentSerif-Regular.ttf" \
+        "${FONTS_DIR}/InstrumentSerif-Italic.ttf" \
         "${FONTS_DIR}/MaterialIcons-Regular.ttf"
 fi
 
@@ -72,6 +76,15 @@ fi
 if [[ ! -f "${FONTS_DIR}/JetBrainsMono-Italic-Variable.ttf" ]]; then
     echo "==> Downloading JetBrainsMono-Italic-Variable.ttf..."
     curl -fsSL -o "${FONTS_DIR}/JetBrainsMono-Italic-Variable.ttf" "${JB_MONO_IT_URL}"
+fi
+
+if [[ ! -f "${FONTS_DIR}/InstrumentSerif-Regular.ttf" ]]; then
+    echo "==> Downloading InstrumentSerif-Regular.ttf..."
+    curl -fsSL -o "${FONTS_DIR}/InstrumentSerif-Regular.ttf" "${INSTRUMENT_SERIF_REG_URL}"
+fi
+if [[ ! -f "${FONTS_DIR}/InstrumentSerif-Italic.ttf" ]]; then
+    echo "==> Downloading InstrumentSerif-Italic.ttf..."
+    curl -fsSL -o "${FONTS_DIR}/InstrumentSerif-Italic.ttf" "${INSTRUMENT_SERIF_IT_URL}"
 fi
 
 if [[ ! -f "${FONTS_DIR}/MaterialIcons-Regular.ttf" ]]; then

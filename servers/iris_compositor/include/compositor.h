@@ -69,18 +69,22 @@
 #define INTER_BOLD_PATH           "/System/Resources/Fonts/InterDisplay-Bold.otf"
 #define INTER_ITALIC_PATH         "/System/Resources/Fonts/InterDisplay-Italic.otf"
 #define INTER_LEGACY_PATH         "/System/Resources/Fonts/Inter.otf"
+#define INSTRUMENT_SERIF_REG_PATH "/System/Resources/Fonts/InstrumentSerif-Regular.ttf"
+#define INSTRUMENT_SERIF_IT_PATH  "/System/Resources/Fonts/InstrumentSerif-Italic.ttf"
 #define WALLPAPER_QOI_PATH        "/System/Resources/wallpaper.qoi"
 #define EYE_LIGHT_SVG_PATH        "/System/Resources/eye_light.svg"
+#define EYE_DARK_SVG_PATH         "/System/Resources/eye_dark.svg"
 
 /**
  * @brief Font family selector for variable FreeType typography.
  */
 typedef enum {
-    FONT_FAMILY_INTER_DISPLAY = 0,
-    FONT_FAMILY_INTER         = 1,
-    FONT_FAMILY_INTER_TIGHT   = 2,
-    FONT_FAMILY_JETBRAINS     = 3,
-    FONT_FAMILY_COUNT         = 4
+    FONT_FAMILY_INTER_DISPLAY    = 0,
+    FONT_FAMILY_INTER            = 1,
+    FONT_FAMILY_INTER_TIGHT      = 2,
+    FONT_FAMILY_JETBRAINS        = 3,
+    FONT_FAMILY_INSTRUMENT_SERIF = 4,
+    FONT_FAMILY_COUNT            = 5
 } font_family_t;
 
 /**
@@ -247,7 +251,8 @@ extern uint32_t          g_next_window_id;
 extern comp_dirty_rect_t g_dirty_rect;
 extern comp_dirty_rect_t g_active_clip;
 extern bool              g_dirty_active;
-extern bool              g_unlock_active;
+extern bool              g_boot_splash_active;
+extern uint32_t          g_boot_stage;
 
 /* ==============================================================================
  * Subsystem Function Declarations
@@ -255,6 +260,7 @@ extern bool              g_unlock_active;
 
 /* font.c */
 zx_status_t init_font_subsystem(void);
+zx_status_t init_material_icons_from_memory(const uint8_t* ttf_bytes, size_t len);
 void cleanup_font_subsystem(void);
 void draw_string_8x8(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                      int32_t x, int32_t y, const char* str, uint32_t color);
@@ -293,6 +299,15 @@ zx_status_t connect_to_virtio_gpu(void);
 zx_status_t flush_gpu_scanout(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 zx_status_t init_cursor_sprite(void);
 zx_status_t init_desktop_wallpaper(void);
+bool load_qoi_wallpaper_aspect_fill(const char* path, pixman_image_t* dst_surface,
+                                    uint32_t fb_w, uint32_t fb_h);
+void compositor_start_wallpaper_crossfade(const char* new_wallpaper_path);
+void compositor_tick_wallpaper_crossfade(void);
+void set_boot_splash_eye_svg(const char* data, size_t len);
+void render_boot_splash(uint32_t stage);
+void render_eye_svg(uint32_t* dst_pixels, uint32_t fb_w, uint32_t fb_h,
+                    int32_t dst_x, int32_t dst_y, uint32_t dst_w, uint32_t dst_h,
+                    bool dark_mode);
 void render_eye_light_svg(uint32_t* dst_pixels, uint32_t fb_w, uint32_t fb_h,
                           int32_t dst_x, int32_t dst_y, uint32_t dst_w, uint32_t dst_h);
 void render_welcome_surface_contents(void);
@@ -300,9 +315,6 @@ void redraw_welcome_input_strip(void);
 void init_crash_dialog(const char* details);
 void render_crash_dialog_contents(void);
 void close_crash_dialog(void);
-void init_unlock_prompt(zx_handle_t crypt_ch);
-void unlock_prompt_handle_key(char ch);
-void close_unlock_prompt(void);
 void composite_window(const comp_window_t* win, bool is_focused);
 void update_screen(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h);
 void composite_and_flush(int32_t dmg_x, int32_t dmg_y, uint32_t dmg_w, uint32_t dmg_h);

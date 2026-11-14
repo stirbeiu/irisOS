@@ -51,55 +51,64 @@ flowchart LR
 ## 3. IPC Opcode Dispatch Map (`sdk/libiris/include/iris/ipc.h`)
 | Opcode | Def | Handler (`case`) | Callers / References |
 | :--- | :--- | :--- | :--- |
-| `IRIS_SYS_OP_PING` | `ipc.h:132` | — | `servers/iris_init/src/main.c:1499`, `servers/iris_pty/src/main.c:543` |
-| `IRIS_SYS_OP_PONG` | `ipc.h:133` | — | `servers/iris_init/src/main.c:1501`, `servers/iris_pty/src/main.c:546` |
-| `IRIS_SYS_OP_SHUTDOWN` | `ipc.h:134` | — | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3065`, `servers/iris_init/src/main.c:1492`, `servers/iris_pty/src/main.c:549` |
-| `IRIS_SYS_OP_REBOOT` | `ipc.h:135` | — | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3062`, `servers/iris_init/src/main.c:1492`, `servers/iris_init/src/main.c:1494` |
-| `IRIS_SYS_OP_GET_VERSION` | `ipc.h:136` | — | `servers/iris_init/src/main.c:1503` |
+| `IRIS_SYS_OP_PING` | `ipc.h:132` | — | `servers/iris_init/src/main.c:1481`, `servers/iris_pty/src/main.c:543` |
+| `IRIS_SYS_OP_PONG` | `ipc.h:133` | — | `servers/iris_init/src/main.c:1483`, `servers/iris_pty/src/main.c:546` |
+| `IRIS_SYS_OP_SHUTDOWN` | `ipc.h:134` | — | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3065`, `servers/iris_compositor/src/login.c:426`, `servers/iris_init/src/main.c:1437`, `servers/iris_pty/src/main.c:549` |
+| `IRIS_SYS_OP_REBOOT` | `ipc.h:135` | — | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3062`, `servers/iris_compositor/src/login.c:424`, `servers/iris_init/src/main.c:1437`, `servers/iris_init/src/main.c:1439` |
+| `IRIS_SYS_OP_GET_VERSION` | `ipc.h:136` | — | `servers/iris_init/src/main.c:1485` |
 | `IRIS_SYS_OP_HEARTBEAT` | `ipc.h:137` | — | — |
-| `IRIS_FS_OP_OPEN` | `ipc.h:142` | `servers/iris_fshost/src/main.c:2455` | `sdk/libiris/tests/test_libiris.c:44`, `sdk/libiris/tests/test_libiris.c:48`, `sdk/libiris/tests/test_libiris.c:61`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1748` (+2) |
-| `IRIS_FS_OP_CLOSE` | `ipc.h:143` | `servers/iris_fshost/src/main.c:2458` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1756`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1794`, `servers/iris_init/src/main.c:646`, `servers/iris_init/src/main.c:744` |
-| `IRIS_FS_OP_READ` | `ipc.h:144` | `servers/iris_fshost/src/main.c:2461` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1498`, `servers/iris_init/src/main.c:619` |
-| `IRIS_FS_OP_WRITE` | `ipc.h:145` | `servers/iris_fshost/src/main.c:2464` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1390`, `servers/iris_init/src/main.c:718` |
-| `IRIS_FS_OP_SEEK` | `ipc.h:146` | `servers/iris_fshost/src/main.c:2467` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1954` |
-| `IRIS_FS_OP_STAT` | `ipc.h:147` | `servers/iris_fshost/src/main.c:2470` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2002`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2675` |
-| `IRIS_FS_OP_READDIR` | `ipc.h:148` | `servers/iris_fshost/src/main.c:2473` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1819` |
-| `IRIS_FS_OP_MKDIR` | `ipc.h:149` | `servers/iris_fshost/src/main.c:2476` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1843` |
-| `IRIS_FS_OP_UNLINK` | `ipc.h:150` | `servers/iris_fshost/src/main.c:2479` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1864` |
-| `IRIS_FS_OP_RENAME` | `ipc.h:151` | `servers/iris_fshost/src/main.c:2482` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1893` |
-| `IRIS_FS_OP_TRUNCATE` | `ipc.h:152` | `servers/iris_fshost/src/main.c:2485` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1913` |
-| `IRIS_FS_OP_SYNC` | `ipc.h:153` | `servers/iris_fshost/src/main.c:2491` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3232`, `servers/iris_init/src/main.c:1027` |
-| `IRIS_FS_OP_READLINK` | `ipc.h:154` | `servers/iris_fshost/src/main.c:2488` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3214` |
-| `IRIS_FS_OP_OPEN_CLIENT` | `ipc.h:155` | `servers/iris_fshost/src/main.c:2509` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1222`, `servers/iris_init/src/main.c:850` |
-| `IRIS_FS_OP_CONFIRM_BOOT` | `ipc.h:156` | `servers/iris_fshost/src/main.c:2503` | `servers/iris_init/src/main.c:874` |
-| `IRIS_FS_OP_GET_EXEC_VMO` | `ipc.h:157` | `servers/iris_fshost/src/main.c:2500` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1263` |
-| `IRIS_CRYPT_OP_STATUS` | `ipc.h:332` | `servers/iris_crypt/src/main.c:568` | `servers/iris_init/src/main.c:990` |
-| `IRIS_CRYPT_OP_UNLOCK` | `ipc.h:333` | `servers/iris_crypt/src/main.c:577` | `servers/iris_compositor/src/render.c:922`, `servers/iris_crypt/src/main.c:868`, `apps/sysutils/passphrase/main.c:60` |
-| `IRIS_CRYPT_OP_LOCK` | `ipc.h:334` | `servers/iris_crypt/src/main.c:595` | `servers/iris_init/src/main.c:1011` |
-| `IRIS_COMPOSITOR_OP_CREATE_WINDOW` | `ipc.h:358` | `servers/iris_compositor/src/main.c:425` | `sdk/libiris_gui/src/gui.c:160` |
-| `IRIS_COMPOSITOR_OP_DESTROY_WINDOW` | `ipc.h:359` | `servers/iris_compositor/src/main.c:447` | `sdk/libiris_gui/src/gui.c:201` |
-| `IRIS_COMPOSITOR_OP_DAMAGE` | `ipc.h:360` | `servers/iris_compositor/src/main.c:462` | `sdk/libiris_gui/src/gui.c:249` |
-| `IRIS_COMPOSITOR_OP_MOVE_WINDOW` | `ipc.h:361` | `servers/iris_compositor/src/main.c:477` | `sdk/libiris_gui/src/gui.c:280` |
-| `IRIS_COMPOSITOR_OP_OPEN_CLIENT` | `ipc.h:362` | `servers/iris_compositor/src/main.c:510` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1299`, `servers/iris_init/src/main.c:802` |
-| `IRIS_COMPOSITOR_OP_POLL_EVENT` | `ipc.h:363` | `servers/iris_compositor/src/main.c:492` | `sdk/libiris_gui/src/gui.c:307` |
-| `IRIS_PTY_OP_READ` | `ipc.h:439` | `servers/iris_pty/src/main.c:567` | `sdk/libiris/src/pty.c:131`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1464` |
-| `IRIS_PTY_OP_WRITE` | `ipc.h:440` | `servers/iris_pty/src/main.c:613` | `sdk/libiris/src/pty.c:170`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1357` |
-| `IRIS_PTY_OP_SET_WINDOW` | `ipc.h:441` | `servers/iris_pty/src/main.c:698` | `sdk/libiris/src/pty.c:60` |
-| `IRIS_PTY_OP_GET_WINDOW` | `ipc.h:442` | `servers/iris_pty/src/main.c:710` | `sdk/libiris/src/pty.c:72` |
-| `IRIS_PTY_OP_DRAIN` | `ipc.h:443` | `servers/iris_pty/src/main.c:724` | — |
-| `IRIS_PTY_OP_SIGNAL` | `ipc.h:444` | `servers/iris_pty/src/main.c:731` | `sdk/libiris/src/pty.c:112` |
-| `IRIS_PTY_OP_SET_MODE` | `ipc.h:445` | `servers/iris_pty/src/main.c:663` | `sdk/libiris/src/pty.c:29`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2992` |
-| `IRIS_PTY_OP_GET_MODE` | `ipc.h:446` | `servers/iris_pty/src/main.c:684` | `sdk/libiris/src/pty.c:41`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2961` |
-| `IRIS_PTY_OP_INJECT` | `ipc.h:447` | `servers/iris_pty/src/main.c:746` | `sdk/libiris/src/pty.c:98` |
-| `IRIS_PTY_OP_OPEN_CLIENT` | `ipc.h:448` | `servers/iris_pty/src/main.c:769` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1186`, `servers/iris_init/src/main.c:826` |
-| `IRIS_PTY_OP_READ_OUTPUT` | `ipc.h:449` | `servers/iris_pty/src/main.c:635` | `sdk/libiris/src/pty.c:187` |
-| `IRIS_BLK_OP_GET_INFO` | `ipc.h:527` | `servers/drivers/virtio_blk/src/main.c:538`, `servers/iris_crypt/src/main.c:618` | `servers/iris_crypt/src/main.c:111`, `servers/iris_fshost/src/main.c:182`, `servers/iris_init/src/main.c:779` |
-| `IRIS_BLK_OP_READ` | `ipc.h:528` | `servers/drivers/virtio_blk/src/main.c:571`, `servers/iris_crypt/src/main.c:686` | `servers/iris_crypt/src/main.c:154`, `servers/iris_fshost/src/main.c:211`, `servers/iris_fshost/src/ufs_io.c:72` |
-| `IRIS_BLK_OP_WRITE` | `ipc.h:529` | `servers/drivers/virtio_blk/src/main.c:549`, `servers/iris_crypt/src/main.c:629` | `servers/iris_crypt/src/main.c:210`, `servers/iris_fshost/src/main.c:248`, `servers/iris_fshost/src/ufs_io.c:125` |
-| `IRIS_BLK_OP_FLUSH` | `ipc.h:530` | `servers/drivers/virtio_blk/src/main.c:592`, `servers/iris_crypt/src/main.c:744` | `servers/iris_crypt/src/main.c:249`, `servers/iris_fshost/src/main.c:274`, `servers/iris_fshost/src/ufs_io.c:287` |
-| `IRIS_GPU_OP_GET_INFO` | `ipc.h:532` | `servers/drivers/virtio_gpu/src/main.c:810` | `servers/iris_compositor/src/render.c:478`, `servers/iris_init/src/main.c:788` |
-| `IRIS_GPU_OP_FLUSH` | `ipc.h:533` | `servers/drivers/virtio_gpu/src/main.c:828` | `servers/iris_compositor/src/render.c:552` |
-| `IRIS_GPU_OP_MOVE_CURSOR` | `ipc.h:534` | `servers/drivers/virtio_gpu/src/main.c:842` | — |
+| `IRIS_SYS_OP_SESSION_LOGIN` | `ipc.h:138` | — | `servers/iris_compositor/src/login.c:179`, `servers/iris_init/src/main.c:1444` |
+| `IRIS_SYS_OP_SESSION_LOGOUT` | `ipc.h:139` | — | `servers/iris_compositor/src/login.c:236`, `servers/iris_init/src/main.c:1473` |
+| `IRIS_FS_OP_OPEN` | `ipc.h:154` | `servers/iris_fshost/src/main.c:2632` | `sdk/libiris/tests/test_libiris.c:44`, `sdk/libiris/tests/test_libiris.c:48`, `sdk/libiris/tests/test_libiris.c:61`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1748` (+2) |
+| `IRIS_FS_OP_CLOSE` | `ipc.h:155` | `servers/iris_fshost/src/main.c:2635` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1756`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1794`, `servers/iris_init/src/main.c:636`, `servers/iris_init/src/main.c:734` |
+| `IRIS_FS_OP_READ` | `ipc.h:156` | `servers/iris_fshost/src/main.c:2638` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1498`, `servers/iris_init/src/main.c:609` |
+| `IRIS_FS_OP_WRITE` | `ipc.h:157` | `servers/iris_fshost/src/main.c:2641` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1390`, `servers/iris_init/src/main.c:708` |
+| `IRIS_FS_OP_SEEK` | `ipc.h:158` | `servers/iris_fshost/src/main.c:2644` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1954` |
+| `IRIS_FS_OP_STAT` | `ipc.h:159` | `servers/iris_fshost/src/main.c:2647` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2002`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2675` |
+| `IRIS_FS_OP_READDIR` | `ipc.h:160` | `servers/iris_fshost/src/main.c:2650` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1819` |
+| `IRIS_FS_OP_MKDIR` | `ipc.h:161` | `servers/iris_fshost/src/main.c:2653` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1843` |
+| `IRIS_FS_OP_UNLINK` | `ipc.h:162` | `servers/iris_fshost/src/main.c:2656` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1864` |
+| `IRIS_FS_OP_RENAME` | `ipc.h:163` | `servers/iris_fshost/src/main.c:2659` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1893` |
+| `IRIS_FS_OP_TRUNCATE` | `ipc.h:164` | `servers/iris_fshost/src/main.c:2662` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1913` |
+| `IRIS_FS_OP_SYNC` | `ipc.h:165` | `servers/iris_fshost/src/main.c:2668` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3232`, `servers/iris_init/src/main.c:1042` |
+| `IRIS_FS_OP_READLINK` | `ipc.h:166` | `servers/iris_fshost/src/main.c:2665` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:3214` |
+| `IRIS_FS_OP_OPEN_CLIENT` | `ipc.h:167` | `servers/iris_fshost/src/main.c:2738` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1222`, `servers/iris_init/src/main.c:840` |
+| `IRIS_FS_OP_CONFIRM_BOOT` | `ipc.h:168` | `servers/iris_fshost/src/main.c:2732` | `servers/iris_init/src/main.c:864` |
+| `IRIS_FS_OP_GET_EXEC_VMO` | `ipc.h:169` | `servers/iris_fshost/src/main.c:2729` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1263` |
+| `IRIS_FS_OP_LIST_USERS` | `ipc.h:170` | `servers/iris_fshost/src/main.c:2681` | `servers/iris_compositor/src/login.c:74` |
+| `IRIS_FS_OP_USER_LOGIN` | `ipc.h:171` | `servers/iris_fshost/src/main.c:2697` | `servers/iris_compositor/src/login.c:146` |
+| `IRIS_FS_OP_USER_LOGOUT` | `ipc.h:172` | `servers/iris_fshost/src/main.c:2718` | `servers/iris_init/src/main.c:1010` |
+| `IRIS_CRYPT_OP_STATUS` | `ipc.h:381` | `servers/iris_crypt/src/main.c:682` | — |
+| `IRIS_CRYPT_OP_UNLOCK` | `ipc.h:382` | `servers/iris_crypt/src/main.c:691` | `servers/iris_crypt/src/main.c:1060`, `apps/sysutils/passphrase/main.c:60` |
+| `IRIS_CRYPT_OP_LOCK` | `ipc.h:383` | `servers/iris_crypt/src/main.c:709` | `servers/iris_init/src/main.c:1026` |
+| `IRIS_CRYPT_OP_UNLOCK_USER` | `ipc.h:384` | `servers/iris_crypt/src/main.c:722` | `servers/iris_fshost/src/user_session.c:842` |
+| `IRIS_CRYPT_OP_LOCK_USER` | `ipc.h:385` | `servers/iris_crypt/src/main.c:752` | `servers/iris_fshost/src/user_session.c:924` |
+| `IRIS_CRYPT_OP_CRYPT_SECTORS` | `ipc.h:386` | `servers/iris_crypt/src/main.c:763` | `servers/iris_fshost/src/user_session.c:579` |
+| `IRIS_COMPOSITOR_OP_CREATE_WINDOW` | `ipc.h:437` | `servers/iris_compositor/src/main.c:477` | `sdk/libiris_gui/src/gui.c:160` |
+| `IRIS_COMPOSITOR_OP_DESTROY_WINDOW` | `ipc.h:438` | `servers/iris_compositor/src/main.c:499` | `sdk/libiris_gui/src/gui.c:201` |
+| `IRIS_COMPOSITOR_OP_DAMAGE` | `ipc.h:439` | `servers/iris_compositor/src/main.c:514` | `sdk/libiris_gui/src/gui.c:249` |
+| `IRIS_COMPOSITOR_OP_MOVE_WINDOW` | `ipc.h:440` | `servers/iris_compositor/src/main.c:529` | `sdk/libiris_gui/src/gui.c:280` |
+| `IRIS_COMPOSITOR_OP_OPEN_CLIENT` | `ipc.h:441` | `servers/iris_compositor/src/main.c:562` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1299`, `servers/iris_init/src/main.c:792` |
+| `IRIS_COMPOSITOR_OP_POLL_EVENT` | `ipc.h:442` | `servers/iris_compositor/src/main.c:544` | `sdk/libiris_gui/src/gui.c:307` |
+| `IRIS_COMPOSITOR_OP_SET_BOOT_STAGE` | `ipc.h:443` | `servers/iris_compositor/src/main.c:592` | `servers/iris_init/src/main.c:986` |
+| `IRIS_PTY_OP_READ` | `ipc.h:528` | `servers/iris_pty/src/main.c:567` | `sdk/libiris/src/pty.c:131`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1464` |
+| `IRIS_PTY_OP_WRITE` | `ipc.h:529` | `servers/iris_pty/src/main.c:613` | `sdk/libiris/src/pty.c:170`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1357` |
+| `IRIS_PTY_OP_SET_WINDOW` | `ipc.h:530` | `servers/iris_pty/src/main.c:698` | `sdk/libiris/src/pty.c:60` |
+| `IRIS_PTY_OP_GET_WINDOW` | `ipc.h:531` | `servers/iris_pty/src/main.c:710` | `sdk/libiris/src/pty.c:72` |
+| `IRIS_PTY_OP_DRAIN` | `ipc.h:532` | `servers/iris_pty/src/main.c:724` | — |
+| `IRIS_PTY_OP_SIGNAL` | `ipc.h:533` | `servers/iris_pty/src/main.c:731` | `sdk/libiris/src/pty.c:112` |
+| `IRIS_PTY_OP_SET_MODE` | `ipc.h:534` | `servers/iris_pty/src/main.c:663` | `sdk/libiris/src/pty.c:29`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2992` |
+| `IRIS_PTY_OP_GET_MODE` | `ipc.h:535` | `servers/iris_pty/src/main.c:684` | `sdk/libiris/src/pty.c:41`, `sdk/mlibc-sysdeps/iris/generic/generic.cpp:2961` |
+| `IRIS_PTY_OP_INJECT` | `ipc.h:536` | `servers/iris_pty/src/main.c:746` | `sdk/libiris/src/pty.c:98` |
+| `IRIS_PTY_OP_OPEN_CLIENT` | `ipc.h:537` | `servers/iris_pty/src/main.c:769` | `sdk/mlibc-sysdeps/iris/generic/generic.cpp:1186`, `servers/iris_init/src/main.c:816` |
+| `IRIS_PTY_OP_READ_OUTPUT` | `ipc.h:538` | `servers/iris_pty/src/main.c:635` | `sdk/libiris/src/pty.c:187` |
+| `IRIS_BLK_OP_GET_INFO` | `ipc.h:616` | `servers/drivers/virtio_blk/src/main.c:538`, `servers/iris_crypt/src/main.c:810` | `servers/iris_crypt/src/main.c:111`, `servers/iris_fshost/src/main.c:196`, `servers/iris_init/src/main.c:769` |
+| `IRIS_BLK_OP_READ` | `ipc.h:617` | `servers/drivers/virtio_blk/src/main.c:571`, `servers/iris_crypt/src/main.c:878` | `servers/iris_crypt/src/main.c:154`, `servers/iris_fshost/src/main.c:225`, `servers/iris_fshost/src/ufs_io.c:114` |
+| `IRIS_BLK_OP_WRITE` | `ipc.h:618` | `servers/drivers/virtio_blk/src/main.c:549`, `servers/iris_crypt/src/main.c:821` | `servers/iris_crypt/src/main.c:210`, `servers/iris_fshost/src/main.c:262`, `servers/iris_fshost/src/ufs_io.c:167` |
+| `IRIS_BLK_OP_FLUSH` | `ipc.h:619` | `servers/drivers/virtio_blk/src/main.c:592`, `servers/iris_crypt/src/main.c:936` | `servers/iris_crypt/src/main.c:249`, `servers/iris_fshost/src/main.c:288`, `servers/iris_fshost/src/ufs_io.c:332` |
+| `IRIS_GPU_OP_GET_INFO` | `ipc.h:621` | `servers/drivers/virtio_gpu/src/main.c:810` | `servers/iris_compositor/src/render.c:479`, `servers/iris_init/src/main.c:778` |
+| `IRIS_GPU_OP_FLUSH` | `ipc.h:622` | `servers/drivers/virtio_gpu/src/main.c:828` | `servers/iris_compositor/src/render.c:553` |
+| `IRIS_GPU_OP_MOVE_CURSOR` | `ipc.h:623` | `servers/drivers/virtio_gpu/src/main.c:842` | — |
 
 ## 4. Large-File Function Maps (Files > 250 LOC)
 Use these exact `Lstart-Lend` ranges with `read_file` instead of reading whole files.
@@ -131,32 +140,38 @@ Use these exact `Lstart-Lend` ranges with `read_file` instead of reading whole f
 ### `servers/drivers/virtio_input/src/virtio_input.c` (479 LOC)
 `align_page` (L30-L32), `virtio_input_translate_key` (L34-L144), `virtio_input_init_nth` (L146-L323), `virtio_input_init` (L325-L327), `virtio_input_poll_raw` (L329-L368), `virtio_input_poll` (L370-L453), `virtio_input_teardown` (L455-L479)
 
-### `servers/iris_compositor/src/font.c` (704 LOC)
-`draw_string_8x8` (L121-L152), `apply_variable_axes` (L158-L191), `load_face_with_fallback` (L193-L205), `init_font_subsystem` (L207-L265), `free_bucket_glyphs` (L310-L318), `resolve_face` (L320-L326), `get_cached_glyph` (L328-L406), `get_cached_material_glyph` (L408-L478), `cleanup_font_subsystem` (L480-L523), `blend_glyph_bitmap` (L525-L596), `draw_text_ft_ex` (L598-L636), `measure_text_ft_ex` (L638-L657), `draw_material_icon` (L659-L677), `draw_text_ft_styled` (L679-L697), `draw_text_ft` (L699-L704)
+### `servers/iris_compositor/src/font.c` (859 LOC)
+`draw_string_8x8` (L121-L152), `apply_variable_axes` (L158-L191), `load_face_with_fallback` (L193-L205), `init_material_icons_from_memory` (L207-L221), `init_font_subsystem` (L223-L294), `free_bucket_glyphs` (L339-L347), `resolve_face` (L349-L355), `get_cached_glyph` (L357-L435), `get_cached_material_glyph` (L437-L507), `cleanup_font_subsystem` (L523-L573), `blend_glyph_bitmap` (L575-L646), `decode_utf8_cp` (L648-L677), `get_cached_unicode_glyph` (L679-L746), `draw_text_ft_ex` (L748-L788), `measure_text_ft_ex` (L790-L812), `draw_material_icon` (L814-L832), `draw_text_ft_styled` (L834-L852), `draw_text_ft` (L854-L859)
 
-### `servers/iris_compositor/src/input.c` (498 LOC)
-`uart_lock` (L16-L18), `uart_unlock` (L20-L22), `uart_rx_thread_entry` (L24-L45), `init_input_subsystems` (L51-L103), `route_key_to_focused_window` (L109-L150), `handle_mouse_button` (L156-L313), `poll_input_devices` (L319-L498)
+### `servers/iris_compositor/src/input.c` (527 LOC)
+`uart_lock` (L17-L19), `uart_unlock` (L21-L23), `uart_rx_thread_entry` (L25-L46), `init_input_subsystems` (L52-L104), `route_key_to_focused_window` (L110-L151), `handle_mouse_button` (L157-L321), `poll_input_devices` (L327-L527)
 
-### `servers/iris_compositor/src/main.c` (766 LOC)
-`find_window` (L86-L94), `release_window_resources` (L96-L110), `destroy_client_windows` (L112-L133), `window_push_key` (L135-L142), `window_pop_key` (L144-L150), `handle_create_window` (L156-L241), `handle_destroy_window` (L243-L266), `handle_damage_window` (L268-L298), `handle_move_window` (L300-L323), `handle_poll_event` (L325-L347), `run_compositor_loop` (L353-L623), `main` (L629-L766)
+### `servers/iris_compositor/src/login.c` (483 LOC)
+`free_avatar_cache` (L37-L44), `load_user_avatars` (L46-L67), `fetch_user_list` (L69-L113), `send_sys_op` (L115-L134), `attempt_user_login` (L136-L198), `login_init` (L200-L203), `login_set_fs_channel` (L205-L207), `login_show` (L209-L217), `login_is_active` (L219-L221), `login_active_username` (L223-L225), `login_active_display_name` (L227-L229), `login_active_is_guest` (L231-L233), `login_trigger_logout` (L235-L239), `draw_circular_avatar` (L241-L267), `login_render` (L269-L379), `login_handle_click` (L381-L433), `login_handle_key` (L435-L483)
 
-### `servers/iris_compositor/src/render.c` (1899 LOC)
-`point_in_cursor_poly` (L32-L43), `min_dist_sq_to_cursor_poly` (L45-L64), `init_cursor_sprite` (L66-L153), `argb_to_pixman_color` (L159-L166), `fill_rect_pixman` (L168-L217), `alpha_blend_pixel` (L219-L235), `compute_pixel_clip` (L237-L251), `fill_rect_vgradient_over` (L253-L302), `fill_rounded_rect_over` (L304-L369), `fill_circle_over` (L371-L409), `blit_surface_clamped` (L411-L462), `connect_to_virtio_gpu` (L468-L535), `flush_gpu_scanout` (L537-L560), `dirty_rect_union` (L566-L591), `dirty_rect_union_window` (L593-L598), `block_glyph_index` (L625-L640), `draw_codename_banner` (L642-L664), `redraw_welcome_input_strip` (L666-L680), `render_welcome_surface_contents` (L682-L699), `close_crash_dialog` (L701-L714), `render_crash_dialog_contents` (L716-L769), `init_crash_dialog` (L771-L804), `render_unlock_prompt_contents` (L816-L844), `close_unlock_prompt` (L846-L863), `init_unlock_prompt` (L865-L893), `unlock_prompt_handle_key` (L895-L962), `load_qoi_wallpaper_aspect_fill` (L968-L1116), `svg_skip_ws` (L1146-L1149), `svg_parse_float` (L1151-L1172), `svg_add_seg` (L1174-L1178), `svg_parse_path_string` (L1180-L1238), `svg_point_in_poly` (L1240-L1251), `render_eye_light_svg` (L1253-L1368), `draw_line_thick` (L1374-L1388), `init_desktop_wallpaper` (L1390-L1457), `rects_intersect` (L1465-L1472), `rect_contains` (L1474-L1480), `composite_window` (L1482-L1611), `clamp_rect_to_screen` (L1617-L1650), `expand_flush_bounds` (L1652-L1668), `update_screen` (L1670-L1783), `composite_and_flush` (L1785-L1899)
+### `servers/iris_compositor/src/main.c` (838 LOC)
+`load_boot_splash_assets_from_vmo` (L30-L62), `find_window` (L138-L146), `release_window_resources` (L148-L162), `destroy_client_windows` (L164-L185), `window_push_key` (L187-L194), `window_pop_key` (L196-L202), `handle_create_window` (L208-L293), `handle_destroy_window` (L295-L318), `handle_damage_window` (L320-L350), `handle_move_window` (L352-L375), `handle_poll_event` (L377-L399), `run_compositor_loop` (L405-L705), `main` (L711-L838)
 
-### `servers/iris_compositor/src/taskbar.c` (1333 LOC)
-`draw_line_thick_tb` (L120-L134), `draw_tray_glyph` (L136-L145), `draw_app_icon` (L147-L178), `save_pinned_apps` (L184-L199), `maybe_load_pinned_apps` (L201-L251), `find_app_by_id` (L253-L261), `record_recent_app` (L263-L288), `taskbar_push_notification` (L294-L316), `taskbar_set_privacy_active` (L318-L328), `taskbar_wake_from_sleep` (L330-L335), `add_catalog_app` (L341-L353), `taskbar_init` (L355-L370), `taskbar_update_clock` (L372-L409), `taskbar_sync_windows` (L411-L485), `get_dock_start_x` (L487-L493), `launch_or_focus_app` (L499-L539), `taskbar_render` (L545-L656), `taskbar_has_active_flyout` (L662-L664), `taskbar_has_active_overlay` (L666-L668), `taskbar_close_flyout` (L670-L675), `open_flyout` (L677-L692), `draw_flyout_card` (L694-L697), `render_calendar_flyout` (L699-L739), `taskbar_render_flyout` (L741-L983), `dirty_drag_ghost_at` (L989-L991), `taskbar_handle_mouse_down` (L993-L1237), `taskbar_handle_mouse_move` (L1239-L1258), `taskbar_handle_mouse_up` (L1260-L1327), `taskbar_handle_click` (L1329-L1333)
+### `servers/iris_compositor/src/render.c` (1965 LOC)
+`point_in_cursor_poly` (L33-L44), `min_dist_sq_to_cursor_poly` (L46-L65), `init_cursor_sprite` (L67-L154), `argb_to_pixman_color` (L160-L167), `fill_rect_pixman` (L169-L218), `alpha_blend_pixel` (L220-L236), `compute_pixel_clip` (L238-L252), `fill_rect_vgradient_over` (L254-L303), `fill_rounded_rect_over` (L305-L370), `fill_circle_over` (L372-L410), `blit_surface_clamped` (L412-L463), `connect_to_virtio_gpu` (L469-L536), `flush_gpu_scanout` (L538-L561), `dirty_rect_union` (L567-L592), `dirty_rect_union_window` (L594-L599), `block_glyph_index` (L626-L641), `draw_codename_banner` (L643-L665), `redraw_welcome_input_strip` (L667-L681), `render_welcome_surface_contents` (L683-L700), `close_crash_dialog` (L702-L715), `render_crash_dialog_contents` (L717-L770), `init_crash_dialog` (L772-L805), `set_boot_splash_eye_svg` (L817-L831), `render_boot_splash` (L833-L865), `compositor_start_wallpaper_crossfade` (L873-L896), `compositor_tick_wallpaper_crossfade` (L898-L901), `load_qoi_wallpaper_aspect_fill` (L907-L1055), `svg_skip_ws` (L1085-L1088), `svg_parse_float` (L1090-L1111), `svg_add_seg` (L1113-L1117), `svg_parse_path_string` (L1119-L1177), `svg_point_in_poly` (L1179-L1190), `render_eye_svg` (L1201-L1369), `render_eye_light_svg` (L1371-L1374), `draw_line_thick` (L1380-L1394), `init_desktop_wallpaper` (L1396-L1463), `rects_intersect` (L1471-L1478), `rect_contains` (L1480-L1486), `composite_window` (L1488-L1622), `clamp_rect_to_screen` (L1628-L1661), `expand_flush_bounds` (L1663-L1679), `update_screen` (L1681-L1794), `composite_and_flush` (L1796-L1965)
 
-### `servers/iris_crypt/src/main.c` (894 LOC)
-`downstream_get_info` (L109-L144), `downstream_read_sectors` (L149-L194), `downstream_write_sectors` (L199-L242), `downstream_flush` (L247-L273), `make_xts_data_unit` (L283-L288), `compute_header_checksum` (L294-L297), `detect_gpt_data_partition` (L303-L335), `unlock_with_passphrase` (L343-L544), `handle_client_request` (L550-L756), `run_proxy_server` (L758-L812), `main` (L814-L894)
+### `servers/iris_compositor/src/taskbar.c` (1392 LOC)
+`draw_line_thick_tb` (L120-L134), `draw_tray_glyph` (L136-L145), `draw_app_icon` (L147-L178), `save_pinned_apps` (L184-L199), `maybe_load_pinned_apps` (L201-L251), `find_app_by_id` (L253-L261), `record_recent_app` (L263-L288), `taskbar_push_notification` (L294-L316), `taskbar_set_privacy_active` (L318-L328), `taskbar_wake_from_sleep` (L330-L335), `taskbar_enter_sleep` (L337-L340), `add_catalog_app` (L346-L358), `taskbar_init` (L360-L375), `taskbar_update_clock` (L377-L414), `taskbar_sync_windows` (L416-L490), `get_dock_start_x` (L492-L498), `launch_or_focus_app` (L504-L544), `taskbar_render` (L550-L661), `taskbar_has_active_flyout` (L667-L669), `taskbar_has_active_overlay` (L671-L673), `taskbar_close_flyout` (L675-L680), `open_flyout` (L682-L697), `draw_flyout_card` (L699-L702), `render_calendar_flyout` (L704-L744), `taskbar_render_flyout` (L746-L989), `dirty_drag_ghost_at` (L995-L997), `taskbar_handle_mouse_down` (L999-L1233), `taskbar_update_hover` (L1235-L1275), `taskbar_handle_mouse_move` (L1277-L1317), `taskbar_handle_mouse_up` (L1319-L1386), `taskbar_handle_click` (L1388-L1392)
 
-### `servers/iris_fshost/src/main.c` (2642 LOC)
-`blk_get_info` (L179-L203), `blk_read_sectors` (L205-L236), `blk_write_sectors` (L238-L269), `blk_flush` (L271-L290), `calc_gpt_crc32` (L292-L306), `utf16le_to_ascii` (L312-L318), `parse_gpt_partitions` (L320-L391), `confirm_gpt_boot_slot` (L397-L454), `init_uufsd_struct` (L460-L468), `mount_data_partition` (L470-L501), `mount_filesystems` (L503-L531), `ufs2_dir_lookup` (L536-L578), `ufs2_alloc_block` (L583-L622), `ufs2_create_file` (L627-L726), `ufs2_mkdir` (L731-L881), `ufs2_unlink` (L886-L1017), `expand_virtual_symlinks` (L1026-L1038), `resolve_vfs_path` (L1044-L1170), `handle_fs_open` (L1176-L1303), `handle_fs_close` (L1305-L1322), `ufs2_invalidate_indirect_cache` (L1340-L1347), `ufs2_lookup_lbn_frag` (L1349-L1398), `handle_fs_read` (L1400-L1495), `handle_fs_write` (L1497-L1654), `handle_fs_seek` (L1656-L1694), `handle_fs_stat` (L1696-L1769), `handle_fs_readdir` (L1771-L1896), `handle_fs_mkdir` (L1898-L1933), `handle_fs_unlink` (L1935-L1966), `ufs2_dir_remove_entry` (L1968-L2001), `ufs2_dir_insert_entry` (L2003-L2049), `handle_fs_rename` (L2051-L2130), `handle_fs_truncate` (L2132-L2164), `handle_fs_readlink` (L2166-L2260), `handle_fs_get_exec_vmo` (L2277-L2431), `dispatch_fs_message` (L2437-L2545), `run_vfs_server` (L2547-L2596), `main` (L2598-L2642)
+### `servers/iris_crypt/src/main.c` (1089 LOC)
+`downstream_get_info` (L109-L144), `downstream_read_sectors` (L149-L194), `downstream_write_sectors` (L199-L242), `downstream_flush` (L247-L273), `make_xts_data_unit` (L283-L288), `compute_header_checksum` (L294-L297), `detect_gpt_data_partition` (L303-L335), `zeroize_user_slot` (L354-L362), `unlock_user_header` (L364-L455), `unlock_with_passphrase` (L457-L658), `handle_client_request` (L664-L948), `run_proxy_server` (L950-L1004), `main` (L1006-L1089)
 
-### `servers/iris_fshost/src/ufs_io.c` (360 LOC)
-`iris_ufs_register_device` (L48-L62), `ipc_read_sectors` (L67-L109), `ipc_write_sectors` (L114-L151), `iris_ufs_pread` (L153-L211), `iris_ufs_pwrite` (L213-L279), `iris_ufs_flush_device` (L281-L304), `ufs_disk_write` (L315-L324), `ufs_disk_close` (L326-L341), `calculate_crc32c` (L346-L360)
+### `servers/iris_fshost/src/main.c` (2871 LOC)
+`get_mount_disk` (L179-L183), `is_mount_rw` (L185-L187), `blk_get_info` (L193-L217), `blk_read_sectors` (L219-L250), `blk_write_sectors` (L252-L283), `blk_flush` (L285-L304), `calc_gpt_crc32` (L306-L320), `utf16le_to_ascii` (L326-L332), `parse_gpt_partitions` (L334-L405), `confirm_gpt_boot_slot` (L411-L468), `init_uufsd_struct` (L474-L482), `mount_data_partition` (L484-L515), `mount_filesystems` (L517-L545), `ufs2_dir_lookup` (L550-L592), `ufs2_alloc_block` (L597-L636), `ufs2_create_file` (L641-L740), `ufs2_mkdir` (L745-L895), `ufs2_unlink` (L900-L1031), `expand_virtual_symlinks` (L1040-L1052), `resolve_vfs_path` (L1058-L1200), `handle_fs_open` (L1206-L1373), `handle_fs_close` (L1375-L1392), `ufs2_invalidate_indirect_cache` (L1410-L1417), `ufs2_lookup_lbn_frag` (L1419-L1468), `handle_fs_read` (L1470-L1578), `handle_fs_write` (L1580-L1754), `handle_fs_seek` (L1756-L1794), `handle_fs_stat` (L1796-L1895), `handle_fs_readdir` (L1897-L2033), `handle_fs_mkdir` (L2035-L2079), `handle_fs_unlink` (L2081-L2121), `ufs2_dir_remove_entry` (L2123-L2156), `ufs2_dir_insert_entry` (L2158-L2204), `handle_fs_rename` (L2206-L2300), `handle_fs_truncate` (L2302-L2341), `handle_fs_readlink` (L2343-L2437), `handle_fs_get_exec_vmo` (L2454-L2608), `dispatch_fs_message` (L2614-L2774), `run_vfs_server` (L2776-L2825), `main` (L2827-L2871)
 
-### `servers/iris_init/src/main.c` (1586 LOC)
-`vdso_lookup` (L90-L117), `vdso_find` (L119-L122), `vdso_init` (L158-L173), `iris_deadline_after` (L175-L178), `iris_memcpy` (L184-L188), `iris_memset` (L190-L193), `iris_memcmp` (L195-L199), `iris_strlen` (L201-L204), `iris_strcmp` (L206-L209), `iris_strstr` (L211-L219), `buf_putc` (L221-L224), `vsnprintf` (L226-L264), `snprintf` (L266-L270), `log_line` (L272-L287), `log_status` (L289-L312), `find_bootfs_entry` (L323-L349), `add_handle` (L351-L356), `spawn_process_from_elf` (L362-L534), `spawn_bootfs_binary` (L540-L547), `vfs_read_file_to_vmo` (L552-L664), `vfs_write_file_from_buffer` (L666-L754), `spawn_vfs_binary` (L760-L776), `register_blk_client` (L778-L784), `register_gpu_client` (L786-L796), `request_compositor_client_channel` (L798-L820), `request_pty_client_channel` (L822-L844), `request_fs_client_channel` (L846-L868), `confirm_boot_with_fshost` (L870-L888), `rtc_outb` (L890-L896), `rtc_inb` (L898-L906), `init_hardware_rtc` (L908-L985), `query_crypt_unlocked` (L987-L1006), `send_crypt_lock` (L1008-L1022), `send_fshost_sync` (L1024-L1038), `stop_process_gracefully` (L1040-L1061), `spawn_compositor` (L1063-L1124)
+### `servers/iris_fshost/src/ufs_io.c` (405 LOC)
+`iris_ufs_register_device` (L51-L66), `iris_ufs_register_custom` (L68-L86), `iris_ufs_unregister_device` (L88-L91), `dev_read_sectors` (L96-L99), `dev_write_sectors` (L101-L104), `ipc_read_sectors` (L109-L151), `ipc_write_sectors` (L156-L193), `iris_ufs_pread` (L195-L253), `iris_ufs_pwrite` (L255-L321), `iris_ufs_flush_device` (L323-L349), `ufs_disk_write` (L360-L369), `ufs_disk_close` (L371-L386), `calculate_crc32c` (L391-L405)
+
+### `servers/iris_fshost/src/user_session.c` (954 LOC)
+`ramfs_clear_subtree` (L53-L80), `ramfs_init` (L82-L101), `ramfs_reset_guest` (L103-L106), `ramfs_handles_path` (L108-L133), `ramfs_find_child` (L135-L144), `ramfs_alloc_node` (L146-L160), `ramfs_resolve` (L162-L227), `ramfs_open` (L229-L256), `ramfs_read` (L258-L273), `ramfs_write` (L275-L298), `ramfs_stat` (L300-L309), `ramfs_stat_path` (L311-L316), `ramfs_readdir` (L318-L373), `ramfs_mkdir` (L375-L383), `ramfs_unlink` (L385-L404), `ramfs_rename` (L406-L428), `ramfs_truncate` (L430-L446), `ufs2_lookup_dir_entry` (L461-L490), `ufs2_lookup_abs` (L492-L509), `ufs2_cache_file_blocks` (L511-L563), `vault_crypt_ipc` (L565-L610), `vault_read_raw_sectors` (L612-L633), `vault_write_raw_sectors` (L635-L661), `vault_custom_read` (L663-L677), `vault_custom_write` (L679-L693), `vault_custom_flush` (L695-L697), `trim_cr` (L703-L708), `user_session_list_users` (L710-L787), `user_session_login` (L789-L902), `user_session_logout` (L904-L949)
+
+### `servers/iris_init/src/main.c` (1572 LOC)
+`vdso_lookup` (L90-L117), `vdso_find` (L119-L122), `vdso_init` (L158-L173), `iris_deadline_after` (L175-L178), `iris_memcpy` (L184-L188), `iris_memset` (L190-L193), `iris_memcmp` (L195-L199), `iris_strlen` (L201-L204), `iris_strcmp` (L206-L209), `buf_putc` (L211-L214), `vsnprintf` (L216-L254), `snprintf` (L256-L260), `log_line` (L262-L277), `log_status` (L279-L302), `find_bootfs_entry` (L313-L339), `add_handle` (L341-L346), `spawn_process_from_elf` (L352-L524), `spawn_bootfs_binary` (L530-L537), `vfs_read_file_to_vmo` (L542-L654), `vfs_write_file_from_buffer` (L656-L744), `spawn_vfs_binary` (L750-L766), `register_blk_client` (L768-L774), `register_gpu_client` (L776-L786), `request_compositor_client_channel` (L788-L810), `request_pty_client_channel` (L812-L834), `request_fs_client_channel` (L836-L858), `confirm_boot_with_fshost` (L860-L878), `rtc_outb` (L880-L886), `rtc_inb` (L888-L896), `init_hardware_rtc` (L898-L975), `send_compositor_boot_stage` (L977-L1005), `send_fshost_user_logout` (L1007-L1021), `send_crypt_lock` (L1023-L1037), `send_fshost_sync` (L1039-L1053), `stop_process_gracefully` (L1055-L1076), `spawn_compositor` (L1078-L1142)
 
 ### `servers/iris_pty/src/main.c` (956 LOC)
 `pty_lock` (L63-L67), `pty_unlock` (L69-L71), `out_push_unlocked` (L73-L83), `out_pop_unlocked` (L85-L91), `pty_raw_output` (L93-L103), `ready_push` (L105-L111), `ready_pop` (L113-L119), `pty_replace_line` (L121-L142), `pty_feed_char` (L144-L392), `pty_try_fulfill_pending_reads` (L397-L444), `uart_rx_thread_entry` (L449-L465), `init_uart_fallback` (L470-L517), `handle_pty_message` (L522-L804), `main` (L806-L956)

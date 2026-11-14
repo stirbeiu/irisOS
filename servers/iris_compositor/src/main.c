@@ -8,6 +8,58 @@
  */
 
 #include "compositor.h"
+#include "login.h"
+
+extern zx_handle_t iris_get_bootfs_vmo(void);
+extern void        iris_set_fshost_channel(zx_handle_t handle);
+
+typedef struct iris_bootfs_hdr {
+    uint32_t magic;
+    uint32_t dirsize;
+    uint32_t reserved0;
+    uint32_t reserved1;
+} iris_bootfs_hdr_t;
+
+typedef struct iris_bootfs_dirent {
+    uint32_t name_len;
+    uint32_t data_len;
+    uint32_t data_off;
+    char     name[];
+} iris_bootfs_dirent_t;
+
+static void load_boot_splash_assets_from_vmo(void) {
+    zx_handle_t bvmo = iris_get_bootfs_vmo();
+    if (bvmo == ZX_HANDLE_INVALID) return;
+    uint64_t bsize = 0;
+    if (zx_vmo_get_size(bvmo, &bsize) != ZX_OK || bsize < sizeof(iris_bootfs_hdr_t)) return;
+    zx_vaddr_t baddr = 0;
+    if (zx_vmar_map(zx_vmar_root_self(), ZX_VM_PERM_READ, 0, bvmo, 0, bsize, &baddr) != ZX_OK) return;
+
+    const uint8_t* base = (const uint8_t*)(uintptr_t)baddr;
+    const iris_bootfs_hdr_t* hdr = (const iris_bootfs_hdr_t*)base;
+    if (hdr->magic == 0xa5655f62u && sizeof(iris_bootfs_hdr_t) + hdr->dirsize <= bsize) {
+        uint32_t off = sizeof(iris_bootfs_hdr_t);
+        uint32_t end = sizeof(iris_bootfs_hdr_t) + hdr->dirsize;
+        while (off + sizeof(iris_bootfs_dirent_t) <= end) {
+            const iris_bootfs_dirent_t* de = (const iris_bootfs_dirent_t*)(base + off);
+            uint32_t rec_sz = (uint32_t)((sizeof(iris_bootfs_dirent_t) + de->name_len + 3u) & ~3u);
+            if (rec_sz == 0 || off + rec_sz > end) break;
+            if (de->data_off + de->data_len <= bsize) {
+                if (strcmp(de->name, "resources/eye_dark.svg") == 0) {
+                    set_boot_splash_eye_svg((const char*)(base + de->data_off), de->data_len);
+                } else if (strcmp(de->name, "resources/MaterialIcons-Regular.ttf") == 0) {
+                    uint8_t* ttf_copy = (uint8_t*)malloc(de->data_len);
+                    if (ttf_copy) {
+                        memcpy(ttf_copy, base + de->data_off, de->data_len);
+                        init_material_icons_from_memory(ttf_copy, de->data_len);
+                    }
+                }
+            }
+            off += rec_sz;
+        }
+    }
+    zx_vmar_unmap(zx_vmar_root_self(), baddr, bsize);
+}
 
 /* ==============================================================================
  * Global Compositor State Definitions
@@ -537,6 +589,35 @@ static void run_compositor_loop(void) {
                         break;
                     }
 
+                    case IRIS_COMPOSITOR_OP_SET_BOOT_STAGE: {
+                        zx_handle_t fs_h = (act_handles >= 1) ? handles[0] : ZX_HANDLE_INVALID;
+                        for (uint32_t h = 1; h < act_handles; ++h) {
+                            if (handles[h] != ZX_HANDLE_INVALID) zx_handle_close(handles[h]);
+                        }
+                        if (fs_h != ZX_HANDLE_INVALID) {
+                            iris_set_fshost_channel(fs_h);
+                            login_set_fs_channel(fs_h);
+                            init_font_subsystem();
+                        }
+                        uint32_t stage = 0;
+                        if (req_hdr->payload_len >= sizeof(iris_compositor_boot_stage_req_t)) {
+                            const iris_compositor_boot_stage_req_t* breq =
+                                (const iris_compositor_boot_stage_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
+                            stage = breq->stage;
+                        }
+                        render_boot_splash(stage);
+                        zx_nanosleep(zx_clock_get_monotonic() + 200000000ULL);
+                        if (stage >= 5u) {
+                            g_boot_splash_active = false;
+                            init_desktop_wallpaper();
+                            taskbar_init();
+                            login_show();
+                            composite_and_flush(0, 0, g_fb_width, g_fb_height);
+                        }
+                        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
+                        break;
+                    }
+
                     default: {
                         for (uint32_t h = 0; h < act_handles; ++h) {
                             if (handles[h] != ZX_HANDLE_INVALID) zx_handle_close(handles[h]);
@@ -551,8 +632,9 @@ static void run_compositor_loop(void) {
             }
         }
 
-        /* 3. Immediate low-latency cursor update (250 Hz / <=4ms) when no window damage is pending */
-        if (g_cursor_dirty && !g_dirty_active) {
+        /* 3. Tick wallpaper crossfade if active, then immediately update 24x24 cursor sprite */
+        compositor_tick_wallpaper_crossfade();
+        if (g_cursor_dirty) {
             update_screen(0, 0, 0, 0);
             g_cursor_dirty = false;
         }
@@ -642,84 +724,77 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    /* 1. Initialize FreeType 2 font engine and load Inter Display fonts */
-    zx_status_t st = init_font_subsystem();
-    if (st != ZX_OK) {
-        log_status(STATUS_WARN, "iris_compositor", "Font subsystem initialized with fallback.");
+    bool show_crash  = false;
+    bool boot_splash = false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] && strcmp(argv[i], "--show-crash-dialog") == 0) {
+            show_crash = true;
+        } else if (argv[i] && strcmp(argv[i], "--boot-splash") == 0) {
+            boot_splash = true;
+        }
     }
 
-    /* 2. Connect to virtio_gpu scanout (1280x800) */
-    st = connect_to_virtio_gpu();
+    zx_handle_t sys_ctrl_ch = zx_take_startup_handle(PA_HND(PA_USER2, 1));
+    zx_handle_t fs_ch       = zx_take_startup_handle(PA_HND(PA_NS_DIR, 0));
+    if (fs_ch != ZX_HANDLE_INVALID) {
+        iris_set_fshost_channel(fs_ch);
+    }
+    login_init(fs_ch, sys_ctrl_ch);
+
+    /* 1. Connect to virtio_gpu scanout (1280x800) and initialize cursor */
+    zx_status_t st = connect_to_virtio_gpu();
     if (st != ZX_OK) {
         return 1;
     }
 
-    /* 3. Initialize 18x24 RGBA classic macOS arrow software cursor sprite */
     st = init_cursor_sprite();
     if (st != ZX_OK) {
         log_status(STATUS_FAIL, "iris_compositor", "Failed to initialize cursor sprite (%d).", st);
         return 1;
     }
 
-    /* 4. Pre-render desktop wallpaper + menu bar + welcome window */
-    st = init_desktop_wallpaper();
-    if (st != ZX_OK) {
-        log_status(STATUS_FAIL, "iris_compositor", "Failed to initialize desktop wallpaper (%d).", st);
-        return 1;
-    }
+    if (boot_splash) {
+        load_boot_splash_assets_from_vmo();
+        g_boot_splash_active = true;
+        render_boot_splash(0);
+    } else {
+        st = init_font_subsystem();
+        if (st != ZX_OK) {
+            log_status(STATUS_WARN, "iris_compositor", "Font subsystem initialized with fallback.");
+        }
+        st = init_desktop_wallpaper();
+        if (st != ZX_OK) {
+            log_status(STATUS_FAIL, "iris_compositor", "Failed to initialize desktop wallpaper (%d).", st);
+            return 1;
+        }
+        taskbar_init();
 
-    /* 4b. Initialize taskbar subsystem (clock, dock icons, flyouts) */
-    taskbar_init();
-
-    /* Check command line arguments and /tmp/compositor_crash.log for crash recovery dialog */
-    bool show_crash = false;
-    bool unlock_prompt = false;
-    for (int i = 1; i < argc; ++i) {
-        if (argv[i] && strcmp(argv[i], "--show-crash-dialog") == 0) {
+        char crash_log_buf[512];
+        memset(crash_log_buf, 0, sizeof(crash_log_buf));
+        FILE* fp = fopen("/tmp/compositor_crash.log", "r");
+        if (fp) {
             show_crash = true;
-        } else if (argv[i] && strcmp(argv[i], "--unlock-prompt") == 0) {
-            unlock_prompt = true;
+            size_t nr = fread(crash_log_buf, 1, sizeof(crash_log_buf) - 1, fp);
+            if (nr > 0) crash_log_buf[nr] = '\0';
+            fclose(fp);
+            unlink("/tmp/compositor_crash.log");
         }
-    }
-
-    zx_handle_t crypt_ch = zx_take_startup_handle(PA_HND(PA_USER2, 0));
-    if (unlock_prompt && crypt_ch != ZX_HANDLE_INVALID) {
-        init_unlock_prompt(crypt_ch);
-        log_status(STATUS_OKAY, "iris_compositor", "Displayed graphical disk passphrase unlock prompt.");
-    } else if (crypt_ch != ZX_HANDLE_INVALID) {
-        zx_handle_close(crypt_ch);
-    }
-
-    char crash_log_buf[512];
-    memset(crash_log_buf, 0, sizeof(crash_log_buf));
-    FILE* fp = fopen("/tmp/compositor_crash.log", "r");
-    if (fp) {
-        show_crash = true;
-        size_t nr = fread(crash_log_buf, 1, sizeof(crash_log_buf) - 1, fp);
-        if (nr > 0) {
-            crash_log_buf[nr] = '\0';
+        if (show_crash) {
+            if (crash_log_buf[0] == '\0') {
+                snprintf(crash_log_buf, sizeof(crash_log_buf),
+                         "Process: bin/iris_compositor\n"
+                         "Status: Restarted by supervisor\n"
+                         "Action: Auto-recovered\n");
+            }
+            init_crash_dialog(crash_log_buf);
+            log_status(STATUS_OKAY, "iris_compositor", "Spawned modal crash recovery dialog (System Notice).");
         }
-        fclose(fp);
-        unlink("/tmp/compositor_crash.log");
-    }
-
-    if (show_crash) {
-        if (crash_log_buf[0] == '\0') {
-            snprintf(crash_log_buf, sizeof(crash_log_buf),
-                     "Process: bin/iris_compositor\n"
-                     "Status: Restarted by supervisor\n"
-                     "Action: Auto-recovered\n");
-        }
-        init_crash_dialog(crash_log_buf);
-        log_status(STATUS_OKAY, "iris_compositor", "Spawned modal crash recovery dialog (System Notice).");
+        login_show();
+        composite_and_flush(0, 0, g_fb_width, g_fb_height);
     }
 
     /* 5. Initialize VirtIO Input (keyboard + tablet) and UART serial routing */
     init_input_subsystems();
-
-    /* 6. Composite initial desktop wallpaper + welcome surface + cursor and flush scanout */
-    composite_and_flush(0, 0, g_fb_width, g_fb_height);
-    log_status(STATUS_OKAY, "iris_compositor", "Rendered 1280x800 desktop, Inter Display typography, and 18x24 macOS cursor.");
 
     run_compositor_loop();
 
@@ -727,9 +802,6 @@ int main(int argc, char* argv[]) {
     g_shutdown = true;
     if (g_crash_dialog_active) {
         close_crash_dialog();
-    }
-    if (g_unlock_active) {
-        close_unlock_prompt();
     }
     for (size_t d = 0; d < g_num_input_devs; ++d) {
         virtio_input_teardown(&g_input_devs[d]);

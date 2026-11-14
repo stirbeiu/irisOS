@@ -35,11 +35,14 @@
 #include <iris/ipc.h>
 
 typedef struct iris_ufs_blk_dev {
-    bool        in_use;
-    bool        read_only;
-    zx_handle_t channel;
-    uint64_t    start_lba;
-    uint64_t    sector_count;
+    bool                     in_use;
+    bool                     read_only;
+    zx_handle_t              channel;
+    uint64_t                 start_lba;
+    uint64_t                 sector_count;
+    iris_ufs_custom_read_fn  custom_read;
+    iris_ufs_custom_write_fn custom_write;
+    iris_ufs_custom_flush_fn custom_flush;
 } iris_ufs_blk_dev_t;
 
 static iris_ufs_blk_dev_t g_ufs_devs[IRIS_UFS_MAX_DEVS];
@@ -53,12 +56,51 @@ int iris_ufs_register_device(int dev_id,
     if (dev_id < 0 || dev_id >= IRIS_UFS_MAX_DEVS || ipc_channel == ZX_HANDLE_INVALID) {
         return -1;
     }
+    memset(&g_ufs_devs[dev_id], 0, sizeof(g_ufs_devs[dev_id]));
     g_ufs_devs[dev_id].in_use       = true;
     g_ufs_devs[dev_id].read_only    = read_only;
     g_ufs_devs[dev_id].channel      = ipc_channel;
     g_ufs_devs[dev_id].start_lba    = start_lba;
     g_ufs_devs[dev_id].sector_count = sector_count;
     return 0;
+}
+
+int iris_ufs_register_custom(int dev_id,
+                             uint64_t sector_count,
+                             bool read_only,
+                             iris_ufs_custom_read_fn read_fn,
+                             iris_ufs_custom_write_fn write_fn,
+                             iris_ufs_custom_flush_fn flush_fn) {
+    if (dev_id < 0 || dev_id >= IRIS_UFS_MAX_DEVS || !read_fn) {
+        return -1;
+    }
+    memset(&g_ufs_devs[dev_id], 0, sizeof(g_ufs_devs[dev_id]));
+    g_ufs_devs[dev_id].in_use       = true;
+    g_ufs_devs[dev_id].read_only    = read_only;
+    g_ufs_devs[dev_id].channel      = ZX_HANDLE_INVALID;
+    g_ufs_devs[dev_id].sector_count = sector_count;
+    g_ufs_devs[dev_id].custom_read  = read_fn;
+    g_ufs_devs[dev_id].custom_write = write_fn;
+    g_ufs_devs[dev_id].custom_flush = flush_fn;
+    return 0;
+}
+
+void iris_ufs_unregister_device(int dev_id) {
+    if (dev_id < 0 || dev_id >= IRIS_UFS_MAX_DEVS) return;
+    memset(&g_ufs_devs[dev_id], 0, sizeof(g_ufs_devs[dev_id]));
+}
+
+static zx_status_t ipc_read_sectors(zx_handle_t ch, uint64_t lba, uint32_t count, void* out_buf);
+static zx_status_t ipc_write_sectors(zx_handle_t ch, uint64_t lba, uint32_t count, const void* in_buf);
+
+static inline zx_status_t dev_read_sectors(const iris_ufs_blk_dev_t* dev, uint64_t rel_lba, uint32_t count, void* out_buf) {
+    if (dev->custom_read) return dev->custom_read(rel_lba, count, out_buf);
+    return ipc_read_sectors(dev->channel, dev->start_lba + rel_lba, count, out_buf);
+}
+
+static inline zx_status_t dev_write_sectors(const iris_ufs_blk_dev_t* dev, uint64_t rel_lba, uint32_t count, const void* in_buf) {
+    if (dev->custom_write) return dev->custom_write(rel_lba, count, in_buf);
+    return ipc_write_sectors(dev->channel, dev->start_lba + rel_lba, count, in_buf);
 }
 
 /**
@@ -176,7 +218,7 @@ ssize_t iris_ufs_pread(int dev_id, void* buf, size_t size, off_t offset) {
         }
 
         if (sec_off != 0 || remaining < IRIS_UFS_SECTOR_SZ) {
-            if (ipc_read_sectors(dev->channel, dev->start_lba + rel_sec, 1, sector_bounce) != ZX_OK) {
+            if (dev_read_sectors(dev, rel_sec, 1, sector_bounce) != ZX_OK) {
                 errno = EIO;
                 return -1;
             }
@@ -196,7 +238,7 @@ ssize_t iris_ufs_pread(int dev_id, void* buf, size_t size, off_t offset) {
             if (rel_sec + num_secs > dev->sector_count) {
                 num_secs = (uint32_t)(dev->sector_count - rel_sec);
             }
-            if (ipc_read_sectors(dev->channel, dev->start_lba + rel_sec, num_secs, dst) != ZX_OK) {
+            if (dev_read_sectors(dev, rel_sec, num_secs, dst) != ZX_OK) {
                 errno = EIO;
                 return -1;
             }
@@ -240,7 +282,7 @@ ssize_t iris_ufs_pwrite(int dev_id, const void* buf, size_t size, off_t offset) 
         }
 
         if (sec_off != 0 || remaining < IRIS_UFS_SECTOR_SZ) {
-            if (ipc_read_sectors(dev->channel, dev->start_lba + rel_sec, 1, sector_bounce) != ZX_OK) {
+            if (dev_read_sectors(dev, rel_sec, 1, sector_bounce) != ZX_OK) {
                 errno = EIO;
                 return -1;
             }
@@ -249,7 +291,7 @@ ssize_t iris_ufs_pwrite(int dev_id, const void* buf, size_t size, off_t offset) 
                 chunk = remaining;
             }
             memcpy(sector_bounce + sec_off, src, chunk);
-            if (ipc_write_sectors(dev->channel, dev->start_lba + rel_sec, 1, sector_bounce) != ZX_OK) {
+            if (dev_write_sectors(dev, rel_sec, 1, sector_bounce) != ZX_OK) {
                 errno = EIO;
                 return -1;
             }
@@ -264,7 +306,7 @@ ssize_t iris_ufs_pwrite(int dev_id, const void* buf, size_t size, off_t offset) 
             if (rel_sec + num_secs > dev->sector_count) {
                 num_secs = (uint32_t)(dev->sector_count - rel_sec);
             }
-            if (ipc_write_sectors(dev->channel, dev->start_lba + rel_sec, num_secs, src) != ZX_OK) {
+            if (dev_write_sectors(dev, rel_sec, num_secs, src) != ZX_OK) {
                 errno = EIO;
                 return -1;
             }
@@ -283,6 +325,9 @@ zx_status_t iris_ufs_flush_device(int dev_id) {
         return ZX_ERR_BAD_HANDLE;
     }
     const iris_ufs_blk_dev_t* dev = &g_ufs_devs[dev_id];
+    if (dev->custom_flush) {
+        return dev->custom_flush();
+    }
     iris_msg_hdr_t req;
     iris_msg_hdr_init(&req, IRIS_PROTO_DRIVER, IRIS_BLK_OP_FLUSH, g_ufs_txid++, 0);
     zx_status_t st = zx_channel_write(dev->channel, 0, &req, sizeof(req), NULL, 0);

@@ -13,6 +13,7 @@
 | **Phase 6 (6.5)** | Figma Taskbar Overhaul (`taskbar.c`): Gradient Chrome, Start Menu (Profile, Recent Apps, Power/Session), Drag-and-Drop Pin Dock (`/Users/admin/.taskbar_pins`), Overflow Tray, Separate Notification Center & Calendar, Privacy Indicator | **Complete** | `./iris build all` |
 | **Phase 6 (6.6)** | Variable Font & Material Icons Engine (`font.c`, `render.c`): Inter Display / Inter Tight / Inter Variable + Material Icons TTF, Translucent Titlebar Gradient & Hoverable Caption Buttons | **Complete** | `./iris build all` |
 | **Phase 7** | Full Service Supervision (`zx_object_wait_many`), Reverse-Dependency Graceful Shutdown, Graphical Passphrase Unlock, VFS `rename`/`truncate` & `aarch64` PL031 RTC | **Complete** | `./iris build all` |
+| **Phase 8** | Haiku 5-Stage Boot Splash, Figma Login Screen (`Instrument Serif`), Per-User AES-256-XTS Vaults (`/Vaults/*.img`), Ephemeral Guest RAMFS & `./iris` CLI Overhaul | **Complete** | `./iris build all` |
 
 ---
 
@@ -61,3 +62,11 @@
 * **Full Service Supervision:** `iris_init` supervises `virtio_blk`, `virtio_gpu`, `iris_crypt`, `iris_pty`, `iris_fshost`, `iris_compositor`, and `IRIS_PROTO_SYSTEM` via `zx_object_wait_many`.
 * **Passphrase Hardening:** `iris_crypt` always runs with `--wait-unlock` (no empty-passphrase dev fallback); `iris_compositor` displays a centered graphical unlock prompt (`--unlock-prompt`) while `iris_fshost` defers `/Users` & `/Applications` mounting until unlock.
 * **Subsystem Fixes:** Implemented `IRIS_FS_OP_RENAME` & `IRIS_FS_OP_TRUNCATE` (`sys_rename`, `sys_ftruncate`) in `iris_fshost` + `mlibc`, added `aarch64` PL031 RTC (`0x09010000`) sync in `iris_init`, and removed unused `IRIS_COMP_OP_*` / `IRIS_CRYPT_OP_{READ,WRITE}` / `IRIS_PTY_OP_SET_ATTR` opcodes from `ipc.h`.
+
+---
+
+## 4. Phase 8 Summary: Boot Screen, Login Screen & Per-User Vaults
+* **5-Stage Haiku-Style Boot Splash:** `iris_init` spawns `iris_compositor --boot-splash` immediately after `virtio_gpu` (with `eye_dark.svg` and `MaterialIcons-Regular.ttf` from `PA_VMO_BOOTFS`), sequentially lighting up 5 Material Icons (`memory`, `desktop_windows`, `storage`, `security`, `rocket_launch`) with ~200 ms pacing via `IRIS_COMPOSITOR_OP_SET_BOOT_STAGE`.
+* **Figma Login Screen & Typography:** Added `InstrumentSerif-{Regular,Italic}.ttf` (`FONT_FAMILY_INSTRUMENT_SERIF`), UTF-8 glyph decoding in `font.c`, 4-stop vertical frosted gradient card (`0xCCFFFFFF -> 0xFFFFFFFF -> 0xFFFFFFFF -> 0xCCFFFFFF`) over 25%-dimmed wallpaper, circular `Administrator` & `Guest` profiles, inline passphrase unlock, `Sleep`/`Restart`/`Shutdown` actions, and 350 ms wallpaper cross-fade on login (`login.c`).
+* **Per-User AES-256-XTS Vaults & Ephemeral Guest:** `iris_crypt` manages per-user key slots (`IRIS_CRYPT_OP_{UNLOCK_USER,LOCK_USER,CRYPT_SECTORS}`), `iris_fshost` mounts `/Vaults/<user>.img` at `/Users/<user>` (`DEV_ID_USER_VAULT`) or ephemeral RAMFS for `Guest` + `/tmp` (`user_session.c`), and `mkufs2_host.c` seeds `/Users/.accounts` + `/Vaults/admin.img` (dev passphrase `irisos`).
+* **`./iris` CLI Overhaul:** Removed unused `test` targets; added `./iris doctor`, `./iris status`, and `./iris reset-data <arch>` with explicit `RESET` confirmation (auto-preservation of Partition 4 during `./iris build`).

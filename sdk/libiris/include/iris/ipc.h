@@ -133,8 +133,20 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_SYS_OP_PONG         0x0002u /**< Pong response containing server timestamp */
 #define IRIS_SYS_OP_SHUTDOWN     0x0003u /**< Request clean system poweroff */
 #define IRIS_SYS_OP_REBOOT       0x0004u /**< Request system restart */
-#define IRIS_SYS_OP_GET_VERSION  0x0005u /**< Query irisOS kernel & server version info */
-#define IRIS_SYS_OP_HEARTBEAT    0x0006u /**< Watchdog heartbeat ping */
+#define IRIS_SYS_OP_GET_VERSION   0x0005u /**< Query irisOS kernel & server version info */
+#define IRIS_SYS_OP_HEARTBEAT     0x0006u /**< Watchdog heartbeat ping */
+#define IRIS_SYS_OP_SESSION_LOGIN 0x0007u /**< Notify iris_init that user session authenticated */
+#define IRIS_SYS_OP_SESSION_LOGOUT 0x0008u/**< Request iris_init to close session apps and return to login */
+
+#pragma pack(push, 4)
+/**
+ * @brief Payload for IRIS_SYS_OP_SESSION_LOGIN.
+ */
+typedef struct iris_sys_session_req {
+    uint32_t is_guest;     /**< 1 if ephemeral Guest session, 0 if persistent user */
+    char     username[64]; /**< Logged-in username (e.g. "admin", "guest") */
+} iris_sys_session_req_t;
+#pragma pack(pop)
 
 /**
  * @brief VFS Router Protocol Opcodes (IRIS_PROTO_FS)
@@ -155,6 +167,43 @@ _Static_assert(sizeof(iris_msg_hdr_t) == 24, "iris_msg_hdr_t ABI broken: must be
 #define IRIS_FS_OP_OPEN_CLIENT   0x001Du /**< Request new VFS client channel endpoint */
 #define IRIS_FS_OP_CONFIRM_BOOT  0x001Eu /**< Confirm active A/B GPT slot boot_successful = 1 */
 #define IRIS_FS_OP_GET_EXEC_VMO  0x001Fu /**< Acquire cached read-only executable VMO for /System ELF binary */
+#define IRIS_FS_OP_LIST_USERS    0x0060u /**< List registered user profiles from /Users/.accounts */
+#define IRIS_FS_OP_USER_LOGIN    0x0061u /**< Authenticate user & mount encrypted vault or Guest RAM fs */
+#define IRIS_FS_OP_USER_LOGOUT   0x0062u /**< Sync & unmount active user space and zeroize key slot */
+
+#define IRIS_MAX_USER_PROFILES   8u
+
+#pragma pack(push, 4)
+/**
+ * @brief Single user profile descriptor returned by IRIS_FS_OP_LIST_USERS.
+ */
+typedef struct iris_user_profile_info {
+    char     username[32];       /**< Short UNIX/vault username (e.g. "admin", "guest") */
+    char     display_name[64];   /**< Human-readable display name (e.g. "Administrator") */
+    char     avatar_path[128];   /**< VFS path to circular avatar QOI (empty for Guest icon) */
+    char     wallpaper_path[128];/**< VFS path to user wallpaper QOI */
+    char     vault_path[128];    /**< VFS path to encrypted user UFS2 vault on Data */
+    uint32_t is_guest;           /**< 1 for ephemeral non-persistent Guest account */
+} iris_user_profile_info_t;
+
+/**
+ * @brief Reply payload for IRIS_FS_OP_LIST_USERS.
+ */
+typedef struct iris_fs_user_list_resp {
+    uint32_t                 count;
+    iris_user_profile_info_t users[IRIS_MAX_USER_PROFILES];
+} iris_fs_user_list_resp_t;
+
+/**
+ * @brief Request payload for IRIS_FS_OP_USER_LOGIN.
+ */
+typedef struct iris_fs_user_login_req {
+    uint32_t is_guest;        /**< 1 if logging into Guest account */
+    uint32_t passphrase_len;  /**< Length of passphrase in bytes */
+    char     username[32];    /**< Target username */
+    char     passphrase[128]; /**< Plaintext passphrase (zeroized after auth) */
+} iris_fs_user_login_req_t;
+#pragma pack(pop)
 
 #pragma pack(push, 4)
 /**
@@ -329,9 +378,39 @@ typedef struct iris_fs_get_exec_vmo_resp {
 /**
  * @brief Cryptographic Storage Protocol Opcodes (IRIS_PROTO_CRYPT)
  */
-#define IRIS_CRYPT_OP_STATUS     0x0020u /**< Query partition lock status and salt metadata */
-#define IRIS_CRYPT_OP_UNLOCK     0x0021u /**< Unlock Data partition with Argon2 key derivation */
-#define IRIS_CRYPT_OP_LOCK       0x0022u /**< Lock Data partition and wipe master key from RAM */
+#define IRIS_CRYPT_OP_STATUS        0x0020u /**< Query partition lock status and salt metadata */
+#define IRIS_CRYPT_OP_UNLOCK        0x0021u /**< Unlock Data partition with Argon2 key derivation */
+#define IRIS_CRYPT_OP_LOCK          0x0022u /**< Lock Data partition and wipe master key from RAM */
+#define IRIS_CRYPT_OP_UNLOCK_USER   0x0023u /**< Unwrap a per-user 4 KB vault header into a key slot */
+#define IRIS_CRYPT_OP_LOCK_USER     0x0024u /**< Zeroize a per-user key slot inside iris_crypt */
+#define IRIS_CRYPT_OP_CRYPT_SECTORS 0x0025u /**< Encrypt or decrypt 512-byte sectors using a key slot */
+
+#pragma pack(push, 4)
+/**
+ * @brief Request payload for IRIS_CRYPT_OP_UNLOCK_USER (followed by 4096-byte Sector 0 header).
+ */
+typedef struct iris_crypt_unlock_user_req {
+    uint32_t passphrase_len;  /**< Length of user passphrase in bytes */
+    char     passphrase[128]; /**< User passphrase */
+} iris_crypt_unlock_user_req_t;
+
+/**
+ * @brief Request/Reply slot identifier for per-user vault crypto operations.
+ */
+typedef struct iris_crypt_user_slot_msg {
+    uint32_t slot_id;         /**< Active key slot index inside iris_crypt */
+} iris_crypt_user_slot_msg_t;
+
+/**
+ * @brief Request payload for IRIS_CRYPT_OP_CRYPT_SECTORS (followed by sector_count * 512 bytes).
+ */
+typedef struct iris_crypt_sectors_req {
+    uint32_t slot_id;         /**< Active key slot index */
+    uint32_t encrypt;         /**< 1 = encrypt (plaintext -> ciphertext), 0 = decrypt */
+    uint64_t start_lba;       /**< Starting logical 512-byte sector LBA for XTS tweak */
+    uint32_t sector_count;    /**< Number of 512-byte sectors (max 64) */
+} iris_crypt_sectors_req_t;
+#pragma pack(pop)
 
 #pragma pack(push, 4)
 /**
@@ -361,6 +440,16 @@ typedef struct iris_crypt_status_resp {
 #define IRIS_COMPOSITOR_OP_MOVE_WINDOW    0x0033u /**< Update window desktop coordinates (x, y) */
 #define IRIS_COMPOSITOR_OP_OPEN_CLIENT    0x0034u /**< Request new compositor client channel endpoint */
 #define IRIS_COMPOSITOR_OP_POLL_EVENT     0x0035u /**< Poll pending keyboard or mouse input events */
+#define IRIS_COMPOSITOR_OP_SET_BOOT_STAGE 0x0036u /**< Advance Haiku-style boot splash stage (1..5), optionally attaching fshost handle */
+
+#pragma pack(push, 4)
+/**
+ * @brief Request payload for IRIS_COMPOSITOR_OP_SET_BOOT_STAGE.
+ */
+typedef struct iris_compositor_boot_stage_req {
+    uint32_t stage; /**< Boot stage 1..5 (Stage 4 may attach fshost client handle at handles[0]) */
+} iris_compositor_boot_stage_req_t;
+#pragma pack(pop)
 
 /* Window creation flags for iris_compositor_create_window_req_t::flags */
 #define IRIS_WIN_FLAG_DEFAULT      0x00000000u /**< Default opaque window surface (PIXMAN_OP_SRC) */

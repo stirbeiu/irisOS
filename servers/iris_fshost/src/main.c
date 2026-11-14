@@ -73,6 +73,7 @@
 
 #include <libufs.h>
 #include "ufs_io.h"
+#include "user_session.h"
 
 typedef ino_t ufs_ino_t;
 
@@ -140,6 +141,8 @@ typedef enum vfs_mount_id {
     VFS_MOUNT_ROOT,
     VFS_MOUNT_SYSTEM_RO,
     VFS_MOUNT_DATA_RW,
+    VFS_MOUNT_USER_VAULT,
+    VFS_MOUNT_RAMFS,
 } vfs_mount_id_t;
 
 typedef struct vfs_open_file {
@@ -169,8 +172,19 @@ static struct uufsd    g_ufs_system;
 static struct uufsd    g_ufs_data;
 static bool            g_system_mounted = false;
 static bool            g_data_mounted   = false;
+static iris_user_session_state_t g_user_session;
 
 static vfs_open_file_t g_open_files[MAX_OPEN_FILES];
+
+static inline struct uufsd* get_mount_disk(vfs_mount_id_t m) {
+    if (m == VFS_MOUNT_SYSTEM_RO) return &g_ufs_system;
+    if (m == VFS_MOUNT_USER_VAULT) return &g_user_session.ufs_user;
+    return &g_ufs_data;
+}
+
+static inline bool is_mount_rw(vfs_mount_id_t m) {
+    return (m == VFS_MOUNT_DATA_RW || m == VFS_MOUNT_USER_VAULT);
+}
 
 /* ==============================================================================
  * Downstream Block Helpers
@@ -1069,13 +1083,29 @@ static zx_status_t resolve_vfs_path(const char* raw_path,
     } else if (strcmp(path, "/Users") == 0 || strncmp(path, "/Users/", 7) == 0) {
         if (!g_data_mounted) mount_data_partition();
         if (!g_data_mounted) return ZX_ERR_UNAVAILABLE;
-        mount_id = VFS_MOUNT_DATA_RW;
-        disk     = &g_ufs_data;
-        rel      = (path[6] == '/') ? (path + 7) : "";
-        /* Look up /Users directory on Data UFS2 (or fall back to rootino if flat) */
-        ufs_ino_t users_ino = UFS_ROOTINO;
-        if (ufs2_dir_lookup(disk, UFS_ROOTINO, "Users", &users_ino) == ZX_OK) {
-            cur_ino = users_ino;
+
+        if (g_user_session.session_active && !g_user_session.is_guest && g_user_session.active_user[0] != '\0') {
+            char user_prefix[48];
+            snprintf(user_prefix, sizeof(user_prefix), "/Users/%s", g_user_session.active_user);
+            size_t plen = strlen(user_prefix);
+            if (strcmp(path, user_prefix) == 0 ||
+                (strncmp(path, user_prefix, plen) == 0 && path[plen] == '/')) {
+                mount_id = VFS_MOUNT_USER_VAULT;
+                disk     = &g_user_session.ufs_user;
+                rel      = (path[plen] == '/') ? (path + plen + 1) : "";
+                cur_ino  = UFS_ROOTINO;
+            }
+        }
+
+        if (mount_id == VFS_MOUNT_NONE) {
+            mount_id = VFS_MOUNT_DATA_RW;
+            disk     = &g_ufs_data;
+            rel      = (path[6] == '/') ? (path + 7) : "";
+            /* Look up /Users directory on Data UFS2 (or fall back to rootino if flat) */
+            ufs_ino_t users_ino = UFS_ROOTINO;
+            if (ufs2_dir_lookup(disk, UFS_ROOTINO, "Users", &users_ino) == ZX_OK) {
+                cur_ino = users_ino;
+            }
         }
     } else if (strcmp(path, "/tmp") == 0 || strncmp(path, "/tmp/", 5) == 0) {
         if (!g_data_mounted) mount_data_partition();
@@ -1185,6 +1215,48 @@ static void handle_fs_open(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
     memcpy(safe_path, req->path, sizeof(safe_path) - 1);
     safe_path[sizeof(safe_path) - 1] = '\0';
 
+    bool wants_write = (req->flags & VFS_ANY_WRITE_MASK) != 0;
+
+    /* Route /tmp and active /Users/guest to ephemeral RAMFS */
+    bool ram_is_tmp = false;
+    const char* ram_rel = NULL;
+    if (ramfs_handles_path(safe_path, g_user_session.session_active && g_user_session.is_guest,
+                           &ram_is_tmp, &ram_rel)) {
+        uint32_t rino = 0;
+        bool ris_dir = false;
+        uint64_t rsize = 0;
+        zx_status_t rst = ramfs_open(ram_rel, ram_is_tmp, req->flags, req->mode, &rino, &ris_dir, &rsize);
+        if (rst != ZX_OK) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, rst, 0);
+            return;
+        }
+        uint32_t slot = 0;
+        for (uint32_t i = 1; i < MAX_OPEN_FILES; ++i) {
+            if (!g_open_files[i].in_use) { slot = i; break; }
+        }
+        if (slot == 0) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_NO_RESOURCES, 0);
+            return;
+        }
+        g_open_files[slot].in_use   = true;
+        g_open_files[slot].mount_id = VFS_MOUNT_RAMFS;
+        g_open_files[slot].writable = wants_write;
+        g_open_files[slot].dirty    = false;
+        g_open_files[slot].ino      = (ufs_ino_t)rino;
+        g_open_files[slot].flags    = req->flags;
+        g_open_files[slot].offset   = (req->flags & VFS_O_APPEND) ? rsize : 0;
+        g_open_files[slot].size     = rsize;
+        g_open_files[slot].is_dir   = ris_dir;
+
+        iris_fs_open_resp_t* resp = (iris_fs_open_resp_t*)rep_payload;
+        resp->vfs_handle = slot;
+        resp->is_dir     = ris_dir ? 1u : 0u;
+        resp->size       = rsize;
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_open_resp_t));
+        *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_open_resp_t);
+        return;
+    }
+
     vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
     struct uufsd* disk = NULL;
     ufs_ino_t parent_ino = 0;
@@ -1193,8 +1265,6 @@ static void handle_fs_open(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
 
     zx_status_t st = resolve_vfs_path(safe_path, &mount_id, &disk, &parent_ino,
                                       leaf, sizeof(leaf), &target_ino);
-
-    bool wants_write = (req->flags & VFS_ANY_WRITE_MASK) != 0;
 
     /* Handle virtual root directory */
     if (strcmp(safe_path, "/") == 0 || safe_path[0] == '\0') {
@@ -1239,7 +1309,7 @@ static void handle_fs_open(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
     }
 
     if (st == ZX_ERR_NOT_FOUND && (req->flags & (VFS_O_CREAT | 0x0040u | 0x0200u)) != 0) {
-        if (mount_id != VFS_MOUNT_DATA_RW || leaf[0] == '\0') {
+        if (!is_mount_rw(mount_id) || leaf[0] == '\0') {
             iris_msg_hdr_init_reply(rep_hdr, req_hdr, IRIS_ERR_READ_ONLY, 0);
             return;
         }
@@ -1264,7 +1334,7 @@ static void handle_fs_open(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
     }
 
     /* Handle O_TRUNC on writable files */
-    if (!is_dir && mount_id == VFS_MOUNT_DATA_RW && (req->flags & (VFS_O_TRUNC | 0x0400u)) != 0) {
+    if (!is_dir && is_mount_rw(mount_id) && (req->flags & (VFS_O_TRUNC | 0x0400u)) != 0) {
         dp.dp2->di_size = 0;
         putinode(disk);
     }
@@ -1411,7 +1481,20 @@ static void handle_fs_read(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
     }
 
     vfs_open_file_t* f = &g_open_files[req->vfs_handle];
-    struct uufsd* disk = (f->mount_id == VFS_MOUNT_SYSTEM_RO) ? &g_ufs_system : &g_ufs_data;
+    if (f->mount_id == VFS_MOUNT_RAMFS) {
+        uint32_t bytes_copied = 0;
+        zx_status_t st = ramfs_read((uint32_t)f->ino, f->offset, req->count, rep_payload, &bytes_copied);
+        if (st != ZX_OK) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+            return;
+        }
+        f->offset += bytes_copied;
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, bytes_copied);
+        *out_rep_len = sizeof(iris_msg_hdr_t) + bytes_copied;
+        return;
+    }
+
+    struct uufsd* disk = get_mount_disk(f->mount_id);
     struct fs* fs = &disk->d_fs;
 
     union dinodep dp;
@@ -1519,7 +1602,24 @@ static void handle_fs_write(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
     }
 
     const uint8_t* src_data = payload + sizeof(iris_fs_write_req_t);
-    struct uufsd* disk = &g_ufs_data;
+    if (f->mount_id == VFS_MOUNT_RAMFS) {
+        uint32_t bytes_written = 0;
+        zx_status_t st = ramfs_write((uint32_t)f->ino, f->offset, req->count, src_data, &bytes_written);
+        if (st != ZX_OK) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+            return;
+        }
+        f->offset += bytes_written;
+        if (f->offset > f->size) f->size = f->offset;
+        iris_fs_write_resp_t* resp = (iris_fs_write_resp_t*)rep_payload;
+        resp->bytes_written = bytes_written;
+        resp->reserved = 0;
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_write_resp_t));
+        *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_write_resp_t);
+        return;
+    }
+
+    struct uufsd* disk = get_mount_disk(f->mount_id);
     struct fs* fs = &disk->d_fs;
 
     union dinodep dp;
@@ -1733,12 +1833,38 @@ static void handle_fs_stat(const iris_msg_hdr_t* req_hdr, const uint8_t* payload
             *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_stat_resp_t);
             return;
         }
-        disk       = (f->mount_id == VFS_MOUNT_SYSTEM_RO) ? &g_ufs_system : &g_ufs_data;
+        if (f->mount_id == VFS_MOUNT_RAMFS) {
+            iris_fs_stat_resp_t* resp = (iris_fs_stat_resp_t*)rep_payload;
+            zx_status_t st = ramfs_stat((uint32_t)f->ino, resp);
+            if (st != ZX_OK) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+                return;
+            }
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_stat_resp_t));
+            *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_stat_resp_t);
+            return;
+        }
+        disk       = get_mount_disk(f->mount_id);
         target_ino = f->ino;
     } else {
         char safe_path[256];
         memcpy(safe_path, req->path, sizeof(safe_path) - 1);
         safe_path[sizeof(safe_path) - 1] = '\0';
+
+        bool ram_is_tmp = false;
+        const char* ram_rel = NULL;
+        if (ramfs_handles_path(safe_path, g_user_session.session_active && g_user_session.is_guest,
+                               &ram_is_tmp, &ram_rel)) {
+            iris_fs_stat_resp_t* resp = (iris_fs_stat_resp_t*)rep_payload;
+            zx_status_t st = ramfs_stat_path(ram_rel, ram_is_tmp, resp);
+            if (st != ZX_OK) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+                return;
+            }
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_stat_resp_t));
+            *out_rep_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_stat_resp_t);
+            return;
+        }
 
         vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
         ufs_ino_t parent_ino = 0;
@@ -1836,7 +1962,18 @@ static void handle_fs_readdir(const iris_msg_hdr_t* req_hdr, const uint8_t* payl
         return;
     }
 
-    struct uufsd* disk = (f->mount_id == VFS_MOUNT_SYSTEM_RO) ? &g_ufs_system : &g_ufs_data;
+    if (f->mount_id == VFS_MOUNT_RAMFS) {
+        zx_status_t st = ramfs_readdir((uint32_t)f->ino, &f->offset, max_bytes, rep_payload, &bytes_packed);
+        if (st != ZX_OK) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
+            return;
+        }
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, bytes_packed);
+        *out_rep_len = sizeof(iris_msg_hdr_t) + bytes_packed;
+        return;
+    }
+
+    struct uufsd* disk = get_mount_disk(f->mount_id);
     struct fs* fs = &disk->d_fs;
 
     union dinodep dp;
@@ -1906,6 +2043,15 @@ static void handle_fs_mkdir(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
     memcpy(safe_path, req->path, sizeof(safe_path) - 1);
     safe_path[sizeof(safe_path) - 1] = '\0';
 
+    bool ram_is_tmp = false;
+    const char* ram_rel = NULL;
+    if (ramfs_handles_path(safe_path, g_user_session.session_active && g_user_session.is_guest,
+                           &ram_is_tmp, &ram_rel)) {
+        zx_status_t rst = ramfs_mkdir(ram_rel, ram_is_tmp, req->mode);
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, rst, 0);
+        return;
+    }
+
     vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
     struct uufsd* disk = NULL;
     ufs_ino_t parent_ino = 0;
@@ -1923,7 +2069,7 @@ static void handle_fs_mkdir(const iris_msg_hdr_t* req_hdr, const uint8_t* payloa
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_ALREADY_EXISTS, 0);
         return;
     }
-    if (st != ZX_ERR_NOT_FOUND || mount_id != VFS_MOUNT_DATA_RW || leaf[0] == '\0') {
+    if (st != ZX_ERR_NOT_FOUND || !is_mount_rw(mount_id) || leaf[0] == '\0') {
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, st, 0);
         return;
     }
@@ -1942,6 +2088,15 @@ static void handle_fs_unlink(const iris_msg_hdr_t* req_hdr, const uint8_t* paylo
     char safe_path[256];
     memcpy(safe_path, req->path, sizeof(safe_path) - 1);
     safe_path[sizeof(safe_path) - 1] = '\0';
+
+    bool ram_is_tmp = false;
+    const char* ram_rel = NULL;
+    if (ramfs_handles_path(safe_path, g_user_session.session_active && g_user_session.is_guest,
+                           &ram_is_tmp, &ram_rel)) {
+        zx_status_t rst = ramfs_unlink(ram_rel, ram_is_tmp);
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, rst, 0);
+        return;
+    }
 
     vfs_mount_id_t mount_id = VFS_MOUNT_NONE;
     struct uufsd* disk = NULL;
@@ -2066,6 +2221,21 @@ static void handle_fs_rename(const iris_msg_hdr_t* req_hdr, const uint8_t* paylo
         return;
     }
 
+    bool old_tmp = false, new_tmp = false;
+    const char *old_rel = NULL, *new_rel = NULL;
+    bool guest_active = (g_user_session.session_active && g_user_session.is_guest);
+    bool old_ram = ramfs_handles_path(old_path, guest_active, &old_tmp, &old_rel);
+    bool new_ram = ramfs_handles_path(new_path, guest_active, &new_tmp, &new_rel);
+    if (old_ram || new_ram) {
+        if (!old_ram || !new_ram || old_tmp != new_tmp) {
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+            return;
+        }
+        zx_status_t rst = ramfs_rename(old_rel, new_rel, old_tmp);
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, rst, 0);
+        return;
+    }
+
     vfs_mount_id_t old_mount = VFS_MOUNT_NONE, new_mount = VFS_MOUNT_NONE;
     struct uufsd* old_disk = NULL;
     struct uufsd* new_disk = NULL;
@@ -2143,18 +2313,25 @@ static void handle_fs_truncate(const iris_msg_hdr_t* req_hdr, const uint8_t* pay
     }
 
     vfs_open_file_t* f = &g_open_files[req->vfs_handle];
-    if (f->mount_id != VFS_MOUNT_DATA_RW || !f->writable || f->is_dir) {
+    if (f->mount_id == VFS_MOUNT_RAMFS) {
+        zx_status_t rst = ramfs_truncate((uint32_t)f->ino, req->size);
+        if (rst == ZX_OK) f->size = req->size;
+        iris_msg_hdr_init_reply(rep_hdr, req_hdr, rst, 0);
+        return;
+    }
+    if (!is_mount_rw(f->mount_id) || !f->writable || f->is_dir) {
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, IRIS_ERR_READ_ONLY, 0);
         return;
     }
 
+    struct uufsd* disk = get_mount_disk(f->mount_id);
     union dinodep dp;
-    if (getinode(&g_ufs_data, &dp, f->ino) == -1) {
+    if (getinode(disk, &dp, f->ino) == -1) {
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
         return;
     }
     dp.dp2->di_size = req->size;
-    if (putinode(&g_ufs_data) == -1) {
+    if (putinode(disk) == -1) {
         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_IO, 0);
         return;
     }
@@ -2489,6 +2666,10 @@ static void dispatch_fs_message(zx_handle_t ch, const uint8_t* req_buf, uint32_t
             handle_fs_readlink(req_hdr, req_payload, rep_hdr, rep_payload, &rep_total_len);
             break;
         case IRIS_FS_OP_SYNC:
+            if (g_user_session.session_active && !g_user_session.is_guest) {
+                cgwrite1(&g_user_session.ufs_user, 0);
+                sbwrite(&g_user_session.ufs_user, 0);
+            }
             if (g_data_mounted) {
                 cgwrite1(&g_ufs_data, 0);
                 sbwrite(&g_ufs_data, 0);
@@ -2497,6 +2678,54 @@ static void dispatch_fs_message(zx_handle_t ch, const uint8_t* req_buf, uint32_t
             iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
             rep_total_len = sizeof(iris_msg_hdr_t);
             break;
+        case IRIS_FS_OP_LIST_USERS: {
+            if (!g_data_mounted) mount_data_partition();
+            if (!g_data_mounted) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_UNAVAILABLE, 0);
+                break;
+            }
+            iris_fs_user_list_resp_t* resp = (iris_fs_user_list_resp_t*)rep_payload;
+            zx_status_t ust = user_session_list_users(&g_ufs_data, resp);
+            if (ust == ZX_OK) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, sizeof(iris_fs_user_list_resp_t));
+                rep_total_len = sizeof(iris_msg_hdr_t) + sizeof(iris_fs_user_list_resp_t);
+            } else {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ust, 0);
+            }
+            break;
+        }
+        case IRIS_FS_OP_USER_LOGIN: {
+            if (req_hdr->payload_len < sizeof(iris_fs_user_login_req_t)) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_INVALID_ARGS, 0);
+                break;
+            }
+            if (!g_data_mounted) mount_data_partition();
+            if (!g_data_mounted) {
+                iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_ERR_UNAVAILABLE, 0);
+                break;
+            }
+            for (uint32_t i = 1; i < MAX_OPEN_FILES; ++i) {
+                if (g_open_files[i].in_use && g_open_files[i].mount_id == VFS_MOUNT_USER_VAULT) {
+                    g_open_files[i].in_use = false;
+                }
+            }
+            const iris_fs_user_login_req_t* lreq = (const iris_fs_user_login_req_t*)req_payload;
+            zx_status_t lst = user_session_login(&g_ufs_data, g_crypt_channel, lreq, &g_user_session);
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, lst, 0);
+            rep_total_len = sizeof(iris_msg_hdr_t);
+            break;
+        }
+        case IRIS_FS_OP_USER_LOGOUT: {
+            for (uint32_t i = 1; i < MAX_OPEN_FILES; ++i) {
+                if (g_open_files[i].in_use && g_open_files[i].mount_id == VFS_MOUNT_USER_VAULT) {
+                    g_open_files[i].in_use = false;
+                }
+            }
+            zx_status_t lst = user_session_logout(&g_ufs_data, g_crypt_channel, &g_user_session);
+            iris_msg_hdr_init_reply(rep_hdr, req_hdr, lst, 0);
+            rep_total_len = sizeof(iris_msg_hdr_t);
+            break;
+        }
         case IRIS_FS_OP_GET_EXEC_VMO:
             handle_fs_get_exec_vmo(ch, req_hdr, req_payload);
             return;
