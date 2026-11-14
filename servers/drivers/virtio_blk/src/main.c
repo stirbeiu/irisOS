@@ -604,26 +604,36 @@ static void run_ipc_server(void) {
         }
 
         if (!did_work && active_clients > 0) {
-            if (active_clients == 1) {
-                for (int c = 0; c < MAX_BLK_CLIENTS; ++c) {
-                    if (clients[c] != ZX_HANDLE_INVALID) {
-                        zx_signals_t observed = 0;
-                        zx_status_t st = zx_object_wait_one(
-                            clients[c],
-                            ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED,
-                            ZX_TIME_INFINITE,
-                            &observed
-                        );
-                        if (st != ZX_OK || ((observed & ZX_CHANNEL_PEER_CLOSED) && !(observed & ZX_CHANNEL_READABLE))) {
-                            zx_handle_close(clients[c]);
-                            clients[c] = ZX_HANDLE_INVALID;
-                            active_clients--;
-                        }
-                        break;
-                    }
+            zx_wait_item_t items[MAX_BLK_CLIENTS];
+            int item_slots[MAX_BLK_CLIENTS];
+            uint32_t nitems = 0;
+
+            for (int c = 0; c < MAX_BLK_CLIENTS; ++c) {
+                if (clients[c] != ZX_HANDLE_INVALID) {
+                    items[nitems].handle  = clients[c];
+                    items[nitems].waitfor = ZX_CHANNEL_READABLE | ZX_CHANNEL_PEER_CLOSED;
+                    items[nitems].pending = 0;
+                    item_slots[nitems]    = c;
+                    nitems++;
                 }
-            } else {
-                zx_nanosleep(zx_deadline_after(100000ULL)); /* 100 us poll interval across multi-channels */
+            }
+            if (nitems == 0) {
+                break;
+            }
+
+            zx_status_t st = zx_object_wait_many(items, nitems, ZX_TIME_INFINITE);
+            if (st != ZX_OK) {
+                break;
+            }
+
+            for (uint32_t i = 0; i < nitems; ++i) {
+                if ((items[i].pending & ZX_CHANNEL_PEER_CLOSED) &&
+                    !(items[i].pending & ZX_CHANNEL_READABLE)) {
+                    int slot = item_slots[i];
+                    zx_handle_close(clients[slot]);
+                    clients[slot] = ZX_HANDLE_INVALID;
+                    active_clients--;
+                }
             }
         }
     }

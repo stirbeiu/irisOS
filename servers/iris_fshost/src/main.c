@@ -2827,6 +2827,11 @@ static void run_vfs_server(void) {
                     if (rd_st != ZX_OK) {
                         break;
                     }
+                    for (uint32_t h = 0; h < act_handles; ++h) {
+                        if (handles[h] != ZX_HANDLE_INVALID) {
+                            zx_handle_close(handles[h]);
+                        }
+                    }
                     dispatch_fs_message(ch, req_buf, act_bytes);
                 }
             }

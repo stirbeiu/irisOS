@@ -915,6 +915,7 @@ int main(int argc, char** argv) {
             break;
         }
 
+        bool compact_clients = false;
         for (uint32_t i = 0; i < cur_clients; i++) {
             if (wait_items[i].pending & ZX_CHANNEL_READABLE) {
                 handle_pty_message(g_clients[i].ch);
@@ -927,15 +928,27 @@ int main(int argc, char** argv) {
                 }
                 pty_lock(&g_pty);
                 zx_handle_close(g_clients[i].ch);
-                /* Remove client channel from array */
-                for (uint32_t j = i; j + 1 < g_num_clients; j++) {
-                    g_clients[j] = g_clients[j + 1];
-                }
-                g_num_clients--;
+                g_clients[i].ch = ZX_HANDLE_INVALID;
+                g_clients[i].has_pending_read = false;
+                g_clients[i].pending_req_count = 0;
+                compact_clients = true;
                 pty_unlock(&g_pty);
-                i--;
-                cur_clients--;
             }
+        }
+
+        if (compact_clients) {
+            pty_lock(&g_pty);
+            uint32_t dst = 0;
+            for (uint32_t src = 0; src < g_num_clients; src++) {
+                if (g_clients[src].ch != ZX_HANDLE_INVALID) {
+                    if (dst != src) {
+                        g_clients[dst] = g_clients[src];
+                    }
+                    dst++;
+                }
+            }
+            g_num_clients = dst;
+            pty_unlock(&g_pty);
         }
     }
 
