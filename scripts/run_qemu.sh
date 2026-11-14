@@ -122,7 +122,7 @@ if [[ "${ARCH_NAME}" == "x86_64" ]]; then
         -device nvme,drive=bootdisk,serial=irisboot,bootindex=0 \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
-        -device virtio-gpu-pci,xres=1280,yres=800 \
+        -device virtio-gpu-pci,xres=1024,yres=768 \
         -device virtio-keyboard-pci \
         -device virtio-tablet-pci \
         -device virtio-rng-pci \
@@ -150,7 +150,7 @@ else
         -device nvme,drive=bootdisk,serial=irisboot,bootindex=0 \
         -drive file="${DISK_RAW}",if=none,id=hd0,format=raw \
         -device virtio-blk-pci,drive=hd0 \
-        -device virtio-gpu-pci,xres=1280,yres=800 \
+        -device virtio-gpu-pci,xres=1024,yres=768 \
         -device virtio-keyboard-pci \
         -device virtio-tablet-pci \
         -device virtio-rng-pci \

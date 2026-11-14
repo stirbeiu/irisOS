@@ -261,6 +261,7 @@ extern uint32_t          g_boot_stage;
 /* font.c */
 zx_status_t init_font_subsystem(void);
 zx_status_t init_material_icons_from_memory(const uint8_t* ttf_bytes, size_t len);
+zx_status_t init_ui_font_from_memory(const uint8_t* otf_bytes, size_t len);
 void cleanup_font_subsystem(void);
 void draw_string_8x8(uint32_t* pixels, uint32_t buf_w, uint32_t buf_h,
                      int32_t x, int32_t y, const char* str, uint32_t color);
@@ -302,9 +303,13 @@ zx_status_t init_desktop_wallpaper(void);
 bool load_qoi_wallpaper_aspect_fill(const char* path, pixman_image_t* dst_surface,
                                     uint32_t fb_w, uint32_t fb_h);
 void compositor_start_wallpaper_crossfade(const char* new_wallpaper_path);
+void compositor_capture_boot_splash_frame(void);
+void compositor_begin_boot_to_login_crossfade(void);
+void compositor_invalidate_crossfade_target(void);
 void compositor_tick_wallpaper_crossfade(void);
 void set_boot_splash_eye_svg(const char* data, size_t len);
 void render_boot_splash(uint32_t stage);
+void render_boot_splash_ex(uint32_t stage, uint32_t stage_alpha);
 void render_eye_svg(uint32_t* dst_pixels, uint32_t fb_w, uint32_t fb_h,
                     int32_t dst_x, int32_t dst_y, uint32_t dst_w, uint32_t dst_h,
                     bool dark_mode);

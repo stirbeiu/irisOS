@@ -149,7 +149,6 @@ static zx_time_t   (*g_zx_deadline_after)(zx_duration_t) = NULL;
 static zx_status_t (*g_zx_vmo_create_physical)(zx_handle_t, uintptr_t, size_t, zx_handle_t*) = NULL;
 static zx_status_t (*g_zx_iommu_create)(zx_handle_t, uint32_t, const void*, size_t, zx_handle_t*) = NULL;
 static zx_status_t (*g_zx_bti_create)(zx_handle_t, uint32_t, uint64_t, zx_handle_t*) = NULL;
-static zx_status_t (*g_zx_interrupt_create)(zx_handle_t, uint32_t, uint32_t, zx_handle_t*) = NULL;
 static zx_status_t (*g_zx_object_get_info)(zx_handle_t, uint32_t, void*, size_t, size_t*, size_t*) = NULL;
 static zx_status_t (*g_zx_ioports_request)(zx_handle_t, uint16_t, uint16_t) = NULL;
 static zx_status_t (*g_zx_clock_adjust)(zx_handle_t, uint32_t, int64_t) = NULL;
@@ -166,7 +165,7 @@ static void vdso_init(uintptr_t base) {
     RESOLVE(zx_object_wait_one); RESOLVE(zx_object_wait_many); RESOLVE(zx_task_kill);
     RESOLVE(zx_system_powerctl); RESOLVE(zx_nanosleep); RESOLVE(zx_deadline_after);
     RESOLVE(zx_vmo_create_physical); RESOLVE(zx_iommu_create); RESOLVE(zx_bti_create);
-    RESOLVE(zx_interrupt_create); RESOLVE(zx_object_get_info);
+    RESOLVE(zx_object_get_info);
     RESOLVE(zx_ioports_request); RESOLVE(zx_clock_adjust);
     RESOLVE(zx_clock_get_monotonic);
     #undef RESOLVE
@@ -1268,23 +1267,11 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                 }
             }
 
-            zx_handle_t gpu_mmio_vmo = ZX_HANDLE_INVALID;
-            if (gpu_dev.common_bar < 6 && gpu_dev.bars[gpu_dev.common_bar].phys_addr != 0 && g_zx_vmo_create_physical) {
-                g_zx_vmo_create_physical(g_root_resource, gpu_dev.bars[gpu_dev.common_bar].phys_addr, 65536u, &gpu_mmio_vmo);
-            }
-
-            zx_handle_t gpu_irq_hnd = ZX_HANDLE_INVALID;
-            if (gpu_dev.irq_line > 0 && gpu_dev.irq_line != 0xFFu && g_zx_interrupt_create) {
-                g_zx_interrupt_create(g_root_resource, gpu_dev.irq_line, 0, &gpu_irq_hnd);
-            }
-
-            spawn_handle_t gpu_hnds[6];
+            spawn_handle_t gpu_hnds[4];
             size_t num_gpu_hnds = 0;
             gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_server,   PA_HND(PA_USER0, 0) };
             gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ root_res_gpu, PA_HND(PA_RESOURCE, 0) };
-            if (gpu_bti != ZX_HANDLE_INVALID)      gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_bti,      PA_HND(PA_USER1, 0) };
-            if (gpu_mmio_vmo != ZX_HANDLE_INVALID) gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_mmio_vmo, PA_HND(PA_USER2, 0) };
-            if (gpu_irq_hnd != ZX_HANDLE_INVALID)  gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_irq_hnd,  PA_HND(PA_USER2, 1) };
+            if (gpu_bti != ZX_HANDLE_INVALID) gpu_hnds[num_gpu_hnds++] = (spawn_handle_t){ gpu_bti, PA_HND(PA_USER1, 0) };
 
             spawn_bootfs_binary("virtio_gpu", "bin/virtio_gpu", 0, NULL, gpu_hnds, num_gpu_hnds, &proc_gpu);
             g_zx_handle_close(gpu_server);
@@ -1365,16 +1352,14 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
         if (has_gpu) {
             zx_handle_t comp_fs_ch = request_fs_client_channel(fshost_client);
             send_compositor_boot_stage(comp_client, 4u, comp_fs_ch);
+            send_compositor_boot_stage(comp_client, 5u, ZX_HANDLE_INVALID);
         }
 
-        /* Confirm active A/B GPT slot boot */
+        /* Confirm active A/B GPT slot boot after compositor reaches login stage */
         if (fshost_client != ZX_HANDLE_INVALID) {
             if (confirm_boot_with_fshost(fshost_client) == ZX_OK) {
                 log_status(STATUS_OKAY, "iris_init", "Confirmed active A/B GPT slot (boot_successful=1).");
             }
-        }
-        if (has_gpu) {
-            send_compositor_boot_stage(comp_client, 5u, ZX_HANDLE_INVALID);
         }
 
         zx_handle_t proc_session_term = ZX_HANDLE_INVALID;
@@ -1449,22 +1434,19 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                                 zx_handle_t term_fs_client   = request_fs_client_channel(fshost_client);
                                 zx_handle_t term_pty_client  = request_pty_client_channel(pty_client);
                                 zx_handle_t term_comp_client = request_compositor_client_channel(comp_client);
-                                zx_handle_t root_res_term    = ZX_HANDLE_INVALID;
-                                g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_term);
                                 zx_handle_t sys_dup_term     = ZX_HANDLE_INVALID;
                                 if (sys_ctrl_cli != ZX_HANDLE_INVALID) {
                                     g_zx_handle_duplicate(sys_ctrl_cli, ZX_RIGHT_SAME_RIGHTS, &sys_dup_term);
                                 }
-                                spawn_handle_t term_hnds[5];
+                                spawn_handle_t term_hnds[4];
                                 size_t num_term_hnds = 0;
                                 if (term_fs_client != ZX_HANDLE_INVALID)   term_hnds[num_term_hnds++] = (spawn_handle_t){ term_fs_client,   PA_HND(PA_NS_DIR, 0) };
                                 if (term_pty_client != ZX_HANDLE_INVALID)  term_hnds[num_term_hnds++] = (spawn_handle_t){ term_pty_client,  PA_HND(PA_USER0, 0) };
                                 if (term_comp_client != ZX_HANDLE_INVALID) term_hnds[num_term_hnds++] = (spawn_handle_t){ term_comp_client, PA_HND(PA_USER0, 1) };
-                                if (root_res_term != ZX_HANDLE_INVALID)    term_hnds[num_term_hnds++] = (spawn_handle_t){ root_res_term,    PA_HND(PA_RESOURCE, 0) };
                                 if (sys_dup_term != ZX_HANDLE_INVALID)     term_hnds[num_term_hnds++] = (spawn_handle_t){ sys_dup_term,     PA_HND(PA_USER2, 1) };
-                                if (spawn_bootfs_binary("terminal", "bin/terminal", 0, NULL,
-                                                        term_hnds, num_term_hnds, &proc_session_term) == ZX_OK) {
-                                    log_status(STATUS_OKAY, "iris_init", "Spawned session terminal (bin/terminal).");
+                                if (spawn_vfs_binary(fshost_client, "terminal", "/System/Bin/terminal", 0, NULL,
+                                                     term_hnds, num_term_hnds, &proc_session_term) == ZX_OK) {
+                                    log_status(STATUS_OKAY, "iris_init", "Spawned session terminal (/System/Bin/terminal).");
                                 }
                             }
                             iris_msg_hdr_t rep;
@@ -1518,6 +1500,36 @@ __attribute__((noreturn)) void _start(void* start_arg, void* vdso_base) {
                                          false, true, &comp_client, &proc_comp) != ZX_OK) {
                         log_status(STATUS_FAIL, "iris_init", "Failed to respawn iris_compositor.");
                     }
+                } else if (kinds[idx] == 4 && (items[idx].pending & ZX_PROCESS_TERMINATED)) {
+                    zx_info_process_t pinfo;
+                    iris_memset(&pinfo, 0, sizeof(pinfo));
+                    if (g_zx_object_get_info) {
+                        g_zx_object_get_info(proc_pty, ZX_INFO_PROCESS, &pinfo, sizeof(pinfo), NULL, NULL);
+                    }
+                    g_zx_handle_close(proc_pty);
+                    proc_pty = ZX_HANDLE_INVALID;
+                    if (pty_client != ZX_HANDLE_INVALID) {
+                        g_zx_handle_close(pty_client);
+                        pty_client = ZX_HANDLE_INVALID;
+                    }
+                    log_status(STATUS_FAIL, "iris_init",
+                               "iris_pty terminated (exit=%lld). Respawning Pseudo-Terminal Server.",
+                               (long long)pinfo.return_code);
+                    zx_handle_t pty_srv = ZX_HANDLE_INVALID;
+                    g_zx_channel_create(0, &pty_client, &pty_srv);
+                    if (!has_gpu) {
+                        zx_handle_t root_res_pty = ZX_HANDLE_INVALID;
+                        g_zx_handle_duplicate(g_root_resource, ZX_RIGHT_SAME_RIGHTS, &root_res_pty);
+                        spawn_handle_t pty_hnds[] = {
+                            { pty_srv,      PA_HND(PA_USER0, 0) },
+                            { root_res_pty, PA_HND(PA_RESOURCE, 0) }
+                        };
+                        spawn_bootfs_binary("iris_pty", "bin/iris_pty", 0, NULL, pty_hnds, 2, &proc_pty);
+                    } else {
+                        spawn_handle_t pty_hnds[] = { { pty_srv, PA_HND(PA_USER0, 0) } };
+                        spawn_bootfs_binary("iris_pty", "bin/iris_pty", 0, NULL, pty_hnds, 1, &proc_pty);
+                    }
+                    g_zx_handle_close(pty_srv);
                 } else if (items[idx].pending & ZX_PROCESS_TERMINATED) {
                     const char* sname = (kinds[idx] == 2) ? "iris_fshost" :
                                         (kinds[idx] == 3) ? "iris_crypt" :

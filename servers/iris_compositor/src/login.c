@@ -172,28 +172,35 @@ static zx_status_t attempt_user_login(int idx, const char* passphrase, size_t pl
     snprintf(g_active_display_name, sizeof(g_active_display_name), "%s", u->display_name);
     g_active_is_guest = (u->is_guest != 0);
 
+    /* Snapshot the complete login screen before transitioning to the desktop */
+    compositor_capture_boot_splash_frame();
+
     iris_sys_session_req_t sreq;
     memset(&sreq, 0, sizeof(sreq));
     sreq.is_guest = u->is_guest;
     snprintf(sreq.username, sizeof(sreq.username), "%s", u->username);
     send_sys_op(IRIS_SYS_OP_SESSION_LOGIN, &sreq, sizeof(sreq));
 
-    /* Cross-fade default wallpaper to user's personal or profile wallpaper */
+    /* Load user's personal or profile wallpaper if present */
     char user_wp[160];
     snprintf(user_wp, sizeof(user_wp), "/Users/%s/wallpaper.qoi", u->username);
     FILE* f = fopen(user_wp, "rb");
     if (f) {
         fclose(f);
-        compositor_start_wallpaper_crossfade(user_wp);
+        if (!load_qoi_wallpaper_aspect_fill(user_wp, g_wallpaper_surface, g_fb_width, g_fb_height)) {
+            load_qoi_wallpaper_aspect_fill(WALLPAPER_QOI_PATH, g_wallpaper_surface, g_fb_width, g_fb_height);
+        }
     } else if (u->wallpaper_path[0] != '\0') {
-        compositor_start_wallpaper_crossfade(u->wallpaper_path);
+        if (!load_qoi_wallpaper_aspect_fill(u->wallpaper_path, g_wallpaper_surface, g_fb_width, g_fb_height)) {
+            load_qoi_wallpaper_aspect_fill(WALLPAPER_QOI_PATH, g_wallpaper_surface, g_fb_width, g_fb_height);
+        }
     }
 
     g_login_active = false;
     g_selected_idx = -1;
     memset(g_pw, 0, sizeof(g_pw));
     g_pw_len = 0;
-    dirty_rect_union(0, 0, g_fb_width, g_fb_height);
+    compositor_begin_boot_to_login_crossfade();
     return ZX_OK;
 }
 
@@ -233,9 +240,11 @@ bool login_active_is_guest(void) {
 }
 
 void login_trigger_logout(void) {
+    compositor_capture_boot_splash_frame();
     send_sys_op(IRIS_SYS_OP_SESSION_LOGOUT, NULL, 0);
-    compositor_start_wallpaper_crossfade(WALLPAPER_QOI_PATH);
+    load_qoi_wallpaper_aspect_fill(WALLPAPER_QOI_PATH, g_wallpaper_surface, g_fb_width, g_fb_height);
     login_show();
+    compositor_begin_boot_to_login_crossfade();
 }
 
 static void draw_circular_avatar(uint32_t* dst, uint32_t fb_w, uint32_t fb_h,

@@ -167,6 +167,7 @@ static gpt_part_info_t g_part_esp;
 static gpt_part_info_t g_part_sys_a;
 static gpt_part_info_t g_part_sys_b;
 static gpt_part_info_t g_part_data;
+static bool            g_active_slot_is_b = false;
 
 static struct uufsd    g_ufs_system;
 static struct uufsd    g_ufs_data;
@@ -391,14 +392,25 @@ static zx_status_t parse_gpt_partitions(void) {
         return ZX_ERR_NOT_FOUND;
     }
 
-    uint32_t slot_a_prio = (uint32_t)((g_part_sys_a.attributes >> 48) & 0x0Fu);
-    uint32_t slot_a_ok   = (uint32_t)((g_part_sys_a.attributes >> 55) & 0x01u);
+    uint32_t slot_a_prio  = (uint32_t)((g_part_sys_a.attributes >> 48) & 0x0Fu);
+    uint32_t slot_a_tries = (uint32_t)((g_part_sys_a.attributes >> 52) & 0x07u);
+    uint32_t slot_a_ok    = (uint32_t)((g_part_sys_a.attributes >> 55) & 0x01u);
+    bool     slot_a_boot  = (slot_a_ok != 0) || (slot_a_tries > 0);
 
-    log_status(STATUS_OKAY, "iris_fshost", "Parsed GPT (ESP=%llu..%llu, System_A=%llu..%llu [prio=%u,ok=%u], System_B=%llu..%llu, Data=%llu..%llu).",
+    uint32_t slot_b_prio  = (uint32_t)((g_part_sys_b.attributes >> 48) & 0x0Fu);
+    uint32_t slot_b_tries = (uint32_t)((g_part_sys_b.attributes >> 52) & 0x07u);
+    uint32_t slot_b_ok    = (uint32_t)((g_part_sys_b.attributes >> 55) & 0x01u);
+    bool     slot_b_boot  = (slot_b_ok != 0) || (slot_b_tries > 0);
+
+    g_active_slot_is_b = (slot_b_boot && (!slot_a_boot || slot_b_prio > slot_a_prio));
+
+    log_status(STATUS_OKAY, "iris_fshost", "Parsed GPT (ESP=%llu..%llu, System_A=%llu..%llu [prio=%u,ok=%u], System_B=%llu..%llu [prio=%u,ok=%u], active=%s, Data=%llu..%llu).",
                (unsigned long long)g_part_esp.first_lba,   (unsigned long long)g_part_esp.last_lba,
                (unsigned long long)g_part_sys_a.first_lba, (unsigned long long)g_part_sys_a.last_lba,
                slot_a_prio, slot_a_ok,
                (unsigned long long)g_part_sys_b.first_lba, (unsigned long long)g_part_sys_b.last_lba,
+               slot_b_prio, slot_b_ok,
+               g_active_slot_is_b ? "System_B" : "System_A",
                (unsigned long long)g_part_data.first_lba,  (unsigned long long)g_part_data.last_lba);
 
     return ZX_OK;
@@ -426,15 +438,18 @@ static zx_status_t confirm_gpt_boot_slot(void) {
     gpt_part_entry_t* entries = (gpt_part_entry_t*)entries_buf;
     bool updated = false;
 
+    const char* active_slot_name = g_active_slot_is_b ? "System_B" : "System_A";
+    gpt_part_info_t* active_part = g_active_slot_is_b ? &g_part_sys_b : &g_part_sys_a;
+
     for (uint32_t i = 0; i < 16; ++i) {
         gpt_part_entry_t* e = &entries[i];
         if (e->first_lba == 0 || e->last_lba < e->first_lba) continue;
         char name[36];
         utf16le_to_ascii(e->name, sizeof(name), name);
-        if (strcmp(name, "System_A") == 0) {
+        if (strcmp(name, active_slot_name) == 0) {
             /* Set attribute bit 48 (and bit 55 for A/B slot boot_successful = 1) */
             e->attributes |= (1ULL << 48) | (1ULL << 55);
-            g_part_sys_a.attributes = e->attributes;
+            active_part->attributes = e->attributes;
             updated = true;
             break;
         }
@@ -462,8 +477,8 @@ static zx_status_t confirm_gpt_boot_slot(void) {
     if (st != ZX_OK) return st;
 
     blk_flush(g_blk_channel);
-    log_status(STATUS_OKAY, "iris_fshost", "Confirmed active GPT slot System_A (boot_successful=1, attr=0x%016llx).",
-               (unsigned long long)g_part_sys_a.attributes);
+    log_status(STATUS_OKAY, "iris_fshost", "Confirmed active GPT slot %s (boot_successful=1, attr=0x%016llx).",
+               active_slot_name, (unsigned long long)active_part->attributes);
     return ZX_OK;
 }
 
@@ -515,25 +530,28 @@ static zx_status_t mount_data_partition(void) {
 }
 
 static zx_status_t mount_filesystems(void) {
-    /* 1. Register & mount System_A (Read-Only UFS2) at /System */
+    const gpt_part_info_t* sys_part = g_active_slot_is_b ? &g_part_sys_b : &g_part_sys_a;
+    const char* sys_name = g_active_slot_is_b ? "System_B" : "System_A";
+
+    /* 1. Register & mount active System slot (Read-Only UFS2) at /System */
     zx_status_t st = iris_ufs_register_device(
         DEV_ID_SYSTEM_A,
         g_blk_channel,
-        g_part_sys_a.first_lba,
-        g_part_sys_a.sector_count,
+        sys_part->first_lba,
+        sys_part->sector_count,
         true /* strictly read-only */
     );
     if (st != ZX_OK) return st;
 
     init_uufsd_struct(&g_ufs_system, DEV_ID_SYSTEM_A, false);
     if (sbread(&g_ufs_system) == -1 || g_ufs_system.d_fs.fs_magic != FS_UFS2_MAGIC) {
-        log_status(STATUS_FAIL, "iris_fshost", "sbread() failed on System_A (%s).",
-                   g_ufs_system.d_error ? g_ufs_system.d_error : "invalid magic");
+        log_status(STATUS_FAIL, "iris_fshost", "sbread() failed on %s (%s).",
+                   sys_name, g_ufs_system.d_error ? g_ufs_system.d_error : "invalid magic");
         return ZX_ERR_IO_DATA_INTEGRITY;
     }
     g_system_mounted = true;
-    log_status(STATUS_OKAY, "iris_fshost", "Mounted System_A (UFS2 magic 0x%08x) at /System [Read-Only].",
-               (unsigned int)g_ufs_system.d_fs.fs_magic);
+    log_status(STATUS_OKAY, "iris_fshost", "Mounted %s (UFS2 magic 0x%08x) at /System [Read-Only].",
+               sys_name, (unsigned int)g_ufs_system.d_fs.fs_magic);
 
     /* 2. Query iris_crypt & mount decrypted Data (Read-Write UFS2) at /Users and /Applications */
     if (mount_data_partition() != ZX_OK) {

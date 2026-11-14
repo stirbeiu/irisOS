@@ -220,6 +220,22 @@ zx_status_t init_material_icons_from_memory(const uint8_t* ttf_bytes, size_t len
     return ZX_OK;
 }
 
+zx_status_t init_ui_font_from_memory(const uint8_t* otf_bytes, size_t len) {
+    if (!otf_bytes || len == 0) return ZX_ERR_INVALID_ARGS;
+    if (!g_ft_lib && FT_Init_FreeType(&g_ft_lib) != 0) {
+        return ZX_ERR_INTERNAL;
+    }
+    FT_Face face = NULL;
+    if (FT_New_Memory_Face(g_ft_lib, otf_bytes, (FT_Long)len, 0, &face) != 0) {
+        return ZX_ERR_IO;
+    }
+    g_family_faces[FONT_FAMILY_INTER_DISPLAY][0] = face;
+    g_family_faces[FONT_FAMILY_INTER_DISPLAY][1] = face;
+    g_family_faces[FONT_FAMILY_INTER][0]         = face;
+    g_family_faces[FONT_FAMILY_INTER][1]         = face;
+    return ZX_OK;
+}
+
 zx_status_t init_font_subsystem(void) {
     memset(g_family_faces, 0, sizeof(g_family_faces));
 

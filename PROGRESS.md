@@ -36,11 +36,11 @@
 
 ### Phase 5: PTY Server, Input Drivers, System Utilities & Toybox Shell
 * **PTY & Input (`servers/iris_pty/`, `servers/drivers/virtio_input/`):** Canonical (`ICANON`, `ECHO`, backspace editing, `Ctrl+C` `SIGINT`, `Ctrl+D` EOF) and raw line discipline fed by `virtio-keyboard-pci` and 2ms low-latency UART fallback.
-* **System Utilities (`apps/sysutils/`):** `passphrase` (`Data` partition unlock utility), `abctl` (A/B slot status & switching), and `sys_overlay` (developer RAM overlay utility).
+* **System Utilities (`apps/sysutils/`):** `passphrase` (`Data` partition unlock utility) and `iris_shell` (minimal fallback shell).
 * **Shell (`vendor/toybox/`):** Cross-compiled against `mlibc` into `/System/Bin/toybox` with 200+ POSIX command symlinks (`sh`, `ls`, `cat`, `cp`, `mkdir`, `rm`, `uname`, etc.) and A/B boot watchdog confirmation (`IRIS_FS_OP_CONFIRM_BOOT`).
 
 ### Phase 6 (Steps 6.1–6.3) & Responsiveness Tiers 1–4: Graphics & Compositor
-* **Display Drivers (`servers/drivers/virtio_gpu/`, `servers/drivers/gop_fb/`):** Ring 3 `virtio-gpu-pci` 2D scanout driver (`1280x800` `B8G8R8X8`, BTI-pinned shared framebuffer VMO) and UEFI GOP framebuffer fallback.
+* **Display Drivers (`servers/drivers/virtio_gpu/`):** Ring 3 `virtio-gpu-pci` 2D scanout driver (`1024x768` `B8G8R8X8`, BTI-pinned shared framebuffer VMO).
 * **Rendering Libraries (`vendor/pixman/`, `vendor/freetype/`):** Cross-compiled into `/System/Libraries/` (`libpixman-1`, `libfreetype` under FTL) with bundled variable fonts (`Inter`, `Inter Display`, `Inter Tight`, `JetBrains Mono`) and `MaterialIcons-Regular.ttf` in `/System/Resources/Fonts/`.
 * **Window Compositor (`servers/iris_compositor/`) & Client SDK (`sdk/libiris_gui/`):**
   * Zero-copy shared VMO client window surfaces (`IRIS_COMPOSITOR_OP_CREATE_WINDOW`, `DESTROY_WINDOW`, `DAMAGE`, `MOVE_WINDOW`, `POLL_EVENT`, `OPEN_CLIENT`).
@@ -60,7 +60,7 @@
 ## 3. Phase 7 Summary: Supervision, Graceful Shutdown & Hardening
 * **Reverse-Dependency Graceful Shutdown:** `mlibc` `sys_reboot()` routes `IRIS_SYS_OP_SHUTDOWN`/`IRIS_SYS_OP_REBOOT` over `IRIS_PROTO_SYSTEM` (`PA_HND(PA_USER2, 1)`) to `iris_init`, which stops `iris_compositor` and `iris_pty`, syncs `iris_fshost` (`IRIS_FS_OP_SYNC`), locks/zeroizes `iris_crypt` (`IRIS_CRYPT_OP_LOCK`), and closes driver channels so `virtio_gpu` and `virtio_blk` unpin all BTI PMTs before `zx_system_powerctl()`.
 * **Full Service Supervision:** `iris_init` supervises `virtio_blk`, `virtio_gpu`, `iris_crypt`, `iris_pty`, `iris_fshost`, `iris_compositor`, and `IRIS_PROTO_SYSTEM` via `zx_object_wait_many`.
-* **Passphrase Hardening:** `iris_crypt` always runs with `--wait-unlock` (no empty-passphrase dev fallback); `iris_compositor` displays a centered graphical unlock prompt (`--unlock-prompt`) while `iris_fshost` defers `/Users` & `/Applications` mounting until unlock.
+* **Passphrase Policy:** Partition 4 (`Data`) auto-unlocks with the Argon2id dev key at boot so `/Users/.accounts` is readable for the graphical login screen, while per-user `/Vaults/<user>.img` home vaults enforce user-passphrase AES-256-XTS unlock (`IRIS_CRYPT_OP_UNLOCK_USER`) on login (`--wait-unlock` remains supported in `iris_crypt` for headless full-partition lock).
 * **Subsystem Fixes:** Implemented `IRIS_FS_OP_RENAME` & `IRIS_FS_OP_TRUNCATE` (`sys_rename`, `sys_ftruncate`) in `iris_fshost` + `mlibc`, added `aarch64` PL031 RTC (`0x09010000`) sync in `iris_init`, and removed unused `IRIS_COMP_OP_*` / `IRIS_CRYPT_OP_{READ,WRITE}` / `IRIS_PTY_OP_SET_ATTR` opcodes from `ipc.h`.
 
 ---

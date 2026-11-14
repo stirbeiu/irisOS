@@ -651,12 +651,12 @@ static zx_status_t init_virtio_gpu_device(void) {
         return status;
     }
 
-    /* 10. Clear framebuffer to solid desktop background color (0xFF1E1E2E)
-     *     and flush to scanout 0 for clean transition to compositor. */
+    /* 10. Clear framebuffer to solid black (0xFF000000) and flush to scanout 0
+     *     for a seamless transition to the boot splash / compositor. */
     uint32_t* pixels = (uint32_t*)g_fb_vaddr;
     size_t total_pixels = (size_t)g_display_width * (size_t)g_display_height;
     for (size_t i = 0; i < total_pixels; i++) {
-        pixels[i] = IRIS_DESKTOP_BG_COLOR;
+        pixels[i] = 0xFF000000u;
     }
     __sync_synchronize();
 

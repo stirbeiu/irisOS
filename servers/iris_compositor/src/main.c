@@ -37,7 +37,7 @@ static void load_boot_splash_assets_from_vmo(void) {
 
     const uint8_t* base = (const uint8_t*)(uintptr_t)baddr;
     const iris_bootfs_hdr_t* hdr = (const iris_bootfs_hdr_t*)base;
-    if (hdr->magic == 0xa5655f62u && sizeof(iris_bootfs_hdr_t) + hdr->dirsize <= bsize) {
+    if (hdr->magic == 0xa56d3ff9u && sizeof(iris_bootfs_hdr_t) + hdr->dirsize <= bsize) {
         uint32_t off = sizeof(iris_bootfs_hdr_t);
         uint32_t end = sizeof(iris_bootfs_hdr_t) + hdr->dirsize;
         while (off + sizeof(iris_bootfs_dirent_t) <= end) {
@@ -45,8 +45,15 @@ static void load_boot_splash_assets_from_vmo(void) {
             uint32_t rec_sz = (uint32_t)((sizeof(iris_bootfs_dirent_t) + de->name_len + 3u) & ~3u);
             if (rec_sz == 0 || off + rec_sz > end) break;
             if (de->data_off + de->data_len <= bsize) {
-                if (strcmp(de->name, "resources/eye_dark.svg") == 0) {
+                if (strcmp(de->name, "resources/light_text_vertical.svg") == 0) {
                     set_boot_splash_eye_svg((const char*)(base + de->data_off), de->data_len);
+                    log_status(STATUS_OKAY, "iris_compositor", "Loaded boot logo SVG (%u bytes).", de->data_len);
+                } else if (strcmp(de->name, "resources/InterDisplay-Regular.otf") == 0) {
+                    uint8_t* otf_copy = (uint8_t*)malloc(de->data_len);
+                    if (otf_copy) {
+                        memcpy(otf_copy, base + de->data_off, de->data_len);
+                        init_ui_font_from_memory(otf_copy, de->data_len);
+                    }
                 } else if (strcmp(de->name, "resources/MaterialIcons-Regular.ttf") == 0) {
                     uint8_t* ttf_copy = (uint8_t*)malloc(de->data_len);
                     if (ttf_copy) {
@@ -70,8 +77,8 @@ zx_handle_t       g_gpu_channel       = ZX_HANDLE_INVALID;
 zx_handle_t       g_root_resource     = ZX_HANDLE_INVALID;
 uint32_t          g_gpu_txid          = 1u;
 
-uint32_t          g_fb_width          = 1280u;
-uint32_t          g_fb_height         = 800u;
+uint32_t          g_fb_width          = 1024u;
+uint32_t          g_fb_height         = 768u;
 uint32_t          g_fb_pitch          = 5120u;
 uint64_t          g_fb_size           = 0;
 zx_handle_t       g_fb_vmo            = ZX_HANDLE_INVALID;
@@ -326,6 +333,7 @@ static zx_status_t handle_damage_window(const iris_compositor_damage_req_t* req)
     if (!win) {
         return ZX_ERR_NOT_FOUND;
     }
+    compositor_invalidate_crossfade_target();
 
     if (req->w > 0 && req->h > 0 && req->x < win->client_w && req->y < win->client_h) {
         uint32_t cw = req->w;
@@ -358,6 +366,7 @@ static zx_status_t handle_move_window(const iris_compositor_move_window_req_t* r
     if (!win) {
         return ZX_ERR_NOT_FOUND;
     }
+    compositor_invalidate_crossfade_target();
 
     dirty_rect_union_window(win);
     win->x = req->x;
@@ -385,6 +394,7 @@ static zx_status_t handle_poll_event(const iris_compositor_poll_event_req_t* req
     if (!win) {
         return ZX_ERR_NOT_FOUND;
     }
+    compositor_invalidate_crossfade_target();
 
     resp->mouse_x = g_cursor_x - (win->x + IRIS_WIN_BORDER_PX);
     resp->mouse_y = g_cursor_y - (win->y + IRIS_WIN_BORDER_PX + IRIS_WIN_TITLEBAR_H);
@@ -605,14 +615,34 @@ static void run_compositor_loop(void) {
                                 (const iris_compositor_boot_stage_req_t*)(req_buf + sizeof(iris_msg_hdr_t));
                             stage = breq->stage;
                         }
-                        render_boot_splash(stage);
-                        zx_nanosleep(zx_clock_get_monotonic() + 200000000ULL);
+                        /* 60 FPS frame-paced icon fade-in & input polling during boot stage */
+                        const zx_duration_t stage_dur = (stage >= 5u) ? 350000000ULL : 260000000ULL;
+                        const zx_time_t stage_start   = zx_clock_get_monotonic();
+                        for (;;) {
+                            if (has_input_polling) {
+                                poll_input_devices();
+                            }
+                            zx_time_t cur_t = zx_clock_get_monotonic();
+                            zx_duration_t el = (cur_t > stage_start) ? (cur_t - stage_start) : 0;
+                            if (el >= stage_dur) {
+                                render_boot_splash_ex(stage, 256u);
+                                g_cursor_dirty = false;
+                                break;
+                            }
+                            uint32_t a = (uint32_t)((el * 256ULL) / stage_dur);
+                            render_boot_splash_ex(stage, a);
+                            g_cursor_dirty = false;
+                            zx_nanosleep(zx_clock_get_monotonic() + FRAME_PERIOD_NS);
+                        }
+
                         if (stage >= 5u) {
+                            compositor_capture_boot_splash_frame();
                             g_boot_splash_active = false;
                             init_desktop_wallpaper();
                             taskbar_init();
                             login_show();
-                            composite_and_flush(0, 0, g_fb_width, g_fb_height);
+                            compositor_begin_boot_to_login_crossfade();
+                            next_frame_deadline = zx_clock_get_monotonic() + FRAME_PERIOD_NS;
                         }
                         iris_msg_hdr_init_reply(rep_hdr, req_hdr, ZX_OK, 0);
                         break;
@@ -741,7 +771,7 @@ int main(int argc, char* argv[]) {
     }
     login_init(fs_ch, sys_ctrl_ch);
 
-    /* 1. Connect to virtio_gpu scanout (1280x800) and initialize cursor */
+    /* 1. Connect to virtio_gpu scanout (1024x768) and initialize cursor */
     zx_status_t st = connect_to_virtio_gpu();
     if (st != ZX_OK) {
         return 1;

@@ -35,7 +35,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTX64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-x64-clang"
         BUILD_DIR="${OUT_DIR}/build-x86_64"
-        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy kernel.debug_uart_poll=true kernel.smp.maxcpus=1 gfxconsole.early=true iris.mode=${IRIS_MODE}"
+        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy kernel.debug_uart_poll=true gfxconsole.early=true iris.mode=${IRIS_MODE}"
         ;;
     aarch64)
         ARCH_NAME="aarch64"
@@ -45,7 +45,7 @@ case "${ARCH}" in
         EFI_BIN_NAME="BOOTAA64.EFI"
         ZIRCON_BUILD="${ZIRCON_DIR}/build-arm64-clang"
         BUILD_DIR="${OUT_DIR}/build-aarch64"
-        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.serial=legacy kernel.debug_uart_poll=true kernel.smp.maxcpus=1 gfxconsole.early=true iris.mode=${IRIS_MODE}"
+        CMDLINE_ARGS="userboot=bin/iris_init zircon.nodename=irisOS-dev kernel.debug_uart_poll=true gfxconsole.early=true iris.mode=${IRIS_MODE}"
         ;;
     *)
         echo "Error: Unsupported architecture '${ARCH}'. Use 'x86_64' or 'aarch64'."
@@ -110,17 +110,15 @@ fi
     ${EXTRA_ZBI_INPUTS[@]+"${EXTRA_ZBI_INPUTS[@]}"} \
     --type CMDLINE -e "${CMDLINE_ARGS}" \
     --files -e "bin/iris_init=${BUILD_DIR}/bin/iris_init" \
-            -e "bin/iris_shell=${BUILD_DIR}/bin/iris_shell" \
-            -e "bin/passphrase=${BUILD_DIR}/bin/passphrase" \
             -e "bin/virtio_blk=${BUILD_DIR}/bin/virtio_blk" \
             -e "bin/virtio_gpu=${BUILD_DIR}/bin/virtio_gpu" \
             -e "bin/iris_compositor=${BUILD_DIR}/bin/iris_compositor" \
             -e "bin/iris_crypt=${BUILD_DIR}/bin/iris_crypt" \
             -e "bin/iris_fshost=${BUILD_DIR}/bin/iris_fshost" \
             -e "bin/iris_pty=${BUILD_DIR}/bin/iris_pty" \
-            -e "bin/terminal=${BUILD_DIR}/bin/terminal" \
-            -e "bin/toybox=${BUILD_DIR}/bin/toybox" \
             -e "resources/eye_dark.svg=${ROOT_DIR}/resources/icons/eye_dark.svg" \
+            -e "resources/light_text_vertical.svg=${ROOT_DIR}/resources/icons/light_text_vertical.svg" \
+            -e "resources/InterDisplay-Regular.otf=${ROOT_DIR}/resources/fonts/InterDisplay-Regular.otf" \
             -e "resources/MaterialIcons-Regular.ttf=${ROOT_DIR}/resources/fonts/MaterialIcons-Regular.ttf"
 
 cp -f "${IRIS_ZBI_A}" "${IRIS_ZBI_B}"
@@ -175,6 +173,10 @@ WALLPAPER_GUEST_QOI="${ROOT_DIR}/resources/wallpaper/wallpaper_guest.qoi"
 AVATAR_ADMIN_QOI="${ROOT_DIR}/resources/avatars/avatar_admin.qoi"
 EYE_LIGHT_SVG="${ROOT_DIR}/resources/icons/eye_light.svg"
 EYE_DARK_SVG="${ROOT_DIR}/resources/icons/eye_dark.svg"
+LOGO_DARK_H_SVG="${ROOT_DIR}/resources/icons/dark_text_horizontal.svg"
+LOGO_DARK_V_SVG="${ROOT_DIR}/resources/icons/dark_text_vertical.svg"
+LOGO_LIGHT_H_SVG="${ROOT_DIR}/resources/icons/light_text_horizontal.svg"
+LOGO_LIGHT_V_SVG="${ROOT_DIR}/resources/icons/light_text_vertical.svg"
 
 if [[ ! -f "${INTER_VAR}" || ! -f "${INTER_IT_VAR}" || \
       ! -f "${INTER_TIGHT_VAR}" || ! -f "${INTER_TIGHT_IT_VAR}" || \
@@ -218,6 +220,10 @@ SYS_LIBS=(
     "${AVATAR_ADMIN_QOI}"
     "${EYE_LIGHT_SVG}"
     "${EYE_DARK_SVG}"
+    "${LOGO_DARK_H_SVG}"
+    "${LOGO_DARK_V_SVG}"
+    "${LOGO_LIGHT_H_SVG}"
+    "${LOGO_LIGHT_V_SVG}"
 )
 echo "==> Formatting Partition 2 (System_A) & Partition 3 (System_B): 32 MB UFS2 with Toybox, /System/Libraries, Variable Fonts & Material Icons..."
 "${HOST_TOOLS}/mkufs2" "${SYS_A_IMG}" 65536 system System_A "${BUILD_DIR}/bin/toybox" "${SYS_LIBS[@]}"
